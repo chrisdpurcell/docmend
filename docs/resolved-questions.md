@@ -19,6 +19,17 @@
     - [RQ-008 — frontmatter emission scope: optional, minimal in v1](#rq-008--frontmatter-emission-scope-optional-minimal-in-v1)
     - [RQ-009 — performance targets deferred](#rq-009--performance-targets-deferred)
     - [RQ-010 — genericity: design-for-pluggable, build-minimal](#rq-010--genericity-design-for-pluggable-build-minimal)
+    - [RQ-011 — controlled vocabularies: external and per-corpus](#rq-011--controlled-vocabularies-external-and-per-corpus)
+    - [RQ-012 — EPUB export metadata deferred](#rq-012--epub-export-metadata-deferred)
+    - [RQ-013 — in-place mutation for v1](#rq-013--in-place-mutation-for-v1)
+    - [RQ-014 — frontmatter schema detail for v1](#rq-014--frontmatter-schema-detail-for-v1)
+    - [RQ-015 — real-write opt-in](#rq-015--real-write-opt-in)
+    - [RQ-016 — CPU-bound concurrency primitive](#rq-016--cpu-bound-concurrency-primitive)
+    - [RQ-017 — structured logging via structlog](#rq-017--structured-logging-via-structlog)
+    - [RQ-018 — JSON Schema validator library](#rq-018--json-schema-validator-library)
+    - [RQ-019 — property-based testing dependency](#rq-019--property-based-testing-dependency)
+    - [RQ-020 — internal data-model library](#rq-020--internal-data-model-library)
+    - [RQ-021 — frontmatter YAML codec](#rq-021--frontmatter-yaml-codec)
   - [How to use this document](#how-to-use-this-document)
 
 ## Resolved questions
@@ -212,6 +223,201 @@ docmend's "remain generally useful" ambition (§1) is operationalized as an **ar
 #### My Comments
 
 _Decided in session via the genericity AskUserQuestion (2026-07-05): "Design-for-pluggable, build-minimal." No in-file owner comment was recorded on OQ-020 before resolution._
+
+### RQ-011 — controlled vocabularies: external and per-corpus
+
+**Resolved:** 2026-07-05
+**Source question:** OQ-007
+**Decision owner:** owner
+**Canonical references:** spec §9, §21 OQ-007 (Status: Resolved); relates to [RQ-008](#rq-008--frontmatter-emission-scope-optional-minimal-in-v1) (frontmatter scope), [RQ-010](#rq-010--genericity-design-for-pluggable-build-minimal) (genericity seam), OQ-023 / §13.4 (confidential-content posture)
+
+Controlled vocabularies are **externally-supplied, per-corpus configuration**, not a taxonomy hardcoded in this public repo. The frontmatter schema/validator is **vocabulary-agnostic** — it validates a facet value against an `enum` (or equivalent) **loaded from the run's vocabulary configuration** (the RQ-010 seam applied to §9). The owner's real vocabularies live in a **user-owned file stored securely outside the public repo and outside committed artifacts** (same confidentiality posture as §13.4 / OQ-023 — a vocabulary set leaks clues about confidential content), and are **per-document-set** (different corpora carry different vocabularies; no single global taxonomy). The repo ships **only a small, generic, non-revealing example set** for tests. `lang` stays BCP 47; `tags` stays freeform and separate from the controlled facets. **v1 scope:** because v1 emits no controlled-vocab-validated fields (RQ-008 skeleton only), only the *seam* must exist in v1 — the concrete config surface (single file vs named per-corpus profiles), whether any default set ships, and the on-disk vocab format are **deferred** to when controlled-vocab emission is actually built (post-v1, gated by RQ-008).
+
+#### Rationale
+
+- Honors the owner's constraints (user-defined, secure, per-corpus, separable from docmend) at zero v1 build cost: the RQ-010 seam already guarantees the validator accepts an injected set.
+- Defers mechanism decisions that have no v1 consumer, avoiding premature config machinery (RQ-009 correctness-first, RQ-010 build-minimal).
+
+#### My Comments
+
+I have some restrictions which may complicate this. The document set that I am working with is sensitive and a vocabulary set describing it would give clues as to the contents of the documents. I would like to be able to define my own controlled vocabulary set for my own use that is stored securely and separable from the docmend project overall. I would also like to be able to define my own controlled vocabulary set for each document set that I am working with, and not have to use a single set for all document sets. Different types of document sets will have different vocabularies.
+
+_Resolution confirmed in session via the OQ-007 AskUserQuestion (2026-07-05): "seam now, mechanism later."_
+
+### RQ-012 — EPUB export metadata deferred
+
+**Resolved:** 2026-07-05
+**Source question:** OQ-011
+**Decision owner:** owner
+**Canonical references:** spec §9, §21 OQ-011 (Status: Resolved); `docs/research/managing-pandoc-markdown-and-strict-yaml-frontmatter.md`
+
+Optional EPUB-export root metadata (`identifier`, `rights`, `creator`, `cover-image`) is **out of scope** — a far-future "maybe." Not needed for v1 (frontmatter is optional/minimal per RQ-008). Whenever it lands, `docmend.id` remains the sole stable internal identifier; Pandoc's `identifier` is an EPUB-facing publication field, never a substitute for it. If added later, EPUB fields stay optional and distinct from docmend identity, emitted only for intentionally export-ready documents.
+
+#### Rationale
+
+- The owner has no use for EPUB export; most legacy library files are not publication-ready, so early EPUB fields would create empty or misleading metadata while `docmend.id` already solves internal traceability.
+
+#### My Comments
+
+**Defer EPUB support.** This is fairly niche and I have no use for it. It's a far future "maybe" feature.
+
+### RQ-013 — in-place mutation for v1
+
+**Resolved:** 2026-07-05
+**Source question:** OQ-012
+**Decision owner:** owner
+**Canonical references:** spec §8.5, §13.2, §18.2, §21 OQ-012 (Status: Resolved); relates to [RQ-005](#rq-005--apply-safety-gate-and-preservation-semantics) (safety gate). **⚑ ADR candidate** — the owner flagged OQ-012 (fundamental output model) for ADR consideration once settled.
+
+v1 **mutates files in place** with atomic replace (`os.replace()` on a same-directory temp file), backups, manifest, and path-containment checks. A separate **output-root / copy-out** workflow is **not** a v1 configuration and is deferred to a later export/structural-conversion phase. Terminology: `source_root` (scanned/planned), `target_path` (post-rename path), `backup_dir` (separate preservation location, *not* an output root); `output_root` is not a v1 config key. Safety comes from the RQ-005 gate (dry-run default, preservation, backups, manifest, atomic writes, containment), not from copy-out isolation.
+
+#### Rationale
+
+- In-place is simpler and better-specified by the current safety model; a separate output root would require a full second-tree config, path mapping, cross-tree collision policy, source-vs-output verify semantics, and restore rules the spec does not yet describe.
+- Consequence: unblocks the MS-3 write path. The §8.2.2 diagram's "Converted library" node and any stray output-root language should be reconciled to in-place (GAP-70) when the writer is specified.
+
+#### My Comments
+
+**Agree.** Defer to later.
+
+_Reading confirmed in session via the OQ-012 AskUserQuestion (2026-07-05): in-place for v1; separate output root deferred._
+
+### RQ-014 — frontmatter schema detail for v1
+
+**Resolved:** 2026-07-05
+**Source question:** OQ-013
+**Decision owner:** owner
+**Canonical references:** spec §9, FR-016, DR-005, §21 OQ-013 (Status: Resolved); `docs/research/safe-yaml-loading.md`; gated by [RQ-008](#rq-008--frontmatter-emission-scope-optional-minimal-in-v1); relates to [RQ-021](#rq-021--frontmatter-yaml-codec) (YAML codec)
+
+At the RQ-008 minimal-skeleton scope, the v1 frontmatter schema follows five rules: **(a)** required mechanical fields always present and non-null — `docmend.id`, `docmend.schema_version`, `source.original_path`, `source.hash`, `output.hash`; **(b)** `title` required but allowed a static placeholder (`Untitled`), since v1 infers no titles; **(c)** optional fields **omitted, never `null`** (null cannot distinguish unknown / not-applicable / not-processed); **(d)** `date` / `date-time` scalars kept as **strings** in the loader (override the YAML timestamp constructor) so JSON-Schema `format` assertions fire — the same override RQ-021 requires; **(e)** the rich `known` / `inferred` / `unknown` provenance wrapper (`metadata_status`) is **deferred** to when semantic enrichment (§2.3 WH-###) is scheduled. The §9 null-heavy worked example is rewritten to this convention when `schemas/frontmatter.schema.json` is authored (GAP-56).
+
+#### Rationale
+
+- RQ-008 already scoped v1 to a validatable skeleton, so the elaborate provenance model has no v1 consumer; the reduced rule set is enough to author the schema and keep `format` assertions working.
+
+#### My Comments
+
+I need to discuss this further with Claude for guidance to help answer this.
+
+_Decided in session via the OQ-013 AskUserQuestion (2026-07-05): adopt the minimal v1 shape above; defer the provenance/status model._
+
+### RQ-015 — real-write opt-in
+
+**Resolved:** 2026-07-05
+**Source question:** OQ-014
+**Decision owner:** owner
+**Canonical references:** spec §7.1 FR-004, §7.3 IR-003, §18.2, §21 OQ-014 (Status: Resolved); relates to [RQ-005](#rq-005--apply-safety-gate-and-preservation-semantics) (safety gate)
+
+Real writes are opt-in via `docmend apply plan.json --write`. `apply` **dry-runs by default**; `--write` and `--dry-run` are **mutually exclusive**; `--write` may mutate only if the RQ-005 safety gate passes. Config may keep `write.dry_run_default = true`, but **config alone never enables writes** — the CLI invocation must include `--write`, so a stale config cannot silently turn a preview into a mutation.
+
+#### Rationale
+
+- `--write` is blunt and hard to misread in shell history and logs; keeping the opt-in at the command line (not in config) preserves the "out-of-the-box `apply` cannot mutate" guarantee (FR-004).
+
+#### My Comments
+
+_Decided in session via the OQ-014 AskUserQuestion (2026-07-05): lock `--write`. No in-file owner comment was recorded on OQ-014 before resolution._
+
+### RQ-016 — CPU-bound concurrency primitive
+
+**Resolved:** 2026-07-05
+**Source question:** OQ-016
+**Decision owner:** owner (implementer-proposed)
+**Canonical references:** spec NFR-001, §14, §18.2, §21 OQ-016 (Status: Resolved); `docs/research/{python-314-concurrency-model,docmend-and-the-free-threaded-cpython-switch-decision}.md`; relates to [RQ-009](#rq-009--performance-targets-deferred) (perf targets deferred)
+
+v1 uses `concurrent.futures.ProcessPoolExecutor` with `multiprocessing.get_context('forkserver')` pinned explicitly — **not** the 3.14t free-threaded build, **not** asyncio (the workload is CPU-bound). Default `parallel.workers='auto'` (`os.process_cpu_count()`), with sequential mode (`workers=1`) as the default-until-profiled path used by all NFR-005 purity tests. A §18.2 `parallel.*` surface (`enabled`, `model`, `workers`, `start_method`, `chunksize`, `maxtasksperchild`) ships with `'process'` / `'sequential'` as the only v1 models; `'thread'` / `'interpreter'` reserved. Worker functions must be top-level-importable (forkserver constraint). **Re-open to free-threading only when the release-gated checklist fires:** a stable build defaults free-threaded **or** the SC accepts the Phase III PEP **or** `uv` / OS installers treat it as first-class; **and** `Py_GIL_DISABLED == 1`, `sys._is_gil_enabled()` stays `False` after importing the *full* app, every native dep ships `cp3xyt` / `abi3t` wheels; **and** a docmend switch-benchmark beats the process-pool baseline with zero correctness drift. Numeric throughput targets fold into RQ-009.
+
+#### Rationale
+
+- Process-based works on the standard interpreter every user has, with fault isolation matching the writer-isolation architecture (D-003) and zero new C-extension risk; free-threading remains a moving target (PEP 779 Phase II, no committed Phase III date).
+
+#### My Comments
+
+**Agreed.** Lock it.
+
+### RQ-017 — structured logging via structlog
+
+**Resolved:** 2026-07-05
+**Source question:** OQ-017
+**Decision owner:** owner
+**Canonical references:** spec §19 MS-0, NFR-003, §18.5, IR-005, §8.6, §21 OQ-017 (Status: Resolved); `docs/research/structured-logging-library.md`
+
+Adopt `structlog` wired through stdlib `logging` handlers, emitting **JSON Lines to a per-run file named by run-ID** plus Rich-rendered console text via `ConsoleRenderer`. Decouple `--verbose` / `--quiet` (console level only) from the file sink (always floored at DEBUG) so NFR-003's "diagnose without re-running" holds on quiet runs. Extend the never-auto-delete retention rule (§7.4 / §18.6) to logs. Use `QueueHandler` + `QueueListener` with explicit per-worker init once NFR-001 parallelism (RQ-016) lands. Adds a §8.6 Runtime dependency row. (The owner's `python-library-research.md` argued the opposite — stdlib `logging` + JSON artifacts, on dependency-minimization grounds; the owner chose structlog for throughput and per-run JSONL.)
+
+#### Rationale
+
+- At 100k+ files, log volume/format/destination decides whether mid-batch post-mortem debugging (NFR-003) is feasible; structlog is ~2× faster than stdlib+json/loguru on 3.14, actively released post-3.14 GA, and composes with the already-approved Rich.
+
+#### My Comments
+
+**Agreed.** structlog wired through stdlib logging handlers. Lock it.
+
+### RQ-018 — JSON Schema validator library
+
+**Resolved:** 2026-07-05
+**Source question:** OQ-018
+**Decision owner:** owner
+**Canonical references:** spec §8.6, FR-016, DR-005, §21 OQ-018 (Status: Resolved); relates to [RQ-004](#rq-004--artifact-json-schemas) (artifact schemas); `docs/research/json-schema-validator-library.md`
+
+Adopt `jsonschema>=4.26` with the `format-nongpl` extra and an explicit `Draft202012Validator` + `FormatChecker`, **reusing one compiled validator instance per schema** across a run (~10× faster than per-call `validate()`). **Not** `fastjsonschema` (only drafts 04/06/07) and **not** `check-jsonschema` as a runtime dep (a `requests`-dependent CLI unfit for an offline tool) — `check-jsonschema` is used only as a pre-commit hook linting `schemas/*.schema.json`. `jsonschema-rs` recorded as the pre-vetted escalation path if profiling later shows a bottleneck (its own §8.6 OQ). Adds a §8.6 Runtime row; couples to license-scan (GAP-59) and versioning (GAP-29). Parse critical `date` / `date-time` fields explicitly rather than trusting `format` alone (reinforces RQ-014 + safe-yaml).
+
+#### Rationale
+
+- Per Appendix B.2 the dependency needs an approved OQ; jsonschema 4.26 has full Draft 2020-12 support, a 3.14 classifier, and its sole Rust dep (`rpds-py`) ships cp314/cp314t wheels. Validator-reuse caps added CPU at tens of seconds against a multi-hour I/O-bound run.
+
+#### My Comments
+
+**Agreed.** Lock it.
+
+### RQ-019 — property-based testing dependency
+
+**Resolved:** 2026-07-05
+**Source question:** OQ-019
+**Decision owner:** owner
+**Canonical references:** spec §17.2, §8.6, NFR-005, Appendix B.2, §21 OQ-019 (Status: Resolved); `docs/research/property-based-testing-hypothesis.md`
+
+Adopt `Hypothesis` as a **dev-only** dependency in `[dependency-groups].dev` (never `[project.dependencies]`) with a CI settings profile (`register_profile` / `load_profile`) loosening or disabling `deadline` to avoid timing flakiness; keep Transform-layer tests fixture-free (NFR-005). MPL-2.0 but dev-only, never distributed in the MIT package; the only always-installed transitive dep is `sortedcontainers` (MIT). Companions from `python-library-research.md`: `pyfakefs` for fast scan/plan/filter tests (**not** for atomic-write / fsync / crash / permission / symlink tests — those need a real filesystem) and `pytest-xdist` for parallelizing the weird-document corpus. **Split §8.6 into Runtime vs Dev/Test** (pytest / ruff / basedpyright / coverage / pip-audit already sit outside it by omission).
+
+#### Rationale
+
+- Direct process contradiction resolved: §17.2 requires property tests while §8.6's footer forbids an unlisted dependency without an OQ, so an implementer could not honor the requirement without this approval.
+
+#### My Comments
+
+**Agreed.** Lock it.
+
+### RQ-020 — internal data-model library
+
+**Resolved:** 2026-07-05
+**Source question:** OQ-021
+**Decision owner:** owner
+**Canonical references:** spec §7.4 DR-001–DR-004, §9, §8.6, §21 OQ-021 (Status: Resolved); relates to [RQ-004](#rq-004--artifact-json-schemas) (artifact schemas), [RQ-018](#rq-018--json-schema-validator-library) (external validator); `docs/research/python-library-research.md`
+
+Adopt `pydantic` v2 (>= 2.12, the first 3.14-compatible line; v1 is not) as the internal model layer for config / inventory / plan / report / manifest / action / skip records, using **strict models with `extra='forbid'`**. Keep the hand-authored, checked-in JSON Schemas (RQ-004) as the durable **external** artifact contract — use pydantic's JSON-Schema emission only to **cross-check** the hand-authored schemas in tests, not to generate them. Division of labor: `jsonschema` (RQ-018) validates the external contract; pydantic guards internal construction. Adds a §8.6 Runtime row; introduces a models module under `src/docmend/`.
+
+#### Rationale
+
+- At 100k-file scale, unvalidated dicts let shape errors reach disk before anything catches them; a strict model layer fails fast at construction while the hand-authored schemas preserve the RQ-004 durability guarantee independent of the model library.
+
+#### My Comments
+
+**Agreed.** Lock it.
+
+### RQ-021 — frontmatter YAML codec
+
+**Resolved:** 2026-07-05
+**Source question:** OQ-022
+**Decision owner:** owner
+**Canonical references:** spec §9, FR-016, DR-005, §8.6, §21 OQ-022 (Status: Resolved); relates to [RQ-008](#rq-008--frontmatter-emission-scope-optional-minimal-in-v1) (frontmatter scope), [RQ-014](#rq-014--frontmatter-schema-detail-for-v1) (schema detail); `docs/research/{python-library-research,safe-yaml-loading}.md`
+
+Use `ruamel.yaml` behind a `FrontmatterCodec` abstraction (duplicate-key rejection, controlled quoting / block scalars, Pandoc-compatible emission), with `PyYAML` + a custom duplicate-key-rejecting loader as the **documented fallback** if ruamel's Beta / single-maintainer risk becomes unacceptable. **Regardless of choice, override the timestamp / date constructor so `date` and `date-time` scalars stay strings** — otherwise JSON-Schema `format` assertions never fire (RQ-014, safe-yaml). Adds a §8.6 Runtime row. Runtime-vs-fixture-only timing gated by RQ-008.
+
+#### Rationale
+
+- Frontmatter needs stricter guarantees than "parse some YAML": duplicate-key rejection (C-006 / FR-016), controlled emission, and string-preserved dates. ruamel builds those in; PyYAML would require hand-rolling them.
+
+#### My Comments
+
+**Agreed.** Lock it.
 
 ## How to use this document
 

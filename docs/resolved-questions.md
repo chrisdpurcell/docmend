@@ -30,6 +30,8 @@
     - [RQ-019 — property-based testing dependency](#rq-019--property-based-testing-dependency)
     - [RQ-020 — internal data-model library](#rq-020--internal-data-model-library)
     - [RQ-021 — frontmatter YAML codec](#rq-021--frontmatter-yaml-codec)
+    - [RQ-022 — encoding detector and non-ASCII skip floor](#rq-022--encoding-detector-and-non-ascii-skip-floor)
+    - [RQ-023 — deferred-review-artifact content-exposure policy (WH-002/WH-005)](#rq-023--deferred-review-artifact-content-exposure-policy-wh-002wh-005)
   - [How to use this document](#how-to-use-this-document)
 
 ## Resolved questions
@@ -418,6 +420,52 @@ Use `ruamel.yaml` behind a `FrontmatterCodec` abstraction (duplicate-key rejecti
 #### My Comments
 
 **Agreed.** Lock it.
+
+### RQ-022 — encoding detector and non-ASCII skip floor
+
+**Resolved:** 2026-07-05
+**Source question:** OQ-015
+**Decision owner:** owner
+**Canonical references:** spec §7.1 FR-007, §18.2 (`encoding.fail_below_confidence` + a new non-ASCII byte-count floor key), A-003, G-005, §8.6; §17.2 (weird-document corpus); `docs/research/{encoding-detection-benchmark,charset-detection-floors-for-legacy-text-ingestion,python-library-research}.md`; spec §21 OQ-015 (Status: Resolved). Relates to [RQ-004](#rq-004--artifact-json-schemas) (inventory provenance fields), [RQ-010](#rq-010--genericity-design-for-pluggable-build-minimal) (build-minimal seam), [RQ-009](#rq-009--performance-targets-deferred) (validation-run deferral). Fixes GAP-43.
+
+`charset-normalizer` is FR-007's **sole** detector — no `chardet` (active licensing dispute), no `faust-cchardet`/`uchardet` (no 3.14 wheels / no confidence API). Decode confidence is **`1.0 − CharsetMatch.chaos`** (3.x exposes **no** `.confidence`; this is the library's own chardet-compat formula, including its −0.2 penalty below 32 bytes), recording `chaos`/`coherence`/`language` separately as inventory provenance (feeds RQ-004). Keep **`fail_below_confidence = 0.80`**. Add a **second, independent skip gate — a non-ASCII byte-count floor, default `20`** — because a single confidence scalar provably cannot catch the documented short-low-entropy false-accept (a 38-byte mostly-ASCII string misdetected as Big5 at `chaos=0.0`, i.e. maximum confidence, wrong). **Gate ordering (floor applies last):** BOM sniff (authoritative → bypass legacy) → strict **full-file** UTF-8 validity (accept → bypass legacy) → ASCII-only ⇒ treat as ASCII/UTF-8 (never "detect" as legacy) → only non-BOM, non-valid-UTF-8 files reach the byte-count floor. **v1 ships a single fixed count-based floor of `20` for every legacy guess;** the family-aware overrides (Western single-byte ≥ 20; CJK multi-byte ≥ 12; Big5 relaxable to 10) and the sparse-long-file ratio signal (`total_bytes ≥ 4096 && non_ascii_ratio < 0.005 → mark "suspect", prefer skip`) are **documented future overrides behind the same config key (the RQ-010 seam), not built in v1**. All ingest uses explicit binary reads + explicit decode, never ambient `open()` defaults; floor work targets charset-normalizer ≥ 3.4.2 (3.4.7 ships 3.14 wheels). The report's synthetic/public-domain fixture recipe (length × non-ASCII count × placement; explicit false-accept/false-skip boundary sets) is added to the §17.2 corpus.
+
+**Calibration checkpoint (not a reopen):** the `20`-byte default is literature-backed (Sivonen/chardetng convergence — windows-1252/1251 settle at ~20 non-ASCII bytes, legacy CJK at ~10). One project-internal run against docmend's own short-file distribution during MS-2 may tune the number within the ~8–20 band **without reopening OQ-015**; the decision — detector, confidence formula, second-gate existence, gate ordering, and the `20` default — is closed.
+
+#### Rationale
+
+- The threshold governs the core safety premise's false-skip/false-accept rates; the second independent gate is **required, not optional**, because this `.txt`-heavy English corpus is full of the short-mostly-ASCII case a confidence scalar cannot catch, and skip-and-report is the safe failure.
+- Closing now (rather than holding a P0 open for the MS-2 run) unblocks the FR-007/§18.2 edits and MS-2 without loss — the number moves within a documented band, the decode/skip contract does not.
+
+#### My Comments
+
+_Decided in session via the OQ-015 AskUserQuestion (2026-07-05): close now on the literature-backed 20-byte default with an MS-2 calibration checkpoint; ship a single fixed floor, defer the family-aware table and ratio signal behind the RQ-010 seam. No in-file owner comment was recorded on OQ-015 before resolution._
+
+### RQ-023 — deferred-review-artifact content-exposure policy (WH-002/WH-005)
+
+**Resolved:** 2026-07-05
+**Source question:** OQ-023
+**Decision owner:** owner
+**Canonical references:** spec §2.2 NG-001, §2.3 WH-002/WH-005, §11, §13.4, §13.5; spec §21 OQ-023 (Status: Resolved). Relates to [RQ-001](#rq-001--v1-boundary-and-explicit-non-goals) (v1 boundary), [RQ-010](#rq-010--genericity-design-for-pluggable-build-minimal) (genericity), [RQ-011](#rq-011--controlled-vocabularies-external-and-per-corpus) (external per-corpus vocabularies), C-002 (synthetic fixtures). **Non-blocking** — WH-002/WH-005 are deferred (§2.3).
+
+The confidentiality line is drawn at the **public-repo / official-tool boundary, not at the operator's screen.**
+
+1. **Operator display is fine.** Showing document contents to the operator as part of docmend's own output and process flow is acceptable. NG-001's "no reading/browsing interface" non-goal means docmend is not a reading/search/browsing product and does not persist confidential content into public or committed surfaces — it does **not** mean the operator may never see their own document text during a run. (This refines NG-001's intent; §11/§13.4 wording to be reconciled accordingly.)
+2. **The hard invariant:** nothing that *hints* at document contents may be baked into the official tool or the public repo — no committed controlled-vocabulary dictionaries / frontmatter taxonomies that reveal the corpus (reaffirms RQ-011: vocabularies are external, per-corpus, stored outside the repo), no version-controlled text-bearing artifacts; fixtures/tests/docs stay synthetic or public-domain (C-002).
+3. **Durable review artifacts stay metadata-only; external tools render text.** WH-005 (fuzzy duplicates) is a metadata-only cluster report (`cluster_id`, path aliases, sizes, hashes, similarity scores, recommended canonical, blank `decision`). WH-002 (semantic corrections) is a durable machine-readable metadata ledger with **no embedded body text** — docmend identifies, packages, and records review decisions, and **external diff tools render any changed text**. Default review posture stays exception-oriented (no pre-filled "accept", capped batches) to avoid the automation-bias rubber-stamping failure. When scheduled, both feed the RQ-004 schema family as metadata-only shapes.
+
+#### Rationale
+
+- Reframes the earlier "minimize text even to the operator / opt-in text sidecar" research recommendation to the owner's actual threat model: the leakage risk is **public/committed exposure, not transient operator display**.
+- Keeping durable artifacts metadata-only and delegating text rendering to external tools is the cleanest NG-001 alignment and the lowest-maintenance path, and keeps docmend's committed surface free of confidential content by construction.
+
+#### My Comments
+
+_Owner decision, verbatim (from the OQ-023 AskUserQuestion, 2026-07-05):_
+
+> It's perfectly acceptable to show contents of the documents to the user as part of the tool's output and process flow. It is not acceptable to bake-in information to the official tool itself and repository (like certain frontmatter dictionaries) which are publicly accessible and may hint at the contents of potentially sensitive documents.
+
+_Text-rendering fork: **external tools render text** — docmend stops at detection + decision-recording and emits only a machine-readable handoff bundle._
 
 ## How to use this document
 

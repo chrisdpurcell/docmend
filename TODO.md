@@ -1,10 +1,9 @@
 # TODO
 
-This is the human-facing work queue for docmend. The project builder owns the first section; agents maintain the second section from handoff docs and session work.
-
 ## User Tracked Tasks
 
-Add personal tasks, reminders, or priorities here. Agents do not rewrite this section unless asked.
+- [ ] Assess ADR candidates
+- [ ]
 
 ## Agent Tracked Tasks
 

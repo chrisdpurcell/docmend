@@ -4,7 +4,7 @@
 
 `docmend` is a Python CLI tool (pre-implementation — only a tooling scaffold and a version smoke test exist; the conversion pipeline and CLI entry point are not built yet) for normalizing, repairing, and converting a large library (>100k files) of legacy `.txt`/`.html` documents into clean, well-structured Markdown.
 
-The full problem statement, design rationale, and requirements live in [`docs/specs/docmend-spec-draft.md`](docs/specs/docmend-spec-draft.md) — read it before proposing any implementation. Key decisions already locked in there:
+The full problem statement, design rationale, and requirements live in [`docs/specs/docmend.md`](docs/specs/docmend.md) (SPEC-VHHB, a Full-profile project-spec with stable requirement IDs and a binding Agent Implementation Contract in its Appendix B) — read it before proposing any implementation. Key decisions already locked in there:
 
 - **Output format:** Pandoc-flavored Markdown, CommonMark-ish body, strict YAML frontmatter (title, author, date, tags, source provenance, generated fields like word/chapter count and checksum) validated against a schema.
 - **Encoding / line endings:** normalize everything to UTF-8 / LF regardless of source encoding (Latin-1, Windows-1252, mixed ASCII/CR/CRLF/LF).
@@ -35,20 +35,20 @@ This repo is governed by four [Project Standards](https://github.com/L3DigitalNe
 | --- | --- | --- | --- |
 | Python Tooling SSOT | Python stack, `src/` layout, CI gate | `pyproject.toml` (tool tables), `.python-version`, `.github/workflows/check.yml`, `.vscode/`, `scripts/check.py` | `python scripts/check.py`, or the [verification gate](#python-verification-gate) |
 | Markdown Tooling | Markdown/JSON/YAML lint + format | `.markdownlint.json`, `.markdownlint-cli2.jsonc`, `.prettierrc.json`, `.editorconfig` | the [check contract](#markdown-check-contract) |
-| Project Specification | Tiered specs, stable IDs | `.project-standards.yml` (`spec:` block) | `project-standards spec …` (see [below](#project-specifications)) |
+| Project Specification | Tiered specs, stable IDs | `.project-standards.yml` (`spec:` block), `.github/workflows/validate-specs.yml` | `project-standards spec …` (see [below](#project-specifications)) |
 | ADR | Decision records | `docs/decisions/`, `adr.template.md` | author from the template (see [below](#architecture-decision-records)) |
 
 **Convenience runners (prefer these):** `python scripts/check.py` runs the entire Python gate (format → lint → type → test → coverage → audit) and stops at the first failure. In VS Code, the tasks `check` / `fix` / `test` / `typecheck` / `audit` map to the same commands — they are the standard's designated agent interface, so use them rather than reinventing invocations.
 
-**What CI actually enforces (i.e. what blocks a merge):** the Python gate (`check.yml`) and **markdownlint** (`lint-markdown.yml`). **Prettier is _not_ run in CI** — the formatter half ships no workflow, so `prettier --check` is a local/pre-commit nicety. Keep it clean anyway (it is part of the check contract), but know that a Prettier miss won't fail CI while a markdownlint or Python-gate miss will.
+**What CI actually enforces (i.e. what blocks a merge):** the Python gate (`check.yml`), **markdownlint** (`lint-markdown.yml`), and **spec validation** (`validate-specs.yml`). **Prettier is _not_ run in CI** — the formatter half ships no workflow, so `prettier --check` is a local/pre-commit nicety. Keep it clean anyway (it is part of the check contract), but know that a Prettier miss won't fail CI while a markdownlint or Python-gate miss will.
 
-**Changing a standard-owned file** (the middle column above, plus the two CI workflows): don't, except to bypass a check with a **documented [ADR](#architecture-decision-records)**. `.project-standards.yml` is the one adoption-config surface you edit normally (e.g. to turn on spec CI — see [Project Specifications](#project-specifications)).
+**Changing a standard-owned file** (the middle column above, plus the three CI workflows): don't, except to bypass a check with a **documented [ADR](#architecture-decision-records)**. `.project-standards.yml` is the one adoption-config surface you edit normally (e.g. to adjust the spec `include`/`exclude` globs — see [Project Specifications](#project-specifications)).
 
 **Deliberate deviation — Markdown Frontmatter Standard is NOT adopted** ([ADR-0001](docs/decisions/adr-0001-no-markdown-frontmatter-standard.md)). Do not try to re-adopt it or "fix" the missing frontmatter validator. Consequence: repo-doc and ADR frontmatter are not CI-validated — keep them consistent by convention.
 
 **Two unrelated "frontmatter" concerns — never conflate them:**
 
-- **Product frontmatter** — the Pandoc-flavored YAML docmend _emits into every converted document_ (title, author, provenance, generated fields). This is the tool's core output contract, governed by its own schema in [`docs/specs/docmend-spec-draft.md`](docs/specs/docmend-spec-draft.md) — **not** by any repo tooling. Never validate or reformat it with the repo's markdownlint/Prettier config.
+- **Product frontmatter** — the Pandoc-flavored YAML docmend _emits into every converted document_ (title, author, provenance, generated fields). This is the tool's core output contract, governed by its own schema in [`docs/specs/docmend.md`](docs/specs/docmend.md) (§9 Data Model / DR-005) — **not** by any repo tooling. Never validate or reformat it with the repo's markdownlint/Prettier config.
 - **Repo-doc frontmatter** — YAML on `docs/**` and ADRs. Deliberately unvalidated here (ADR-0001).
 
 ## Python Project Agent Instructions
@@ -138,13 +138,13 @@ uvx --from 'git+https://github.com/L3DigitalNet/project-standards@v4' \
   project-standards spec validate --config .project-standards.yml
 ```
 
-The existing `docs/specs/docmend-spec-draft.md` is **not yet** a conformant project-spec, so it is excluded in `.project-standards.yml` and CI spec-validation is intentionally **deferred** — the validator fails closed on an empty conformant corpus, so wiring the workflow now would fail on day one.
+The standard is **fully adopted**: [`docs/specs/docmend.md`](docs/specs/docmend.md) (SPEC-VHHB, `full` profile) is a conformant project-spec — migrated 2026-07-05 from the pre-standard `docmend-spec-draft.md` (see git history) — and `.github/workflows/validate-specs.yml` runs `spec validate` in CI on every push/PR. `spec lint --strict` also passes; keep it that way even though CI runs lint non-strict.
 
-To turn spec CI on (do these in order, only once a real spec exists):
+Rules for working with the spec:
 
-1. Migrate the draft (or author a new spec) with `project-standards spec new`/`spec upgrade` until `project-standards spec validate` passes.
-2. Remove `docs/specs/docmend-spec-draft.md` from the `spec.exclude` list in `.project-standards.yml`.
-3. Add `.github/workflows/validate-specs.yml` calling `L3DigitalNet/project-standards/.github/workflows/validate-specs.yml@v4` (see the [project-spec adopt guide](https://github.com/L3DigitalNet/project-standards/blob/v4/standards/project-spec/adopt.md) §4).
+- Never hand-edit spec **structure** (section numbering, omission notes, frontmatter keys, table shapes) — use the CLI (`spec new`, `spec upgrade`, `spec next` for the next free ID). Editing prose and table _content_ within the existing structure is normal authoring.
+- The spec's `<!-- fill in -->` gaps from the old draft were carried forward as `OQ-` rows in §21 — resolve them there (some are blocking for specific milestones), don't reinvent them.
+- Implementation work is bound by the spec's Appendix B (Agent Implementation Contract): Must requirements are mandatory, deviations go in the Deviations Log, and completion claims require the §17.3 traceability matrix.
 
 ## Architecture Decision Records
 

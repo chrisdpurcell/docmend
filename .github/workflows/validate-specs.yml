@@ -1,0 +1,15 @@
+name: Validate project specs
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  validate-specs:
+    uses: L3DigitalNet/project-standards/.github/workflows/validate-specs.yml@v4
+    with:
+      config-path: ".project-standards.yml"
+      standards-ref: "v4"
+      strict-lint: false # set true to also fail CI on lint warnings

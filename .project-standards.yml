@@ -13,16 +13,14 @@ python_tooling:
 markdown_tooling:
   version: "1.0"
 
-# Project Specification Standard — tooling wired, CI deferred.
-# The existing docs/specs/docmend-spec-draft.md is NOT yet a conformant project-spec,
-# so it is excluded until migrated. The spec validator fails closed on an empty
-# conformant corpus, so `.github/workflows/validate-specs.yml` is intentionally NOT
-# added yet — enable it (and drop the exclude) once the first real spec is migrated.
+# Project Specification Standard — fully adopted.
+# docs/specs/docmend.md (SPEC-VHHB, full profile) is the conformant project-spec,
+# migrated 2026-07-05 from the pre-standard docmend-spec-draft.md (see git history).
+# CI validation runs via .github/workflows/validate-specs.yml.
 spec:
   include:
     - "docs/specs/**/*.md"
-  exclude:
-    - "docs/specs/docmend-spec-draft.md"
+  exclude: []
 
 # NOTE: no `markdown.frontmatter` block — the Frontmatter Standard is not adopted (ADR-0001).
 # NOTE: no `markdown.adr.require_sections` block either — that check rides the frontmatter

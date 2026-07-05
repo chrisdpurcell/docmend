@@ -2,6 +2,19 @@
 
 `docmend` is a Python CLI tool for managing and maintaining large libraries of text-based documents. It is designed to help users clean up, modernize, and convert poorly formatted text and HTML documents into well-structured markdown files.
 
+## Standards
+
+This repo adopts the following standards from [Project Standards](https://github.com/L3DigitalNet/project-standards/tree/main/standards)
+
+- `python-tooling`
+- `markdown-tooling`
+- `project-spec`
+- `adr`
+
+It specifically does not adopt the `markdown-frontmatter` standard due to conflicts with _docmend_'s own frontmatter schema and requirements.
+
+The `python-coding` standard is followed as a guideline; it is not an officially supported/released standard.
+
 ## Problem
 
 I have a large library (>100k) of poorly formatted text (`.txt`), html (`.html`, `.htm`, etc.) documents that need to be modernized and converted into markdown (`.md`).
@@ -15,22 +28,25 @@ Notable document conditions include:
 - Poor spelling, grammar, and punctuation that need to be corrected.
 - Many appear corrupted or broken, and need to be repaired or reconstructed.
 - Many are full of garbled and garbage text, html tags, and other "ASCII pollution" that needs to be cleaned up and removed.
+- There are many duplicates/near-duplicates that are not accurately detected by existing tools due to large amounts of noise and drift in the text. These need to be detected and consolidated.
 
 ## Desired Final Output
 
 The tooling is not necessarily intended to be limited to strictly producing the desired final output described below, but it should be able to produce it. The tools should also be generally useful for cleaning up and modernizing text and HTML documents in a variety of ways, including but not limited to:
 
 - **Markdown:** Pandoc Markdown for the file format, CommonMark-ish body rules, strict YAML frontmatter for metadata. Make the body boring and portable; make the frontmatter rich and machine-validated.
-  - _Reasoning:_ CommonMark is the stable baseline for readable Markdown syntax, while Pandoc explicitly supports YAML metadata blocks and has strong conversion paths for EPUB, HTML, DOCX, or PDF.
-  - [commonmark.org](https://commonmark.org/?utm_source=openai)
-  - [pandoc.org](https://pandoc.org/demo/example33/8.10-metadata-blocks.html?utm_source=openai)
+  - _Reasoning:_ CommonMark is the stable baseline for readable Markdown syntax, while Pandoc explicitly supports YAML metadata blocks and conversion paths for Markdown, HTML, EPUB, DOCX, and PDF.
+  - _Pandoc compatibility:_ generated files should keep one YAML metadata block at the beginning of the document. Pandoc's CommonMark-family readers require the metadata block to be first, and Pandoc writes Markdown metadata as a single top block when writing standalone Markdown.
+  - _Conversion target:_ the canonical stored artifact is Markdown, but the frontmatter should preserve enough standard Pandoc metadata to support later `pandoc` exports to HTML, EPUB, DOCX, or PDF.
 - **YAML Frontmatter:** Strict YAML frontmatter for metadata, including title, author, date, tags, and other relevant information.
+  - _Core document fields:_ `title`, `author`, `date`, `lang`, `keywords`, `subject`, `description`, and `abstract` where known. These align with Pandoc metadata variables used by HTML, EPUB, DOCX, PDF, and related writers.
   - _Stable IDs:_ never depend on filename alone.
   - _Source provenance:_ original path, source hash, import batch, conversion version.
   - _Controlled vocabularies:_ genres, ratings, status, language, story type. Freeform tags are useful, but they get messy fast.
-  - _Generated fields:_ word count, chapter count, checksum, detected language. Regenerate them rather than hand- editing.
+  - _Generated fields:_ word count, chapter count, checksum, detected language. Regenerate them rather than hand-editing.
   - _Schema validation:_ JSON Schema or similar, so bad metadata does not quietly poison the index.
   - _Search separation:_ frontmatter feeds faceted search; the Markdown body feeds full-text search.
+  - _Pandoc safety:_ quote YAML scalars when needed, especially titles or descriptions containing colons, backslashes, blank lines, or block-level formatting. Use literal block scalars for multi-paragraph values.
 - **Encoding:** UTF-8
 - **Line Endings:** LF (UNIX-style)
 
@@ -99,40 +115,45 @@ Possible later areas:
 
 ## Metadata and Naming Strategy
 
-The tool should separate mechanical metadata from semantic metadata.
+The tool should separate mechanical metadata from semantic metadata. Frontmatter should use a stable top-level schema with nested objects for docmend-owned data, while keeping Pandoc-recognized fields at the root where that improves export compatibility.
 
 ### Mechanical metadata
 
-<!-- Fill this in with fields that can be generated deterministically from the source file or conversion process. -->
+Mechanical metadata can be generated deterministically from the source file or conversion process. It should be regenerated by the tool and should not be hand-edited during normal use.
 
-Examples:
-
-- stable ID
-- original path
-- source hash
-- output hash
-- import batch
-- conversion version
-- detected encoding
-- newline style
-- word count
-- generated timestamp
+- `docmend.id`: stable document ID that survives renames and content rewrites.
+- `docmend.schema_version`: frontmatter schema version.
+- `docmend.generated_at`: timestamp for the current generated metadata.
+- `docmend.conversion_version`: docmend version and conversion profile used.
+- `source.original_path`: original path relative to the scanned source root.
+- `source.original_extension`: original suffix such as `.txt` or `.html`.
+- `source.hash`: source content checksum before conversion.
+- `source.size_bytes`: source file size before conversion.
+- `source.detected_encoding`: detected source encoding and confidence.
+- `source.newline_style`: original newline style such as LF, CRLF, CR, or mixed.
+- `output.hash`: generated Markdown checksum.
+- `output.word_count`: generated body word count.
+- `output.chapter_count`: generated chapter or heading count where detectable.
+- `output.markdown_format`: expected value `pandoc`.
+- `output.generated_by`: tool name and version.
 
 ### Semantic metadata
 
-<!-- Fill this in with fields that require interpretation, heuristics, review, or external assistance. -->
+Semantic metadata requires interpretation, heuristics, review, or external assistance. It may begin as unknown, inferred, or low-confidence, and should preserve confidence/source information when generated automatically.
 
-Examples:
+- `title`: human-readable title. Required, but may be inferred from filename or first heading when no better value exists.
+- `author`: one or more known or inferred authors.
+- `date`: document date when known; prefer ISO 8601-compatible values for Pandoc and EPUB compatibility.
+- `lang`: BCP 47 language tag such as `en` or `en-US` when known or confidently detected.
+- `keywords`: Pandoc-compatible keyword list for export metadata.
+- `subject`: short subject or category, useful for EPUB, DOCX, PDF, and search facets.
+- `description`: concise summary for export metadata and browsing.
+- `abstract`: longer document summary when useful.
+- `tags`: freeform user-facing tags.
+- `genre`, `status`, `story_type`, `rating`: controlled vocabulary fields for the personal library.
+- `deduplication`: duplicate or near-duplicate cluster ID, canonical-document flag, and match confidence when known.
 
-- title
-- author
-- date
-- tags
-- genre
-- status
-- language
-- story type
-- rating
+When semantic metadata is inferred by heuristics or external tools, record whether the value is `known`, `inferred`, or `unknown`. Do not silently overwrite user-reviewed metadata with a lower-confidence generated value.
 
 ### Naming policy
 
@@ -209,15 +230,87 @@ Likely contents:
 
 ### Frontmatter schema
 
-<!-- Fill this in with the schema strategy for generated Markdown files. -->
+The generated Markdown frontmatter should be valid YAML, bounded by `---` at the top of the document and `---` or `...` at the end of the block. For docmend output, prefer `---` for both delimiters and require the block to be the first content in the file.
 
-Questions to resolve later:
+Schema strategy:
 
-- Where does the schema live?
-- Which fields are required?
-- Which fields are generated?
-- Which vocabularies are controlled?
-- How are unknown or missing values represented?
+- Store the canonical schema in the repository, for example `schemas/frontmatter.schema.json`.
+- Validate generated frontmatter during `plan`, `apply`, and `verify`.
+- Keep Pandoc-recognized export metadata at the root: `title`, `author`, `date`, `lang`, `keywords`, `subject`, `description`, and `abstract`.
+- Keep docmend-owned mechanical metadata under namespaced objects such as `docmend`, `source`, and `output`.
+- Keep personal-library taxonomy under a predictable object or controlled root fields, but document each controlled vocabulary.
+- Represent missing semantic values as `null` only when the field is required by schema; otherwise omit unknown optional fields.
+- Preserve inferred values with source/confidence metadata rather than pretending they are user-confirmed.
+
+Initial required fields:
+
+- `title`
+- `docmend.id`
+- `docmend.schema_version`
+- `source.original_path`
+- `source.hash`
+- `output.hash`
+
+Generated fields:
+
+- `docmend.generated_at`
+- `docmend.conversion_version`
+- `source.detected_encoding`
+- `source.newline_style`
+- `output.word_count`
+- `output.chapter_count`
+- `output.generated_by`
+
+Controlled vocabularies to define before implementation:
+
+- `genre`
+- `status`
+- `story_type`
+- `rating`
+- `lang`
+
+Example shape:
+
+```YAML
+---
+title: "Example title: quoted because it contains a colon"
+author: null
+date: null
+lang: en
+keywords: []
+subject: null
+description: null
+tags: []
+genre: unknown
+status: unknown
+story_type: unknown
+rating: unrated
+deduplication:
+  cluster_id: null
+  canonical: null
+  confidence: null
+docmend:
+  id: "dmnd_0000000000000000"
+  schema_version: "0.1"
+  generated_at: "2026-07-05T00:00:00Z"
+  conversion_version: "docmend 0.1.0"
+source:
+  original_path: "synthetic/example.txt"
+  original_extension: ".txt"
+  hash: "sha256:..."
+  size_bytes: 1234
+  detected_encoding:
+    name: windows-1252
+    confidence: 0.97
+  newline_style: CRLF
+output:
+  hash: "sha256:..."
+  markdown_format: pandoc
+  word_count: 200
+  chapter_count: 0
+  generated_by: "docmend 0.1.0"
+---
+```
 
 ## Apply Safety Gate
 
@@ -423,6 +516,27 @@ dry_run_default = true
 backup_dir = ".textlib-cleaner-backups"
 atomic = true
 ```
+
+## References
+
+Official sources used for the Markdown/frontmatter decisions:
+
+- [Pandoc User's Guide: YAML metadata block](https://pandoc.org/MANUAL.html#extension-yaml_metadata_block)
+  - YAML metadata blocks are valid YAML objects delimited by `---` and `---` or `...`.
+  - Pandoc Markdown output writes metadata as one top-level block when using standalone Markdown output.
+  - CommonMark-family readers require a beginning-of-file metadata block, and only the first file can supply it when multiple inputs are provided.
+- [Pandoc User's Guide: Metadata blocks](https://pandoc.org/demo/example33/8.10-metadata-blocks.html)
+  - Metadata can contain nested lists and objects.
+  - YAML escaping rules apply; fields with colons, backslashes, blank lines, or block formatting need careful quoting or literal blocks.
+- [Pandoc User's Guide: Metadata variables](https://pandoc.org/demo/example33/6.2-variables.html)
+  - `title`, `author`, `date`, `lang`, `keywords`, `subject`, `description`, and related fields are recognized by Pandoc writers and flow into HTML, EPUB, DOCX, PDF, ODT, and other output metadata depending on format.
+- [Pandoc User's Guide: EPUB metadata](https://pandoc.org/demo/example33/11.1-epub-metadata.html)
+  - EPUB metadata can be supplied through YAML in a Markdown document or through `--metadata-file`.
+  - EPUB-oriented fields include `identifier`, `title`, `creator`, `date`, `lang`, `subject`, `description`, `rights`, and `cover-image`.
+- [Pandoc demos: conversion examples](https://pandoc.org/demos.html)
+  - Official examples show conversions to HTML, PDF, EPUB, DOCX, and Markdown, including HTML-to-Markdown and DOCX-to-Markdown paths.
+- [CommonMark](https://commonmark.org/)
+  - CommonMark provides a strongly defined Markdown specification and explains why Markdown interoperability needs an unambiguous baseline.
 
 ## Tech Stack
 

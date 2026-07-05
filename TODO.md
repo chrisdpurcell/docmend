@@ -2,6 +2,12 @@
 
 ## User added tasks
 
+- [ ] adopt the following standards from [Project Standards](https://github.com/L3DigitalNet/project-standards/tree/main/standards)
+  - python-tooling
+  - markdown-tooling
+  - project-spec
+  - adr
+
 ## Agent added tasks
 
 ## Completed tasks

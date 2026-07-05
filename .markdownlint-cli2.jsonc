@@ -1,0 +1,16 @@
+{
+	// markdownlint-cli2 runner config for THIS repo (local CLI + the VS Code
+	// markdownlint extension). Not part of the published Markdown Tooling Standard —
+	// the seeded artifact is `.markdownlint.json` (the rule set), which
+	// markdownlint-cli2 auto-merges. This file only controls *which* files a bare
+	// `npx markdownlint-cli2` lints so a local run matches CI (a clean checkout with
+	// no `.venv/`, caches, or node_modules).
+	"globs": ["**/*.md"],
+	// `gitignore: true` makes the local run skip everything git ignores (`.venv/`,
+	// build artifacts, etc.), matching the CI checkout.
+	"gitignore": true,
+	// `ignores` excludes agent-authored session state and placeholder templates —
+	// not authored prose held to the body-style bar. `docs/handoff.md` is regenerated
+	// session state; `*.template.md` carries intentional {placeholder} scaffolding.
+	"ignores": ["docs/handoff.md", "**/*.template.md"]
+}

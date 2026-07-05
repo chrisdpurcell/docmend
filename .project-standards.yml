@@ -1,0 +1,30 @@
+# Project Standards adoption config — https://github.com/L3DigitalNet/project-standards
+#
+# Adopted: Python Tooling SSOT, Markdown Tooling, Project Specification, ADR.
+# Deliberately NOT adopted: Markdown Frontmatter Standard — its canonical schema
+# conflicts with docmend's own frontmatter contracts (the Pandoc-flavored YAML the
+# tool emits into every converted document, plus the Pandoc-style spec draft).
+# Recorded as docs/decisions/adr-0001-no-markdown-frontmatter-standard.md.
+
+# Contract-version labels (validated-if-present metadata; they run no check by themselves).
+python_tooling:
+  version: "1.0"
+
+markdown_tooling:
+  version: "1.0"
+
+# Project Specification Standard — tooling wired, CI deferred.
+# The existing docs/specs/docmend-spec-draft.md is NOT yet a conformant project-spec,
+# so it is excluded until migrated. The spec validator fails closed on an empty
+# conformant corpus, so `.github/workflows/validate-specs.yml` is intentionally NOT
+# added yet — enable it (and drop the exclude) once the first real spec is migrated.
+spec:
+  include:
+    - "docs/specs/**/*.md"
+  exclude:
+    - "docs/specs/docmend-spec-draft.md"
+
+# NOTE: no `markdown.frontmatter` block — the Frontmatter Standard is not adopted (ADR-0001).
+# NOTE: no `markdown.adr.require_sections` block either — that check rides the frontmatter
+# validator workflow, which is not installed here, so it would be inert. ADRs are authored
+# from docs/decisions/adr.template.md and kept consistent by convention.

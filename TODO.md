@@ -7,6 +7,8 @@
   - markdown-tooling
   - project-spec
   - adr
+  - _Progress (2026-07-05):_ python-tooling, markdown-tooling, and adr fully adopted and verified green (both gates); project-spec tooling wired (`spec:` block) but its CI validation is **deferred** until the spec draft is migrated. Markdown Frontmatter Standard deliberately **not** adopted — recorded as ADR-0001. See `docs/handoff.md`.
+  - _Remaining:_ migrate `docs/specs/docmend-spec-draft.md` to a conformant project-spec, then drop its exclude in `.project-standards.yml` and add `.github/workflows/validate-specs.yml` to turn spec CI on.
 
 ## Agent added tasks
 

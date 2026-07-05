@@ -6,7 +6,7 @@
 
 I have a large library (>100k) of poorly formatted text (`.txt`), html (`.html`, `.htm`, etc.) documents that need to be modernized and converted into markdown (`.md`).
 
-Notable issues include:
+Notable document conditions include:
 
 - Poor and broken formatting (e.g., inconsistent headings, spacing, and indentation) from years of handling and editing. Many documents date back the 1990s and even earlier.
 - Mix of encoding formats (e.g., UTF-8, ISO-8859-1, Windows-1252, etc.) and character sets (e.g., ASCII, Latin-1, etc.) and end-of-line formats (e.g., LF, CRLF, CR) that need to be normalized to UTF-8 and LF.

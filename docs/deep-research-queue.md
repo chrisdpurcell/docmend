@@ -14,7 +14,7 @@ The 2026-07-05 gap analysis produced 22 evidence-backed research reports (see th
 | --- | --- | --- |
 | [`managing-pandoc-markdown-and-strict-yaml-frontmatter.md`](research/managing-pandoc-markdown-and-strict-yaml-frontmatter.md) | Pandoc Markdown, CommonMark body constraints, strict YAML frontmatter, schema validation | spec §9 / C-006 / FR-016 / DR-005; OQ-013 |
 | [`self-hosted-corpus-storage-options.md`](research/self-hosted-corpus-storage-options.md) | Storage options for a large private document corpus | spec §18.6; OQ-008 |
-| [`python-library-research.md`](research/python-library-research.md) | Whole-stack Python dependency posture (runtime + dev/test) — broad companion to the targeted per-library reports | OQ-017, OQ-018, OQ-019; §8.6 |
+| [`python-library-research.md`](research/python-library-research.md) | Whole-stack Python dependency posture (runtime + dev/test) — broad companion to the targeted per-library reports | OQ-015/017/018/019, OQ-021, OQ-022; §8.6 dependency policy |
 | [`encoding-detection-benchmark.md`](research/encoding-detection-benchmark.md) | Encoding detection at corpus scale: detector choice, confidence semantics, threshold | OQ-001 (GAP-42, GAP-43, GAP-44) |
 | [`python-314-concurrency-model.md`](research/python-314-concurrency-model.md) | Concurrency model for a CPU-bound file pipeline on Python 3.14 | OQ-010 (GAP-22, GAP-54) |
 | [`python-314-wheel-readiness.md`](research/python-314-wheel-readiness.md) | Python 3.14 wheel readiness for the approved dependency set | gap-analysis.md (GAP-60) |

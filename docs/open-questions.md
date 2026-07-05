@@ -34,6 +34,8 @@
     - [OQ-018 — JSON Schema validator library selection](#oq-018--json-schema-validator-library-selection)
     - [OQ-019 — property-based testing dependency (Hypothesis) approval](#oq-019--property-based-testing-dependency-hypothesis-approval)
     - [OQ-020 — generic-tool genericity vs purpose-built personal taxonomy](#oq-020--generic-tool-genericity-vs-purpose-built-personal-taxonomy)
+    - [OQ-021 — internal data-model library (pydantic v2)](#oq-021--internal-data-model-library-pydantic-v2)
+    - [OQ-022 — frontmatter YAML codec (ruamel.yaml vs PyYAML)](#oq-022--frontmatter-yaml-codec-ruamelyaml-vs-pyyaml)
   - [How to maintain this document](#how-to-maintain-this-document)
 
 ## Open questions
@@ -514,6 +516,8 @@ Confirm charset-normalizer as FR-007's sole detector, define the decode-confiden
 
 **Downstream impact:** Adds a non-ASCII-floor config key to §18.2, adds chaos/coherence/language provenance fields to the inventory schema (feeds OQ-004), reworks FR-007/FR-016 wording, and adds the report's fixture set to §17.2; also fixes GAP-43 (confidence-API mismatch) in the same change.
 
+**Research update (2026-07-05, owner ChatGPT report):** `docs/research/python-library-research.md` independently confirms `charset-normalizer` as the FR-007 detector, but its proposed `DetectedEncoding` interface carries a `confidence: float` field — note that charset-normalizer 3.x exposes no `.confidence` (only `chaos`/`coherence`); use the `1.0 - chaos` formula from `docs/research/encoding-detection-benchmark.md` (this OQ's primary basis), not a `.confidence` attribute. The report also endorses recording the detector version and confidence in the plan (C.4 provenance).
+
 #### My Comments
 
 ### OQ-016 — CPU-bound concurrency primitive for the Python 3.14 target
@@ -562,6 +566,8 @@ Choose the logging library, wire format, destination, field schema, and how --ve
 
 **Downstream impact:** Adds a §8.6 dependency row, a per-run JSONL log-schema cross-referenced to the run-ID (GAP-27), the console-flag semantics (GAP-17), and the heartbeat/progress line (GAP-20).
 
+**Research update (2026-07-05, owner ChatGPT report):** `docs/research/python-library-research.md` reaches the OPPOSITE conclusion to this OQ's recommendation — it advises AVOIDING `structlog` in v1 and starting with stdlib `logging` plus structured JSON artifacts, on dependency-minimization grounds. This OQ's recommendation (from `docs/research/structured-logging-library.md`) favors `structlog` for throughput and per-run JSON Lines. Both are defensible; the owner should decide with both arguments in view. If stdlib `logging` is chosen, the per-run JSONL schema and run-ID correlation (NFR-003) can still be met with a stdlib JSON formatter, avoiding the new runtime dependency.
+
 #### My Comments
 
 ### OQ-018 — JSON Schema validator library selection
@@ -585,6 +591,8 @@ Resolve §8.6's Conditional JSON Schema validator row to a specific library, giv
 **Decision impact:** Unblocks the OQ-004 schema-authoring and MS-1 validation work with a concrete, 3.14-ready, format-asserting validator.
 
 **Downstream impact:** Adds a §8.6 runtime dependency row, a validator-reuse discipline note, and the format-nongpl license consideration; couples to the license-scan policy (GAP-59) and the versioning policy (GAP-29).
+
+**Research update (2026-07-05, owner ChatGPT report):** `docs/research/python-library-research.md` independently confirms this OQ — use `jsonschema` (not a homegrown validator) with an explicit `FormatChecker` (format is annotation-only by default) and Draft 2020-12; it further advises parsing critical `date`/`date-time` fields explicitly rather than trusting `format` alone (reinforcing `docs/research/safe-yaml-loading.md`).
 
 #### My Comments
 
@@ -610,6 +618,8 @@ Approve Hypothesis as a dev-only test dependency to satisfy §17.2's 'property-b
 
 **Downstream impact:** Adds a §8.6 Dev/Test row and a CI settings profile; the §8.6 Runtime-vs-Dev split it prompts also regularizes the already-ungated pytest/ruff/etc. tooling.
 
+**Research update (2026-07-05, owner ChatGPT report):** `docs/research/python-library-research.md` confirms `hypothesis` for transform/idempotency/risk-classifier property tests and adds two dev-test companions: `pyfakefs` for fast scan/plan/filter tests (explicitly NOT for atomic-write/fsync/crash/permission/symlink tests, which need real-filesystem integration) and `pytest-xdist` for parallelizing the growing weird-document corpus. Both belong in the §8.6 Dev/Test split this OQ proposes.
+
 #### My Comments
 
 ### OQ-020 — generic-tool genericity vs purpose-built personal taxonomy
@@ -633,6 +643,54 @@ Decide whether docmend's domain-specific parts (the §9 genre/status/story_type/
 **Decision impact:** Shapes the OQ-004 frontmatter schema and the OQ-007 controlled-vocabulary extensibility (GAP-57) before schemas freeze at MS-1.
 
 **Downstream impact:** If pluggable, the frontmatter schema and validator must be vocabulary-agnostic and OQ-007 becomes a config concern; if purpose-built, §9 stays hardcoded and the §1 genericity claim is narrowed.
+
+#### My Comments
+
+### OQ-021 — internal data-model library (pydantic v2)
+
+**Priority:** P2 decision · Gap-analysis priority: Medium  
+**Owner:** owner  
+**Needed by:** MS-1  
+**Blocking:** No  
+**Spec references:** `docs/specs/docmend.md` §7.4 DR-001-DR-004, §9, §8.6 · Related: OQ-004, OQ-018
+
+Decide whether v1 adopts `pydantic` v2 as the internal model layer for config, inventory, plan, report, manifest, and per-action/skip records, or uses stdlib dataclasses / typed dicts with manual validation. Adding the dependency requires this OQ and a §8.6 row (Appendix B.2).
+
+#### Agent notes
+
+**Recommendation:** Adopt `pydantic` v2 (>= 2.12, which introduced Python 3.14 support; v1 is not 3.14-compatible) as the internal artifact/config model layer, using strict models with `extra='forbid'`. Keep the hand-authored, checked-in JSON Schemas (OQ-004) as the durable EXTERNAL artifact contract rather than deriving them solely from models; use pydantic's JSON Schema emission only to cross-check the hand-authored schemas in tests.
+
+**Supporting information:** `docs/research/python-library-research.md` (owner ChatGPT Deep-Research): the four JSON artifacts plus config snapshots and action records are structured enough that plain dicts become a defect source; pydantic v2.12 added initial 3.14 support and can emit Draft 2020-12 JSON Schema. This complements OQ-018 — `jsonschema` validates the external artifact contract, pydantic guards internal construction.
+
+**Reasoning:** At 100k-file scale, unvalidated dicts let shape errors reach disk and downstream commands before anything catches them; a strict model layer fails fast at construction. Keeping hand-authored schemas as the external contract preserves the OQ-004 durability guarantee independent of the model library.
+
+**Decision impact:** Adds a §8.6 runtime dependency row; sets the internal representation for the OQ-004 schema work at MS-1; establishes the model-vs-hand-authored-schema division of labor with OQ-018.
+
+**Downstream impact:** OQ-004 artifact schemas would be authored as (or cross-checked against) pydantic models; introduces a models module under `src/docmend/`; couples to OQ-018 (external validator) and the schema-versioning policy. If rejected, artifacts use dataclasses/TypedDicts plus manual validation.
+
+#### My Comments
+
+### OQ-022 — frontmatter YAML codec (ruamel.yaml vs PyYAML)
+
+**Priority:** P2 decision · Gap-analysis priority: Medium  
+**Owner:** owner  
+**Needed by:** Frontmatter validation work (gated by OQ-009)  
+**Blocking:** No  
+**Spec references:** `docs/specs/docmend.md` §9, FR-016, DR-005, §8.6 · Related: OQ-009, OQ-013
+
+Choose the YAML library for parsing and (later) emitting product frontmatter: `ruamel.yaml` (round-trip, key-order/comment preservation) or `PyYAML` (mainstream, but needs a custom duplicate-key-rejecting loader). Add the corresponding §8.6 row.
+
+#### Agent notes
+
+**Recommendation:** Use `ruamel.yaml` behind a `FrontmatterCodec` abstraction (duplicate-key rejection, controlled quoting/block scalars, Pandoc-compatible emission), with `PyYAML` plus a custom duplicate-key-rejecting loader as the documented fallback if ruamel.yaml's Beta / single-maintainer risk becomes unacceptable. Regardless of choice, override the timestamp/date constructor so `date` and `date-time` scalars stay strings — otherwise JSON Schema `format` assertions never fire (`docs/research/safe-yaml-loading.md`, OQ-013). Gate runtime-vs-fixture-only timing on OQ-009.
+
+**Supporting information:** `docs/research/python-library-research.md` (ruamel.yaml round-trip fidelity + 3.14 compat; Beta/single-maintainer caveat; PyYAML mainstream but insufficient for duplicate-key safety without a custom loader) and `docs/research/safe-yaml-loading.md` (both PyYAML and ruamel silently coerce ISO-date scalars to `datetime`, breaking string-only `format` assertions — the loader must override the timestamp constructor). Pandoc requires quoting/block-scalar discipline for colons, backslashes, and blank lines (C-006).
+
+**Reasoning:** Frontmatter needs stricter guarantees than 'parse some YAML' — duplicate-key rejection (C-006/FR-016), controlled emission, and string-preserved dates. The codec choice decides whether those safety properties are built in (ruamel) or must be hand-rolled (PyYAML).
+
+**Decision impact:** Adds a §8.6 row; sets the `FrontmatterCodec` implementation for FR-016 validation and any OQ-009 emission; binds the date-string-preservation requirement into the loader.
+
+**Downstream impact:** If ruamel.yaml: a heavier but round-trip-safe codec. If PyYAML: a custom loader with duplicate-key + timestamp overrides. Timing (MS-5/fixtures vs. core runtime) follows the OQ-009 emission-scope decision; couples to OQ-013 (schema detail) and the missing `schemas/frontmatter.schema.json`.
 
 #### My Comments
 

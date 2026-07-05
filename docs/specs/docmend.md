@@ -27,8 +27,40 @@ related:
 | Version | Date | Author | Change |
 | --- | --- | --- | --- |
 | 0.1 | `2026-07-05` | `coding-agent` | Initial draft, migrated from the pre-standard `docmend-spec-draft` |
+| 0.2 | `2026-07-05` | `coding-agent` | Incorporated `docs/research/` findings: frontmatter validation gotchas (C-006, FR-016, DR-005, §9), OQ-008 storage-scale caveat, OQ-011 added, §18.6 backup-tooling example |
 
 **Spec lifecycle:** This document is **living until `approved`**, then **change-controlled**: post-approval edits require a new revision row and, for scope-affecting changes, re-approval by the owner. Implementation deviations are recorded in the [Deviations Log](#deviations-log), not silently patched into requirements. When replaced, set `status: superseded` and `superseded_by:` in the frontmatter.
+
+---
+
+- [Revision History](#revision-history)
+- [1. Purpose \& Background](#1-purpose--background)
+- [2. Scope](#2-scope) - [2.1 In Scope](#21-in-scope) - [2.2 Out of Scope (Non-Goals — never)](#22-out-of-scope-non-goals--never) - [2.3 Won't Have in v1 (deferred — not never)](#23-wont-have-in-v1-deferred--not-never) - [2.4 Boundaries](#24-boundaries)
+- [3. Context](#3-context) - [3.1 Current State](#31-current-state) - [3.2 Target State](#32-target-state) - [3.3 Assumptions](#33-assumptions) - [3.4 Constraints](#34-constraints)
+- [4. Goals](#4-goals)
+- [5. Stakeholders and Users](#5-stakeholders-and-users)
+- [6. Glossary](#6-glossary)
+- [7. Requirements](#7-requirements) - [7.1 Functional Requirements](#71-functional-requirements) - [7.2 Non-Functional Requirements](#72-non-functional-requirements) - [7.3 Interface Requirements](#73-interface-requirements) - [7.4 Data Requirements](#74-data-requirements)
+- [8. Architecture and Design](#8-architecture-and-design) - [8.1 Architecture Summary](#81-architecture-summary) - [8.2 Architecture Views](#82-architecture-views) - [8.2.1 Context View](#821-context-view) - [8.2.2 Container / Deployment View](#822-container--deployment-view) - [8.2.3 Component View](#823-component-view) - [8.3 Design Decisions](#83-design-decisions) - [8.4 Solution Alternatives Considered](#84-solution-alternatives-considered) - [8.5 Design Constraints](#85-design-constraints) - [8.6 Dependency Policy](#86-dependency-policy)
+- [9. Data Model](#9-data-model)
+- [10. Behavior and Workflows](#10-behavior-and-workflows) - [10.1 Primary Workflow](#101-primary-workflow) - [10.2 Alternate Workflows](#102-alternate-workflows) - [10.3 Edge Cases](#103-edge-cases) - [10.4 State Transitions](#104-state-transitions)
+- [11. UI Pages / API Endpoints](#11-ui-pages--api-endpoints)
+- [12. Error Handling and Recovery](#12-error-handling-and-recovery) - [12.1 Expected Failures](#121-expected-failures) - [12.2 Retry and Idempotency](#122-retry-and-idempotency) - [12.3 Rollback / Recovery](#123-rollback--recovery)
+- [13. Security and Privacy](#13-security-and-privacy) - [13.1 Authentication](#131-authentication) - [13.2 Authorization](#132-authorization) - [13.3 Secrets](#133-secrets) - [13.4 Sensitive Data](#134-sensitive-data) - [13.5 Threats and Mitigations](#135-threats-and-mitigations) - [13.6 Hardening Checklist](#136-hardening-checklist)
+- [14. Capacity and Scale Assumptions](#14-capacity-and-scale-assumptions)
+- [15. Risks](#15-risks)
+- [16. Compliance, Licensing, and Data Rights](#16-compliance-licensing-and-data-rights)
+- [17. Testing and Acceptance](#17-testing-and-acceptance) - [17.1 Definition of Done](#171-definition-of-done) - [17.2 Test Strategy](#172-test-strategy) - [17.3 Requirement-to-Test Traceability](#173-requirement-to-test-traceability)
+- [18. Deployment and Operations](#18-deployment-and-operations) - [18.1 Runtime Environment](#181-runtime-environment) - [18.2 Configuration](#182-configuration) - [18.3 Deployment Flow](#183-deployment-flow) - [18.4 Rollout Controls](#184-rollout-controls) - [18.5 Observability](#185-observability) - [18.6 Backup and Disaster Recovery](#186-backup-and-disaster-recovery) - [18.7 Documentation Deliverables](#187-documentation-deliverables)
+- [19. Implementation Plan](#19-implementation-plan) - [Waves](#waves) - [MS-0 — Foundation](#ms-0--foundation) - [MS-1 — Core workflow](#ms-1--core-workflow) - [MS-2 — Domain logic](#ms-2--domain-logic) - [MS-3 — User and admin experience](#ms-3--user-and-admin-experience) - [MS-4 — Automation / notifications / external actions](#ms-4--automation--notifications--external-actions) - [MS-5 — Hardening and production readiness](#ms-5--hardening-and-production-readiness) - [Milestone Summary](#milestone-summary)
+- [20. Success Evaluation](#20-success-evaluation)
+- [21. Open Questions and Decisions](#21-open-questions-and-decisions)
+- [Deviations Log](#deviations-log)
+- [References](#references) - [Standards](#standards) - [Project References](#project-references)
+- [Appendix A: ID Conventions](#appendix-a-id-conventions)
+- [Appendix B: Agent Implementation Contract](#appendix-b-agent-implementation-contract) - [B.1 Implementation Rules](#b1-implementation-rules) - [B.2 Prohibited Behaviors](#b2-prohibited-behaviors) - [B.3 Required Completion Report (verification gate)](#b3-required-completion-report-verification-gate) - [B.4 Session Handoff](#b4-session-handoff)
+- [Appendix C: Optional Modules](#appendix-c-optional-modules) - [C.1 External Data Integration](#c1-external-data-integration) - [C.2 Scheduled Work, Throttling, and Circuit Breaker](#c2-scheduled-work-throttling-and-circuit-breaker) - [C.3 Identity / Entity Resolution](#c3-identity--entity-resolution) - [C.4 Scoring / Ranking / Decision Logic](#c4-scoring--ranking--decision-logic) - [C.5 Relational Schema Examples](#c5-relational-schema-examples)
+- [Appendix D: Tailoring Guide](#appendix-d-tailoring-guide)
 
 ---
 
@@ -132,6 +164,7 @@ A normalized corpus in which every in-scope document is UTF-8 (no BOM), LF-termi
 | C-003 | The file volume precludes manual review of results; safety must be mechanical (backups, dry-run, gates, reports), never "check it by hand." | Library scale (§1); owner requirement. |
 | C-004 | Generated documents must remain Pandoc-compatible: one YAML metadata block, first in the file, `---` delimited. | Pandoc CommonMark-family reader requirements (see References). |
 | C-005 | The product frontmatter schema is governed by this spec alone — never validated or reformatted by the repository's markdownlint/Prettier tooling. | ADR 0001 (Markdown Frontmatter Standard deliberately not adopted). |
+| C-006 | Generated frontmatter scalar values are plain data, never authored Markdown formatting — Pandoc parses YAML metadata leaf scalars as Markdown even for CommonMark-family readers, so unconstrained formatting in fields like `description` would blur metadata and body semantics. | `docs/research/managing-pandoc-markdown-and-strict-yaml-frontmatter.md`. |
 
 ---
 
@@ -198,7 +231,7 @@ Define every domain term an implementer could misread. Ambiguous terminology is 
 | FR-013 | The system shall resume an interrupted apply run without redoing completed work and without corrupting partially processed files. | Batch operations over 100k+ files will be interrupted; losing progress is unacceptable. | Kill an apply run mid-batch; re-invoking completes the remainder; final corpus and manifest are identical to an uninterrupted run. | Must |
 | FR-014 | The system shall provide a `verify` command that checks converted output: UTF-8 decodability, LF-only endings, frontmatter schema validity (where present), and manifest/hash consistency. | Verification is the only substitute for manual review at this scale. | Verify passes on a correctly converted corpus; each seeded defect class (bad encoding, CRLF, invalid frontmatter, hash mismatch) is individually caught. | Must |
 | FR-015 | The system shall skip and report — never guess and rewrite — files that are risky: apparent binary content, NUL bytes, decode-only-with-replacement-characters, or low detection confidence. | Conservatism is the core safety posture for corrupted/ambiguous input (G-005). | Each risky-file class in the weird-document corpus (§17.2) is skipped with a classified reason; none is modified. | Must |
-| FR-016 | The system shall validate generated frontmatter against the canonical schema (DR-005) during plan, apply, and verify. | Bad metadata must not quietly poison the corpus or downstream indexes. | An output with schema-violating frontmatter fails validation at each of the three stages in tests. | Must |
+| FR-016 | The system shall validate generated frontmatter against the canonical schema (DR-005) during plan, apply, and verify, rejecting duplicate frontmatter keys at YAML-parse time (before schema validation runs) and asserting (not merely annotating) `format`-typed fields such as dates. | Bad metadata must not quietly poison the corpus or downstream indexes; a permissive YAML parser silently collapses duplicate keys before schema validation ever sees them, and JSON Schema `format` is annotation-only by default — both are real, documented gaps that would otherwise let invalid metadata through undetected. | An output with schema-violating frontmatter fails validation at each of the three stages in tests; a fixture with duplicate frontmatter keys is rejected at parse time; a fixture with a malformed `format`-typed value (e.g. an invalid date string) is rejected, proving format assertion is enabled. | Must |
 | FR-017 | The system shall be idempotent: applying the same plan (or re-planning and applying over already-converted output) shall produce zero further changes. | Re-runs are inevitable in batch workflows; they must be safe. | Second apply over a converted corpus reports zero mutations; corpus hashes unchanged. | Must |
 | FR-018 | The system shall emit a machine-readable report (DR-003) for every plan and apply run, including per-file outcomes, errors, skip reasons, and summary counts. | Reports are the review surface replacing per-file manual inspection. | Report schema assertions in tests; counts reconcile with corpus state after the run. | Must |
 
@@ -238,7 +271,7 @@ Selection and transformation options (e.g. `--include`/`--exclude` patterns, `--
 | DR-002 | Plan | The system shall persist plans: inventory reference, config snapshot, planned actions, skip decisions, risk/conflict decisions, and source hashes validating that inputs have not changed. | JSON schema (OQ-004); every planned action carries the source hash it was decided on. | docmend |
 | DR-003 | Apply report | The system shall persist apply results: plan reference, dry-run flag, start/completion timestamps, per-file outcomes, before/after hashes, errors, skips, summary counts. | JSON schema (OQ-004); summary counts must equal per-file outcome totals. | docmend |
 | DR-004 | Backup/rename manifest | The system shall persist a reversible operation record per mutation: original path, target path, backup path (if any), before/after hashes, operation type, result status, error details. | JSON schema (OQ-004); sufficient to mechanically restore the pre-apply state. | docmend |
-| DR-005 | Frontmatter schema | The system shall maintain a canonical, versioned frontmatter schema in the repository (e.g. `schemas/frontmatter.schema.json`) and validate generated frontmatter against it (FR-016). | JSON Schema; required fields, generated fields, and structure per §9; schema version in `docmend.schema_version`. | docmend |
+| DR-005 | Frontmatter schema | The system shall maintain a canonical, versioned frontmatter schema in the repository (e.g. `schemas/frontmatter.schema.json`) and validate generated frontmatter against it (FR-016). | JSON Schema; required fields, generated fields, and structure per §9; schema version in `docmend.schema_version`; duplicate YAML keys rejected at the parser (not left to schema validation, which only sees already-collapsed input); JSON Schema `format` assertions (e.g. `date`, `date-time`) explicitly enabled in the validator rather than left as Draft 2020-12's annotation-only default. | docmend |
 
 Retention: artifacts and backups are retained until the user explicitly purges them; the tool never deletes its own manifests or backups (see §18.6).
 
@@ -362,6 +395,8 @@ Schema strategy:
 
 - Store the canonical schema in the repository, e.g. `schemas/frontmatter.schema.json` (DR-005).
 - Validate generated frontmatter during `plan`, `apply`, and `verify` (FR-016).
+- Reject duplicate frontmatter keys at YAML parse time, before schema validation — a permissive parser silently collapses duplicates, and schema validation only ever sees the already-collapsed result (C-006).
+- Treat frontmatter scalar values as plain data, never authored Markdown — Pandoc parses YAML metadata leaf scalars as Markdown even for CommonMark-family readers, so unconstrained formatting in fields like `description` would blur metadata and body semantics (C-006).
 - Keep Pandoc-recognized export metadata at the root: `title`, `author`, `date`, `lang`, `keywords`, `subject`, `description`, `abstract`.
 - Keep docmend-owned mechanical metadata under namespaced objects: `docmend`, `source`, `output`.
 - Keep personal-library taxonomy under predictable controlled root fields (`genre`, `status`, `story_type`, `rating`, `tags`), each controlled vocabulary documented (OQ-007).
@@ -370,7 +405,7 @@ Schema strategy:
 
 **Mechanical fields** (deterministically generated; regenerated by the tool, never hand-edited): `docmend.id` (stable document ID surviving renames and rewrites — never depend on filename alone), `docmend.schema_version`, `docmend.generated_at`, `docmend.conversion_version`, `source.original_path`, `source.original_extension`, `source.hash`, `source.size_bytes`, `source.detected_encoding` (name + confidence), `source.newline_style`, `output.hash`, `output.word_count`, `output.chapter_count`, `output.markdown_format` (expected value `pandoc`), `output.generated_by`.
 
-**Semantic fields** (require interpretation, heuristics, review, or external assistance; may begin unknown/inferred/low-confidence): `title` (required; may be inferred from filename or first heading when nothing better exists), `author`, `date` (prefer ISO 8601-compatible values), `lang` (BCP 47), `keywords`, `subject`, `description`, `abstract`, `tags`, the controlled-vocabulary fields `genre` / `status` / `story_type` / `rating`, and `deduplication` (cluster ID, canonical flag, match confidence — populated by WH-005 work later).
+**Semantic fields** (require interpretation, heuristics, review, or external assistance; may begin unknown/inferred/low-confidence): `title` (required; may be inferred from filename or first heading when nothing better exists), `author` (`list[str]`; Pandoc supports richer structured author objects, but those need custom export templates to render — keep any richer contributor data, if ever needed, in a separate internal namespace rather than the canonical `author` field), `date` (prefer ISO 8601-compatible values), `lang` (BCP 47), `keywords`, `subject`, `description`, `abstract`, `tags`, the controlled-vocabulary fields `genre` / `status` / `story_type` / `rating`, and `deduplication` (cluster ID, canonical flag, match confidence — populated by WH-005 work later).
 
 Initial required fields: `title`, `docmend.id`, `docmend.schema_version`, `source.original_path`, `source.hash`, `output.hash`.
 
@@ -755,7 +790,7 @@ The system's durable data is the **library itself** plus docmend's artifacts.
 
 | Asset | Backup Method | Frequency | Retention | Restore Test Cadence |
 | --- | --- | --- | --- | --- |
-| Original documents | Preservation strategy required by the FR-005 gate: library in Git (self-hosted host under evaluation, OQ-008), external backups, and/or tool-written backups. | Before every mutating run | Until user purge | Automated restore drill in the test suite (§17.2); manual drill before the first real-library apply. |
+| Original documents | Preservation strategy required by the FR-005 gate: library in Git, external backups, and/or tool-written backups; concrete tooling tracked in OQ-008, not yet decided. | Before every mutating run | Until user purge | Automated restore drill in the test suite (§17.2); manual drill before the first real-library apply. |
 | docmend artifacts (plans, reports, manifests) | Written alongside the run; covered by the user's normal backup regime. | Every run | Until user purge | Consistency checked by `verify` (FR-014). |
 
 Encryption and off-site policy for the user's backups are owned by the user's backup regime, not by docmend. Disaster scenarios covered: bad apply run, tool defect, interrupted batch. Explicitly not covered in v1: disk failure or loss of the whole machine (that is the user's general backup problem — the tool only guarantees it never makes an original unrecoverable _by its own actions_).
@@ -865,9 +900,10 @@ Questions may proceed on a recorded **current assumption** unless marked blockin
 | OQ-005 | Exact apply safety-gate check list. | The candidate set: valid plan; compatible tool version; source hashes match; preservation strategy satisfied; explicit collision/overwrite policy; low-confidence files skipped or explicitly allowed; dry-run default; output-path containment. | Yes | owner | MS-3 | Open |
 | OQ-006 | Exact `verify` semantics — which checks are in scope for v1? | The FR-014 set: UTF-8 decodability, LF endings, frontmatter validity where present, manifest/hash consistency, skipped-file accounting, artifact internal consistency. | No | owner | MS-4 | Open |
 | OQ-007 | Controlled vocabulary definitions for `genre`, `status`, `story_type`, `rating`, `lang`. | Placeholder values (`unknown`, `unrated`) legal per schema until vocabularies are documented. | No | owner | Frontmatter emission (OQ-009) | Open |
-| OQ-008 | Library version control: self-hosted Git (Gitea/Gogs/Forgejo — research exists in `docs/research/`) vs. external backups only? Public Git hosting is unsuitable for GBs of personal text. | Any single FR-005 preservation strategy suffices for v1; the Git decision is independent of tool implementation. | No | owner | First real-library apply | Open |
+| OQ-008 | Library version control: self-hosted Git (Gitea/Gogs/Forgejo) vs. external backups only vs. a heavier object-storage/versioning stack (lakeFS + MinIO + PostgreSQL, per `docs/research/self-hosted-corpus-storage-options.md`)? Public Git hosting is unsuitable for GBs of personal text. | Any single FR-005 preservation strategy suffices for v1; the storage decision is independent of tool implementation. **Scale caveat:** the research's lakeFS/MinIO/PostgreSQL/OpenSearch recommendation was sized for 1M+ documents / 50+ GB — an order of magnitude above this project's stated scale (§1, §14: >100k files, multiple GiB) — so a self-hosted Git forge (Gitea/Forgejo) or plain tool-written backups likely suffice without adopting that heavier stack. | No | owner | First real-library apply | Open |
 | OQ-009 | Is frontmatter _emission_ in v1 scope, or does v1 only pin the schema (DR-005) while emission lands with structural conversion (WH-004)? | Schema + validation machinery in v1 (FR-016 testable against fixtures); bulk emission deferred to structural conversion. | No | owner | MS-5 | Open |
 | OQ-010 | Concrete performance targets: acceptable full-library wall-clock, throughput, memory ceiling, parallelism defaults. | Structural criteria only for now (bounded memory, resumable); numbers set after MS-1 profiling on the synthetic corpus. | No | owner | MS-5 | Open |
+| OQ-011 | Should root frontmatter later include optional EPUB-export metadata fields (`identifier`, `rights`, `creator`, `cover-image`), and how would they relate to the existing `docmend.id`? | Not needed for v1 — no frontmatter emission is required until OQ-009 resolves scope. `docmend.id` remains the sole stable internal identifier regardless; Pandoc's `identifier` is an EPUB-facing publication field, never a substitute for it (`docs/research/managing-pandoc-markdown-and-strict-yaml-frontmatter.md`). | No | owner | WH-004 | Open |
 
 ---
 
@@ -901,7 +937,8 @@ Official sources behind the Markdown/frontmatter decisions (D-001, D-007, §9):
 - [Pandoc demos: conversion examples](https://pandoc.org/demos.html) — official HTML/PDF/EPUB/DOCX/Markdown conversion paths, including HTML-to-Markdown.
 - [CommonMark](https://commonmark.org/) — the unambiguous Markdown baseline and why interoperability needs one.
 - `docs/decisions/adr-0001-no-markdown-frontmatter-standard.md` — why the repo's frontmatter tooling never touches the product frontmatter (D-008).
-- `docs/research/` — self-hosted Git options research backing OQ-008.
+- `docs/research/self-hosted-corpus-storage-options.md` — self-hosted Git and object-storage options research backing OQ-008.
+- `docs/research/managing-pandoc-markdown-and-strict-yaml-frontmatter.md` — Pandoc/CommonMark/YAML validation research backing C-006, FR-016, DR-005, §9, and OQ-011.
 
 ---
 

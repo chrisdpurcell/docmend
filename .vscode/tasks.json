@@ -32,6 +32,12 @@
 			"type": "shell",
 			"command": "uv run pip-audit",
 			"problemMatcher": []
+		},
+		{
+			"label": "fix-spec-toc",
+			"type": "shell",
+			"command": "uv run python scripts/fix_spec_toc.py",
+			"problemMatcher": []
 		}
 	]
 }

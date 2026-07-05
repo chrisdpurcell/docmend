@@ -15,6 +15,7 @@ The full problem statement, design rationale, and requirements live in [`docs/sp
 - Build tooling now exists: `pyproject.toml`, `.python-version` (3.14), CI (`.github/workflows/check.yml`), and a `src/docmend/` + `tests/` skeleton. No conversion logic or CLI entry point yet — don't assume a runnable `docmend` command is present.
 - This repo has adopted four [Project Standards](https://github.com/L3DigitalNet/project-standards) — see the **[Project Standards](#project-standards)** section below for the map, the run-it commands, the one deliberate deviation, and the rules for changing standard-owned files. Follow those contracts; don't invent alternative tooling.
 - Task-tracking conventions are defined in [`TODO.md`](TODO.md) — read it before adding or completing tasks. Agent-added and user-added tasks live in separate sections with different completion rules; don't complete a user-added task unless asked.
+- Spec decision tracking lives in [`docs/open-questions.md`](docs/open-questions.md) and [`docs/resolved-questions.md`](docs/resolved-questions.md). `open-questions.md` is the formal queue of unresolved `OQ-###` decisions and blockers; `resolved-questions.md` is the companion record for settled `RQ-###` decisions that have not been folded into the spec or an ADR yet.
 - `docs/handoff.md` is for session handoff notes, it should be updated at checkpoints during sessions and fully updated at the end of each session. During the end-of-session handoff, the agent should prune old handoff comments to keep the file concise and relevant.
 
 ## Handling sensitive data (this repository is public)
@@ -143,7 +144,9 @@ The standard is **fully adopted**: [`docs/specs/docmend.md`](docs/specs/docmend.
 Rules for working with the spec:
 
 - Never hand-edit spec **structure** (section numbering, omission notes, frontmatter keys, table shapes) — use the CLI (`spec new`, `spec upgrade`, `spec next` for the next free ID). Editing prose and table _content_ within the existing structure is normal authoring.
+- If your editor auto-generates/refreshes a Table of Contents in `docs/specs/docmend.md`, its root entry (linking to the document's own H1 title) will always fail `spec validate`'s `SV-ANCHOR` check — the validator's anchor scan only indexes `##`–`####` headings, never H1. After the editor regenerates the ToC, run `uv run python scripts/fix_spec_toc.py` (idempotent — safe to run even if there's nothing to fix) before validating.
 - The spec's `<!-- fill in -->` gaps from the old draft were carried forward as `OQ-` rows in §21 — resolve them there (some are blocking for specific milestones), don't reinvent them.
+- Use [`docs/open-questions.md`](docs/open-questions.md) as the working decision backlog for open spec questions. When a question is settled, move its substance to [`docs/resolved-questions.md`](docs/resolved-questions.md) or the relevant ADR/spec section, and update any `OQ-###`/`RQ-###` references in the same change.
 - Implementation work is bound by the spec's Appendix B (Agent Implementation Contract): Must requirements are mandatory, deviations go in the Deviations Log, and completion claims require the §17.3 traceability matrix.
 
 ## Architecture Decision Records

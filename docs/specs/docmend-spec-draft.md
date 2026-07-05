@@ -37,15 +37,24 @@ The tooling is not necessarily intended to be limited to strictly producing the 
 ## Requirements
 
 - **Backup and version control:** Absolutely critical since the volume of files precludes complete manual review. The tool should be able to create backups of the original files before making any changes, and it should support version control systems (e.g., Git) for tracking changes and reverting if necessary.
+  - The manifest matters because rename operations are otherwise painful to undo.
+  - Preserve original data. For a large library, require at least one of these before apply mode:
+    - library is in Git (my library is GBs of text documents; public git solutions like GitHub or GitLab are unsuitable for hosting, but I am considering self-hosted solutions like Gitea or Gogs)
+    - external backups exist
+    - tool writes backups
+    - tool emits a reversible rename/write manifest
 - **Performance and scalability:** The tool should be able to handle large libraries of documents efficiently, with support for parallel processing and batch operations.
 - **Error handling and logging:** The tool should provide robust error handling and logging mechanisms to ensure that issues can be diagnosed and resolved quickly, including while in the middle of a batch operation.
 - **Resume and continuation:** The tool should be able to resume processing from where it left off in case of interruptions or failures, and it should support continuation of batch operations without losing progress.
 - **Logging and reporting:** The tool should provide detailed logging and reporting capabilities, including summaries of changes made, errors encountered, and statistics on the processing of documents.
 - **Collision handling:** The tool should be able to handle file name collisions and other conflicts gracefully, with options for renaming or overwriting files as needed.
 - **Encoding detection and handling:** The tool should be able to detect and handle different encoding formats and character sets, with options for converting to UTF-8 as needed.
+  - Encoding detection is not perfect. UTF-8, UTF-8 with BOM, Windows-1252, ISO-8859-1, and random legacy encodings can be ambiguous. The tool should never silently “fix” low-confidence files.
+  - `.txt` to `.md` is not always semantically correct. Renaming a file to Markdown does not make it Markdown. The tool should distinguish between _rename extension only_ and _convert document structure to Markdown_. Those are different problems.
 - **Include/exclude filters:** The tool should support include/exclude filters for processing specific files or directories, based on file name patterns, extensions, or other criteria.
 - **Idempotent operations:** The tool should be able to perform operations in an idempotent manner, meaning that running the same operation multiple times should produce the same result without introducing errors or inconsistencies.
 - **Extensive testing against "weird" documents:** The tool should be tested against a wide variety of poorly formatted and corrupted documents to ensure that it can handle edge cases and unexpected input gracefully since the full range of possible document anomalies is unknown.
+  - For risky files, prefer _skip and report_ over _guess and rewrite_. The tool should be conservative in its transformations, especially when dealing with potentially corrupted or ambiguous files.
 
 ## Architecture
 
@@ -125,23 +134,6 @@ For this kind of tool, prefer atomic replace over in-place mutation:
 6. fsync parent directory where practical
 
 Overkill for casual use, but correct for bulk destructive edits.
-
-## Key design warnings
-
-Encoding detection is not perfect. UTF-8, UTF-8 with BOM, Windows-1252, ISO-8859-1, and random legacy encodings can be ambiguous. The tool should never silently “fix” low-confidence files.
-
-For risky files, prefer _skip and report_ over _guess and rewrite_. The tool should be conservative in its transformations, especially when dealing with potentially corrupted or ambiguous files.
-
-`.txt` to `.md` is not always semantically correct. Renaming a file to Markdown does not make it Markdown. The tool should distinguish between _rename extension only_ and _convert document structure to Markdown_. Those are different problems.
-
-Preserve original data. For a large library, require at least one of these before apply mode:
-
-- library is in Git
-- external backup exists
-- tool writes backups
-- tool emits a reversible rename/write manifest
-
-The manifest matters because rename operations are otherwise painful to undo.
 
 ## CLI shape
 

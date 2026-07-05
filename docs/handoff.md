@@ -1,5 +1,15 @@
 # **Handoff** for llm-agent use
 
+## 2026-07-05 (session 3 — decision-question scaffolding)
+
+### Open-question decision support populated
+
+Populated `docs/open-questions.md` with decision-ready agent notes for OQ-001–OQ-014: each question now has a recommendation, supporting information, reasoning, and decision impact while preserving the owner-only `My Comments` blocks.
+
+- Highest-priority recommendations: approve the safe-migration-substrate v1 boundary (OQ-001), pin artifact JSON Schemas before MS-1 (OQ-004), require byte-preserving backup/snapshot/tool-backup storage in addition to the manifest (OQ-005), and choose in-place atomic writes for v1 unless an explicit output-root workflow is added (OQ-012).
+- Also added recommended defaults for resume, verify exit codes, controlled vocabularies, first real-library backup posture, frontmatter emission scope, EPUB metadata deferral, frontmatter unknown/null/status handling, and `apply --write`.
+- Verified: `npx prettier --check .` ✅ and `npx markdownlint-cli2 "**/*.md"` ✅.
+
 ## 2026-07-05 (session 2 — spec migration)
 
 ### Spec migrated to a conformant project-spec — spec CI is on

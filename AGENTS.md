@@ -15,7 +15,7 @@ The full problem statement, design rationale, and requirements live in [`docs/sp
 - No source code, tests, or build tooling exist yet — don't assume a `pyproject.toml`, test runner, or CLI entry point is present without checking first.
 - When implementation starts, use the `uv-strict-python` conventions (uv for envs/deps, Ruff, BasedPyright strict, pytest + coverage, pip-audit) rather than inventing tooling ad hoc.
 - Task-tracking conventions are defined in [`TODO.md`](TODO.md) — read it before adding or completing tasks. Agent-added and user-added tasks live in separate sections with different completion rules; don't complete a user-added task unless asked.
-- `docs/handoff.doc` is currently just a placeholder header for session handoff notes.
+- `docs/handoff.md` is for session handoff notes, it should be updated at checkpoints during sessions and fully updated at the end of each session. During the end-of-session handoff, the agent should prune old handoff comments to keep the file concise and relevant.
 
 ## Handling sensitive data (this repository is public)
 

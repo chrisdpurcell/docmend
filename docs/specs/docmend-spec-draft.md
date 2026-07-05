@@ -34,6 +34,47 @@ The tooling is not necessarily intended to be limited to strictly producing the 
 - **Encoding:** UTF-8
 - **Line Endings:** LF (UNIX-style)
 
+## Scope and Phasing
+
+This project has two distinct kinds of work:
+
+1. Safe migration substrate: inventory, planning, backups, reversible writes, encoding normalization, newline normalization, mechanical renames, reporting, resume, and verification.
+2. Semantic cleanup: meaningful file names, document reconstruction, spelling and grammar correction, HTML cleanup, metadata enrichment, and Markdown restructuring.
+
+Start with the safe migration substrate. Later phases can build on it, but they should not be required for the first working version.
+
+### Phase 1: Safe migration substrate
+
+<!-- Fill this in with the exact first-version boundary. -->
+
+Expected shape:
+
+- scan files without modifying them
+- produce a structured inventory
+- produce a reviewable plan
+- apply only conservative, mechanical transformations
+- skip ambiguous or risky files
+- write reports and manifests
+- support dry-run, backup, resume, and verify flows
+
+### Later phases
+
+<!-- Fill this in as the tool's semantic cleanup strategy becomes clearer. -->
+
+Possible later areas:
+
+- HTML-to-Markdown conversion quality
+- meaningful document titles and filenames
+- frontmatter enrichment
+- spelling, grammar, and punctuation repair
+- broken paragraph reconstruction
+- generated summaries or classifications
+- search/index integration
+
+### Explicit non-goals for the first version
+
+<!-- Fill this in before implementation starts. The first version should have clear boundaries so it is not judged against the entire cleanup problem. -->
+
 ## Requirements
 
 - **Backup and version control:** Absolutely critical since the volume of files precludes complete manual review. The tool should be able to create backups of the original files before making any changes, and it should support version control systems (e.g., Git) for tracking changes and reverting if necessary.
@@ -55,6 +96,145 @@ The tooling is not necessarily intended to be limited to strictly producing the 
 - **Idempotent operations:** The tool should be able to perform operations in an idempotent manner, meaning that running the same operation multiple times should produce the same result without introducing errors or inconsistencies.
 - **Extensive testing against "weird" documents:** The tool should be tested against a wide variety of poorly formatted and corrupted documents to ensure that it can handle edge cases and unexpected input gracefully since the full range of possible document anomalies is unknown.
   - For risky files, prefer _skip and report_ over _guess and rewrite_. The tool should be conservative in its transformations, especially when dealing with potentially corrupted or ambiguous files.
+
+## Metadata and Naming Strategy
+
+The tool should separate mechanical metadata from semantic metadata.
+
+### Mechanical metadata
+
+<!-- Fill this in with fields that can be generated deterministically from the source file or conversion process. -->
+
+Examples:
+
+- stable ID
+- original path
+- source hash
+- output hash
+- import batch
+- conversion version
+- detected encoding
+- newline style
+- word count
+- generated timestamp
+
+### Semantic metadata
+
+<!-- Fill this in with fields that require interpretation, heuristics, review, or external assistance. -->
+
+Examples:
+
+- title
+- author
+- date
+- tags
+- genre
+- status
+- language
+- story type
+- rating
+
+### Naming policy
+
+<!-- Fill this in with the policy for file and directory naming. -->
+
+Questions to resolve later:
+
+- When is a filename changed mechanically?
+- When is a meaningful rename allowed?
+- How are collisions resolved?
+- How are stable IDs preserved across renames?
+- How does the tool record old path to new path mappings?
+
+## Durable Artifacts
+
+The tool should define stable, machine-readable artifacts before implementation.
+
+These contracts can start small, but they should be explicit because they carry safety, resumability, and auditability.
+
+### Inventory
+
+<!-- Fill this in with the top-level shape of a scan result. -->
+
+Likely contents:
+
+- source root
+- scan configuration
+- scan timestamp
+- per-file records
+- skipped files and reasons
+- aggregate counts
+
+### Plan
+
+<!-- Fill this in with the top-level shape of a plan file. -->
+
+Likely contents:
+
+- source inventory reference
+- config snapshot
+- planned actions
+- skip decisions
+- risk/conflict decisions
+- source hashes used to validate that inputs have not changed
+
+### Apply report
+
+<!-- Fill this in with the top-level shape of an apply result. -->
+
+Likely contents:
+
+- plan reference
+- dry-run flag
+- started/completed timestamps
+- per-file outcomes
+- before/after hashes
+- errors
+- skipped files
+- summary counts
+
+### Backup and rename manifest
+
+<!-- Fill this in with the reversible operation record. -->
+
+Likely contents:
+
+- original path
+- target path
+- backup path, if any
+- before/after hashes
+- operation type
+- result status
+- error details
+
+### Frontmatter schema
+
+<!-- Fill this in with the schema strategy for generated Markdown files. -->
+
+Questions to resolve later:
+
+- Where does the schema live?
+- Which fields are required?
+- Which fields are generated?
+- Which vocabularies are controlled?
+- How are unknown or missing values represented?
+
+## Apply Safety Gate
+
+`apply` should refuse dangerous work unless the required safety conditions are met.
+
+<!-- Fill this in with the exact gate before implementation. -->
+
+Possible gate checks:
+
+- plan file is valid
+- plan was created by a compatible tool version
+- source files still match the hashes recorded in the plan
+- backup, Git, external backup, or reversible manifest strategy is configured
+- collisions and overwrites have an explicit policy
+- low-confidence encodings are skipped or explicitly allowed
+- dry-run is the default unless the user opts into writes
+- output paths stay inside the intended root
 
 ## Architecture
 
@@ -134,6 +314,33 @@ For this kind of tool, prefer atomic replace over in-place mutation:
 6. fsync parent directory where practical
 
 Overkill for casual use, but correct for bulk destructive edits.
+
+### Resume and continuation model
+
+<!-- Fill this in with the chosen resume strategy. -->
+
+Questions to resolve later:
+
+- Is resume based on the plan file, an apply journal, per-file result records, or a combination?
+- How does the tool decide a file is already complete?
+- How are partial writes detected?
+- Can failed files be retried independently?
+- How does resume interact with backups and manifests?
+
+### Verification layer
+
+<!-- Define what `docmend verify` proves. -->
+
+Possible verification categories:
+
+- files decode as UTF-8
+- files use LF line endings
+- generated Markdown frontmatter validates against the schema
+- source/output hashes match the manifest
+- backup records are present for applied changes
+- skipped files are accounted for
+- no unexpected files changed
+- reports and manifests are internally consistent
 
 ## CLI shape
 

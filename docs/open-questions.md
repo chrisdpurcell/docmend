@@ -6,6 +6,7 @@
 - **Terminology:**
   - _open question_ (`OQ-###`) is a decision still to be made — the primary unit of this document.
   - _resolved question_ (`RQ-###`, already settled) lives in the companion file [`resolved-questions.md`](resolved-questions.md).
+- **Priority scale:** legacy OQ-001..014 use `P0 blocker` / `P1 near-blocker` / `P2 decision`. OQ-015+ (added by the 2026-07-05 gap analysis) carry both that label and a High / Medium / Low gap-analysis priority; the full ranked register with downstream-impact analysis lives in [`gap-analysis.md`](gap-analysis.md).
 
 ## Table of Contents
 
@@ -27,6 +28,12 @@
     - [OQ-012 — in-place mutation vs separate output root](#oq-012--in-place-mutation-vs-separate-output-root)
     - [OQ-013 — frontmatter required/null/omitted/status details](#oq-013--frontmatter-requirednullomittedstatus-details)
     - [OQ-014 — real-write CLI/config opt-in](#oq-014--real-write-cliconfig-opt-in)
+    - [OQ-015 — encoding detector, confidence signal, and dual skip thresholds](#oq-015--encoding-detector-confidence-signal-and-dual-skip-thresholds)
+    - [OQ-016 — CPU-bound concurrency primitive for the Python 3.14 target](#oq-016--cpu-bound-concurrency-primitive-for-the-python-314-target)
+    - [OQ-017 — structured logging library, format, and verbosity mapping](#oq-017--structured-logging-library-format-and-verbosity-mapping)
+    - [OQ-018 — JSON Schema validator library selection](#oq-018--json-schema-validator-library-selection)
+    - [OQ-019 — property-based testing dependency (Hypothesis) approval](#oq-019--property-based-testing-dependency-hypothesis-approval)
+    - [OQ-020 — generic-tool genericity vs purpose-built personal taxonomy](#oq-020--generic-tool-genericity-vs-purpose-built-personal-taxonomy)
   - [How to maintain this document](#how-to-maintain-this-document)
 
 ## Open questions
@@ -89,6 +96,8 @@ For v1 collision behavior, keep the existing policy set:
 
 **Decision impact:** This unblocks plan/report/manifest schema fields for `source_path`, `target_path`, `docmend.id`, collision status, and path-history records.
 
+**Research update (2026-07-05 gap analysis):** Research (docs/research/stable-document-id-scheme.md, 18 citations) resolves the two open sub-questions this OQ leaves implicit. (1) Generation scheme: adopt UUIDv7 via Python 3.14's stdlib uuid.uuid7() (RFC 9562 §5.7) — zero-dependency, standards-based, time-ordered, and already matched to requires-python>=3.14. Content-derived (UUIDv3/v5, hash), path-derived, and monotonic-counter schemes are disqualified by construction because the ID must survive full rewrites and OQ-002 already forbids filename-derived identity. (2) Identity recovery on re-scan (currently unspecified and the actual source of truth): use a 3-tier algorithm — trust a schema-valid frontmatter docmend.id if present; else match the manifest by original_path/target_path with hash confirmation, then by content-hash (git-rename-detection style) when frontmatter is stripped and the file was also moved; else mint a new UUIDv7 and set an explicit 'identity not recoverable' report flag (extending skip-and-report to identity). Calibre (UUID in an OPF sidecar) and beets (MusicBrainz ID + AcoustID fallback) corroborate the stored-ID-first, content-lookup-fallback shape.
+
 #### My Comments
 
 ### OQ-003 — resume model
@@ -117,6 +126,8 @@ The minimum resume contract should be:
 **Reasoning:** A plan-only resume cannot know what actually completed after an interruption. A final-only manifest is unsafe because a crash can lose the record. Incremental manifest/report records give docmend enough durable state to resume without redoing completed work or guessing.
 
 **Decision impact:** This should be settled before OQ-004, because inventory/plan/report/manifest schemas need stable run IDs, action IDs, operation status, source hashes, output hashes, timestamps, and error classifications.
+
+**Research update (2026-07-05 gap analysis):** Two research inputs sharpen the resume contract. (1) docs/research/append-safe-manifest-format.md: the manifest must be NDJSON (one schema-valid object per line, one file per apply run), each record fsync'd immediately, so resume/reconciliation reads a durable per-record log; implement a Redis-AOF-style rule that discards only a torn trailing line and hard-aborts on a non-trailing parse failure rather than silently dropping it. (2) The resume model should also state whether scan and plan checkpoint or restart-from-scratch (GAP-25) — currently only apply resume is defined (FR-013/AW-001), yet plan's encoding detection over 100k+ files is expensive to redo against OQ-010's 8-hour pressure. The action-ID assumed here should be promoted into DR-002's binding plan schema (GAP-28).
 
 #### My Comments
 
@@ -152,6 +163,8 @@ For symlinks, recommend:
 
 **Decision impact:** This is a P0 blocker for scan/plan/apply/verify implementation and should produce concrete schema files plus fixture artifacts before broad behavior coding.
 
+**Research update (2026-07-05 gap analysis):** Multiple research reports feed the schema freeze and should be reconciled together before MS-1. Manifest representation: use NDJSON per apply run, not a single JSON document — reword IR-007's blanket 'as JSON' to be per-artifact (single document for inventory/plan/report; JSON Lines for the manifest) — because a single JSON doc cannot be appended crash-safely (docs/research/append-safe-manifest-format.md). Manifest granularity: append-only per-run ledgers are the permanent source of truth plus a small regenerable end-of-run 'latest state per path' index for fast multi-run restore lookups (GAP-30). Identity fields needed: run-ID (GAP-27, undefined), per-action ID (GAP-28), UUIDv7 docmend.id (GAP-26). Symlink (GAP-31) and hardlink (GAP-32) record shapes are unspecified. Schema versioning: MAJOR.MINOR per schema, strict additionalProperties:false, with an honest backward-only compatibility policy and a frontmatter_migrate planned-action for corpus migration (docs/research/json-schema-versioning-migration.md). Path-containment and filesystem-durability classification fields (docs/research/path-containment-toctou.md, docs/research/atomic-write-filesystem-semantics.md) should be threaded into the plan/apply/report/manifest artifacts. Note the §17.3 traceability matrix is missing all IR-/DR- rows (GAP-53).
+
 #### My Comments
 
 ### OQ-005 — apply safety gate and preservation semantics
@@ -185,6 +198,8 @@ Do **not** count a manifest by itself as a preservation strategy for content-cha
 **Reasoning:** The dangerous failure mode is a successful rewrite with no recoverable original. The safety gate must prove both "we can write safely" and "we can undo the write mechanically."
 
 **Decision impact:** This should update FR-005 language eventually: "reversible manifest" is required for docmend operations, but only a byte-preserving backend satisfies preservation for content rewrites.
+
+**Research update (2026-07-05 gap analysis):** Research converts several self-declared gate checks into verified ones. Backup integrity (docs/research/backup-integrity-verification.md): make FR-006 verify-then-mutate (fsync backup, re-read, re-hash, compare to plan's source.hash before mutating; record backup_verified; ERR-004 on mismatch), and substantiate preservation per-file not per-run — for Git require a non-bare tree, all covered files tracked, and is_dirty(path=covered_paths, untracked_files=True) is False (explicitly overriding GitPython's untracked_files=False default) with HEAD hexsha as restore anchor; raise 'external backups declared' from a bare boolean to a recency-checked attestation; re-check at a bounded interval during long runs. Restore (docs/research/restore-from-manifest-design.md): add a first-class docmend restore command symmetric to apply, replaying manifest records per docmend.id in reverse-chronological (LIFO) order, and pin a per-manifest-record preservation.kind/preservation.ref field now (this is the only hard blocker to starting restore); scope v1 automated restore to tool_backup so it is decoupled from OQ-008. Gate test strategy (docs/research/combinatorial-safety-gate-testing.md): treat the ~10 checks as pure independent predicates evaluated every run with a fixed priority-ordered deterministic blocking_reason plus an all_failures list, tested with allpairspy pairwise coverage (t=3 for the preservation/manifest/backup trio). Add a per-mount disk-space preflight (GAP-38) and the backup-dir-inside-source-root refusal (GAP-36) as gate checks. The schema-version-mismatch decision table (docs/research/json-schema-versioning-migration.md) belongs in this gate too.
 
 #### My Comments
 
@@ -222,6 +237,8 @@ For v1, verify should check:
 **Reasoning:** The user cannot inspect 100k+ files manually. `verify` needs to be strict enough to be the machine substitute for manual review, and its exit codes need to be simple enough for scripts and agents to interpret reliably.
 
 **Decision impact:** This guides CLI tests, seeded-defect fixtures, report schema fields, and release/rollout gates.
+
+**Research update (2026-07-05 gap analysis):** Extend the recommended 0/1/2/3 taxonomy from verify-only to a single tool-wide contract applied uniformly to scan/plan/apply/verify/restore (GAP-11), so every 'exits non-zero' acceptance criterion cites a specific code and driver scripts/agents can distinguish success-with-skips from partial failure from invocation error from safety refusal. Also resolve that verify has no documented way to receive its manifest/report/plan inputs (GAP-12): add explicit --manifest/--report/--plan flags to IR-004 or a run-ID-keyed sidecar-discovery convention. restic's small stable exit-code taxonomy (0/1/2/3/10/11/12/130) is cited precedent (docs/research/restore-from-manifest-design.md).
 
 #### My Comments
 
@@ -315,6 +332,8 @@ In v1, implementers should not:
 
 **Decision impact:** This reduces v1 scope and gates OQ-007, OQ-011, and OQ-013 behind schema/validation work rather than immediate library mutation.
 
+**Research update (2026-07-05 gap analysis):** Reconcile the FR-016-vs-FR-014 conditionality contradiction (GAP-55) as part of this decision: FR-016 (Must) is written as unconditional 'validate generated frontmatter' with no 'where present' qualifier, but this OQ's recommendation that v1 emits no bulk frontmatter would make FR-016 a no-op on every real run. Add explicit frontmatter-absent behavior so the Must requirement is conditioned on the emission-scope decision. Also note §9's null-heavy worked example and the missing schemas/frontmatter.schema.json (DR-005, confirmed absent) must be produced/rewritten together once emission scope and OQ-013 resolve (GAP-56).
+
 #### My Comments
 
 ### OQ-010 — performance targets
@@ -342,6 +361,8 @@ Treat these as acceptance targets for MS-5, not MS-1/MS-2 blockers.
 **Reasoning:** Early numeric targets are useful only as a sanity scale. Correctness, resume, and restore matter more than raw throughput because the workflow can run unattended across sessions.
 
 **Decision impact:** MS-5 gets measurable pass/fail criteria without forcing premature optimization into the core workflow.
+
+**Research update (2026-07-05 gap analysis):** A profiling spike (docs/research/batch-throughput-and-capacity.md, 5,000 synthetic files, Python 3.14.6, local SSD) measured 2,636-4,036 files/min and ~49 MiB peak RSS — clearing this OQ's 500-1,000 files/min floor by 4-8x and its 512 MiB ceiling with wide margin, so the provisional targets are conservative, not infeasible; adopt them as regression floors/ceilings and consider adding a <2h 'typical' expectation while keeping 8h as an outer bound. The I/O/fsync write stage dominates (parent-dir fsync adds ~7.9 ms/file), not CPU-bound detection/hashing. Concurrency primitive (docs/research/python-314-concurrency-model.md): adopt ProcessPoolExecutor with forkserver, default workers='auto' (os.process_cpu_count()). Add a per-mount disk-space preflight (~1.15x source on the backup mount), a Rich progress design (2-4 Hz, 60-120s speed window) plus a TTY-independent heartbeat line, and keep the full 100k scale test out of the default CI gate in favor of a scheduled/workflow_dispatch job (GAP-54).
 
 #### My Comments
 
@@ -439,6 +460,8 @@ metadata_status:
 
 **Decision impact:** This should be resolved before frontmatter schema files are written. The current example in the spec should then be updated to match the chosen convention.
 
+**Research update (2026-07-05 gap analysis):** Research adds a concrete parser-level constraint to the schema-detail decision (docs/research/safe-yaml-loading.md): both PyYAML and ruamel.yaml silently coerce unquoted ISO-date-like scalars into native datetime.date/datetime objects at parse time, which breaks JSON Schema 'format' assertions (they apply only to string instances). The frontmatter loader's timestamp constructor must be overridden to keep date/date-time scalars as strings so FR-016's 'malformed date is rejected' criterion actually fires. This reinforces the omit-by-default (not null) recommendation and the required-mechanical-fields set, and it should be captured alongside the frontmatter schema file when OQ-009 resolves emission scope.
+
 #### My Comments
 
 ### OQ-014 — real-write CLI/config opt-in
@@ -466,6 +489,150 @@ Suggested behavior:
 **Reasoning:** `--write` is blunt and hard to misunderstand. Names like `--no-dry-run` are technically precise but easier to miss in shell history and logs.
 
 **Decision impact:** This unblocks CLI tests, docs, safety-gate tests, and the command examples in §10.1/§18.2.
+
+#### My Comments
+
+### OQ-015 — encoding detector, confidence signal, and dual skip thresholds
+
+**Priority:** P0 blocker · Gap-analysis priority: High  
+**Owner:** owner  
+**Needed by:** MS-2  
+**Blocking:** Yes  
+**Spec references:** `docs/specs/docmend.md` FR-007, §18.2 encoding.fail_below_confidence, A-003, G-005, §8.6 · Related: OQ-001
+
+Confirm charset-normalizer as FR-007's sole detector, define the decode-confidence score as 1.0 - CharsetMatch.chaos, keep the 0.80 fail_below_confidence default, and set a second independent skip gate keyed on non-ASCII byte count (default in the 8-20 range, encoding-family dependent).
+
+#### Agent notes
+
+**Recommendation:** Keep charset-normalizer only (do not add chardet — active licensing dispute, or faust-cchardet/uchardet — no 3.14 wheels/no confidence API). Adopt confidence = 1.0 - CharsetMatch.chaos, the library's own shipping chardet-compat formula (with the -0.2 penalty below 32 bytes), recording chaos/coherence/language separately as provenance. Keep the 0.80 threshold (always exceeds the worst-case penalized 0.70). Add a non-ASCII-byte-count floor as a second, independent skip gate, with the exact default validated against the weird-document corpus.
+
+**Supporting information:** Report docs/research/encoding-detection-benchmark.md (20 citations): charset-normalizer 3.x CharsetMatch has no .confidence, only chaos/coherence; legacy detect() shim computes 1.0-chaos; documented GitHub issue #391 shows a 38-byte ASCII+1-byte string misdetected as Big5 at chaos=0.0 (max confidence, wrong) that no confidence threshold catches; Sivonen/chardetng convergence study shows windows-1252 needs ~20 and CJK ~10 non-ASCII bytes for reliable detection — so byte length is the wrong unit and a non-ASCII count floor is the right second gate.
+
+**Reasoning:** The threshold governs false-skip/false-accept rates for the core safety premise; a single confidence scalar provably cannot catch the short-low-entropy failure mode that this .txt-heavy library is full of, so a second independent gate is required, not optional.
+
+**Decision impact:** Unblocks MS-2 transform hardening with an evidence-backed decode/skip contract; without it FR-007 references a confidence API that does not exist as specified.
+
+**Downstream impact:** Adds a non-ASCII-floor config key to §18.2, adds chaos/coherence/language provenance fields to the inventory schema (feeds OQ-004), reworks FR-007/FR-016 wording, and adds the report's fixture set to §17.2; also fixes GAP-43 (confidence-API mismatch) in the same change.
+
+#### My Comments
+
+### OQ-016 — CPU-bound concurrency primitive for the Python 3.14 target
+
+**Priority:** P1 near-blocker · Gap-analysis priority: High  
+**Owner:** implementer  
+**Needed by:** MS-3  
+**Blocking:** No  
+**Spec references:** `docs/specs/docmend.md` NFR-001, §14, §18.2, OQ-010 · Related: OQ-010
+
+Choose docmend's v1 concurrency primitive for the CPU-bound scan/plan/apply pipeline: process-based (ProcessPoolExecutor), free-threaded 3.14t, asyncio, or sequential-only, and the default worker count.
+
+#### Agent notes
+
+**Recommendation:** Adopt concurrent.futures.ProcessPoolExecutor with multiprocessing.get_context('forkserver') pinned explicitly (not the 3.14t free-threaded build, not asyncio — the workload is CPU-bound so async cannot help and GIL threading won't parallelize encoding detection). Default parallel.workers='auto' (os.process_cpu_count()) with a sequential mode (workers=1) as the default-until-profiled path used by all NFR-005 purity tests. Add a §18.2 parallel.\* surface (enabled, model, workers, start_method, chunksize, maxtasksperchild) with 'process'/'sequential' as the only v1 models and 'thread'/'interpreter' reserved. Fold numeric throughput targets into OQ-010's post-MS-1 profiling.
+
+**Supporting information:** Report docs/research/python-314-concurrency-model.md (19 citations): 3.14 free-threading is a separate non-default build (PEP 779); charset-normalizer is pure-Python and GIL-bound today; both named C-ext deps (charset-normalizer, rpds-py) already ship free-threading wheels so nothing blocks a future move; 3.14 changed the default Linux start method fork->forkserver (fork unsafe with threads); ProcessPoolExecutor gives fault isolation matching the writer-isolation architecture (D-003).
+
+**Reasoning:** The choice determines whether the Must-priority NFR-001 parallel capability is implementable and sets worker defaults; process-based works on the standard interpreter every user has with zero new C-extension risk, while free-threading remains a moving target.
+
+**Decision impact:** MS-5's 'parallelism if needed' currently silently demotes a Must NFR; a decided primitive lets the writer, worker-locking (GAP-23), and per-file watchdog (GAP-63) be designed coherently.
+
+**Downstream impact:** Introduces the §18.2 parallel.\* config, a forkserver top-level-importable-target constraint on worker functions, the shared-artifact locking requirement (GAP-23), and the CI scale-test placement (GAP-54); folds into OQ-010's agent notes and §14.
+
+#### My Comments
+
+### OQ-017 — structured logging library, format, and verbosity mapping
+
+**Priority:** P1 near-blocker · Gap-analysis priority: High  
+**Owner:** owner  
+**Needed by:** MS-0  
+**Blocking:** No  
+**Spec references:** `docs/specs/docmend.md` §19 MS-0, NFR-003, §18.5, IR-005, §8.6
+
+Choose the logging library, wire format, destination, field schema, and how --verbose/--quiet map to levels for a long-running batch CLI, and approve the new dependency under §8.6.
+
+#### Agent notes
+
+**Recommendation:** Adopt structlog wired through stdlib logging handlers (not loguru — last release predates 3.14 GA with an open unanswered compat issue), emitting JSON Lines to a per-run file named by run-ID plus Rich-rendered console text via ConsoleRenderer. Decouple --verbose/--quiet (console level only) from the file sink (always floored at DEBUG) so NFR-003's diagnose-without-re-running guarantee holds on quiet runs. Extend the never-auto-delete retention rule (§7.4/§18.6) to logs. Use QueueHandler+QueueListener with explicit per-worker init if NFR-001 parallelism lands (given the fork->forkserver default change).
+
+**Supporting information:** Report docs/research/structured-logging-library.md (27 citations): structlog ~2x faster than stdlib+json/loguru on 3.14, actively released post-3.14, composes with stdlib handlers and the already-approved Rich; loguru 0.7.3 shipped 2024-12 with no 3.14 statement; no existing OQ covers logging and §8.6 requires owner approval for the new dependency.
+
+**Reasoning:** At 100k+ files, log volume/format/destination determines whether NFR-003 mid-batch post-mortem debugging is feasible; this MS-0 decision has no current owner.
+
+**Decision impact:** Unblocks MS-0 observability scaffolding and defines the log-schema keyed on run-ID that every command emits.
+
+**Downstream impact:** Adds a §8.6 dependency row, a per-run JSONL log-schema cross-referenced to the run-ID (GAP-27), the console-flag semantics (GAP-17), and the heartbeat/progress line (GAP-20).
+
+#### My Comments
+
+### OQ-018 — JSON Schema validator library selection
+
+**Priority:** P1 near-blocker · Gap-analysis priority: Medium  
+**Owner:** owner  
+**Needed by:** MS-1  
+**Blocking:** Yes  
+**Spec references:** `docs/specs/docmend.md` §8.6, FR-016, DR-005, OQ-004 · Related: OQ-004
+
+Resolve §8.6's Conditional JSON Schema validator row to a specific library, given Draft 2020-12 and format-assertion requirements at hundreds of thousands of validations per run.
+
+#### Agent notes
+
+**Recommendation:** Adopt jsonschema>=4.26 with the format-nongpl extra and an explicit Draft202012Validator + FormatChecker, reusing one compiled validator instance per schema across a run (~10x faster than per-call validate()). Do not adopt fastjsonschema (only drafts 04/06/07, disqualified) or check-jsonschema as a runtime dep (a jsonschema-wrapping CLI with a requests dependency unfit for an offline tool) — use check-jsonschema only as a pre-commit hook linting schemas/\*.schema.json. Record jsonschema-rs as the pre-vetted escalation path if profiling later shows a bottleneck (its own §8.6 OQ).
+
+**Supporting information:** Report docs/research/json-schema-validator-library.md (18 citations): jsonschema 4.26 has full Draft 2020-12 support and a 3.14 classifier; its sole Rust dep rpds-py ships cp314/cp314t wheels; format assertion is off by default and needs the extra + explicit FormatChecker; validator-reuse caps added CPU cost at tens of seconds against a multi-hour I/O-bound run.
+
+**Reasoning:** Per Appendix B.2 the dependency cannot land without an approved OQ, and it is only conditionally pre-approved pending that OQ; the validator is required for FR-016/DR-005 schema enforcement at MS-1.
+
+**Decision impact:** Unblocks the OQ-004 schema-authoring and MS-1 validation work with a concrete, 3.14-ready, format-asserting validator.
+
+**Downstream impact:** Adds a §8.6 runtime dependency row, a validator-reuse discipline note, and the format-nongpl license consideration; couples to the license-scan policy (GAP-59) and the versioning policy (GAP-29).
+
+#### My Comments
+
+### OQ-019 — property-based testing dependency (Hypothesis) approval
+
+**Priority:** P2 decision · Gap-analysis priority: Medium  
+**Owner:** owner  
+**Needed by:** MS-1  
+**Blocking:** No  
+**Spec references:** `docs/specs/docmend.md` §17.2, §8.6, NFR-005, Appendix B.2
+
+Approve Hypothesis as a dev-only test dependency to satisfy §17.2's 'property-based tests where cheap', which §8.6 currently does not authorize.
+
+#### Agent notes
+
+**Recommendation:** Adopt Hypothesis as a dev-only dependency in [dependency-groups].dev (never [project.dependencies]) with a CI settings profile (register_profile/load_profile) loosening or disabling deadline to avoid CI timing flakiness, and keep Transform-layer tests fixture-free per NFR-005. Split §8.6 into Runtime vs Dev/Test subsections since pytest/ruff/basedpyright/coverage/pip-audit already sit outside it by omission.
+
+**Supporting information:** Report docs/research/property-based-testing-hypothesis.md (15 citations): Hypothesis 6.156 ships cp310-cp314 wheels including 3.14t; only always-installed transitive dep is sortedcontainers (MIT); MPL-2.0 but dev-only so never distributed in the MIT package; two documented CI footguns (deadline flakiness, function_scoped_fixture) both have simple mitigations.
+
+**Reasoning:** There is a direct process contradiction: §17.2 requires property tests while §8.6's footer forbids an unlisted dependency without an OQ; an implementer cannot honor the requirement without filing this OQ.
+
+**Decision impact:** Enables NFR-005 transform-purity and edge-case property tests at MS-1 without violating the dependency gate.
+
+**Downstream impact:** Adds a §8.6 Dev/Test row and a CI settings profile; the §8.6 Runtime-vs-Dev split it prompts also regularizes the already-ungated pytest/ruff/etc. tooling.
+
+#### My Comments
+
+### OQ-020 — generic-tool genericity vs purpose-built personal taxonomy
+
+**Priority:** P2 decision · Gap-analysis priority: Medium  
+**Owner:** owner  
+**Needed by:** MS-1  
+**Blocking:** No  
+**Spec references:** `docs/specs/docmend.md` §1, §9, G-/FR-/NFR-/NG-/WH- rows, OQ-004, OQ-007, OQ-013 · Related: OQ-001
+
+Decide whether docmend's domain-specific parts (the §9 genre/status/story_type/rating vocabularies and semantic fields) are config-driven/pluggable or purpose-built for the owner's library, and whether §1's 'remain generally useful' ambition is operationalized as a requirement or dropped.
+
+#### Agent notes
+
+**Recommendation:** Either add a concrete requirement operationalizing genericity (e.g. config-driven controlled vocabularies with the mechanical substrate agnostic to them) or explicitly scope §1's ambition down and mark the §9 taxonomy purpose-built; do not leave the ambition unbacked.
+
+**Supporting information:** No G-/FR-/NFR-/NG-/WH- row operationalizes genericity, and §9's semantic fields are a hardcoded personal taxonomy; whether they are configurable materially changes the frontmatter schema shape and validator wiring.
+
+**Reasoning:** An unscoped ambition is silently dropped by OQ-001's narrow v1 framing yet drives a foundational schema-shape choice; leaving it undecided risks either over-building a plugin system or hardcoding a taxonomy that later needs a breaking change.
+
+**Decision impact:** Shapes the OQ-004 frontmatter schema and the OQ-007 controlled-vocabulary extensibility (GAP-57) before schemas freeze at MS-1.
+
+**Downstream impact:** If pluggable, the frontmatter schema and validator must be vocabulary-agnostic and OQ-007 becomes a config concern; if purpose-built, §9 stays hardcoded and the §1 genericity claim is narrowed.
 
 #### My Comments
 

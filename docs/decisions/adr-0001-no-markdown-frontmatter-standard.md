@@ -18,7 +18,7 @@ tags:
 aliases: []
 related:
   - '.project-standards.yml'
-  - 'docs/specs/docmend-spec-draft.md'
+  - 'docs/specs/docmend.md'
 supersedes: []
 superseded_by: null
 source: []
@@ -42,8 +42,8 @@ Should docmend also adopt the Markdown Frontmatter Standard so that ADR and othe
 
 ## Decision Drivers
 
-- docmend's **product output** is Markdown files whose YAML frontmatter follows a **Pandoc-flavored, purpose-built schema** (title, author, date, tags, source provenance, generated fields such as word/chapter count and checksum) validated against docmend's _own_ schema — see [`docs/specs/docmend-spec-draft.md`](../specs/docmend-spec-draft.md). This is the tool's core contract, not a docs concern.
-- The repository's spec draft uses **Pandoc-style metadata blocks**, again distinct from the canonical schema.
+- docmend's **product output** is Markdown files whose YAML frontmatter follows a **Pandoc-flavored, purpose-built schema** (title, author, date, tags, source provenance, generated fields such as word/chapter count and checksum) validated against docmend's _own_ schema — see [`docs/specs/docmend.md`](../specs/docmend.md) (§9 Data Model / DR-005). This is the tool's core contract, not a docs concern.
+- The repository's spec uses **Pandoc-style metadata blocks**, again distinct from the canonical schema.
 - The canonical Markdown Frontmatter Standard defines one repo-wide frontmatter schema and a validator that would compete with both of the above over the same file surface.
 - Adopting a standard must not force fighting a validator against docmend's primary output format, and the two other Markdown-frontmatter-adjacent standards we _do_ want (ADR, Project Spec) can function without it.
 
@@ -54,7 +54,7 @@ Should docmend also adopt the Markdown Frontmatter Standard so that ADR and othe
 
 ## Decision Outcome
 
-Chosen option: **"Do not adopt the Markdown Frontmatter Standard"**, because docmend already owns two conflicting frontmatter contracts (its Pandoc-flavored product output and the Pandoc-style spec draft), and a repo-wide canonical frontmatter validator would either fight those contracts or require fragile glob carve-outs that grow with every new document type. The ADR and Project Specification standards are adopted in the forms that do not depend on the frontmatter validator.
+Chosen option: **"Do not adopt the Markdown Frontmatter Standard"**, because docmend already owns two conflicting frontmatter contracts (its Pandoc-flavored product output and the Pandoc-style spec metadata), and a repo-wide canonical frontmatter validator would either fight those contracts or require fragile glob carve-outs that grow with every new document type. The ADR and Project Specification standards are adopted in the forms that do not depend on the frontmatter validator.
 
 ### Consequences
 

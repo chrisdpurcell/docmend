@@ -11,10 +11,11 @@ This is the human-facing completion summary for docmend. Agents maintain it so t
 ## Current State
 
 - Pre-implementation: only a build/tooling scaffold (`pyproject.toml`, CI, `src/docmend/` + `tests/` skeleton) and a version smoke test exist. No conversion pipeline or CLI entry point yet.
-- Spec is `status: draft`, `full` profile, with three blocking open questions (OQ-001, OQ-004, OQ-005) ahead of MS-1/MS-3.
+- Spec is `status: draft`, `full` profile, with six blocking open questions (OQ-001/004/018 → MS-1, OQ-015 → MS-2, OQ-005/012 → MS-3 write path); the full ranked gap landscape is in `docs/gap-analysis.md`.
 
 ## Recent Changes
 
+- [2026-07-05] Ran a multi-agent gap analysis: `docs/gap-analysis.md` (71 ranked gaps with downstream impacts), OQ-015..020 + 8 research supplements, 22 `docs/research/` reports, and 4 queued ChatGPT Deep-Research prompts; reconciled spec §21 with the OQ backlog and fixed ADR-0001's removed-draft links.
 - [2026-07-05] Reviewed `docs/research/` (Pandoc/frontmatter validation, self-hosted corpus storage) against the spec and strengthened several sections (C-006, FR-016/DR-005, OQ-008, OQ-011).
 - [2026-07-05] Populated `docs/open-questions.md`/`docs/resolved-questions.md` as the spec's decision backlog.
 - [2026-07-05] Adopted the agent-handoff-v3 session-state layout: `docs/handoff.md` retired, `AGENTS.md` slimmed 12,254 -> 1,639 bytes with detail moved to `docs/handoff/conventions.md`, and Claude + Codex SessionStart hooks installed.

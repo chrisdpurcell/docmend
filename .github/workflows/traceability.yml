@@ -1,0 +1,26 @@
+# Additive workflow — deliberately NOT part of check.yml, which is a
+# standard-owned byte-identical twin (conventions #8). Runs the GAP-53
+# ID-registry drift gate over the spec and question registers.
+name: Traceability
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  traceability:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: ".python-version"
+
+      - name: Traceability drift check
+        run: python3 scripts/check_traceability.py

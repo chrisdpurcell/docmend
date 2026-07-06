@@ -20,6 +20,7 @@ Sequential index of docmend's Architecture Decision Records. See [README.md](REA
 | [0014](adr-0014-tool-first-product-scope.md) | Tool-first product scope — scale-flexibility binding | accepted | 2026-07-06 | RQ-024 |
 | [0015](adr-0015-test-corpus-and-anonymization.md) | Two-corpus test architecture and anonymization | accepted | 2026-07-06 | RQ-032 |
 | [0016](adr-0016-mechanical-transform-boundary.md) | The mechanical-transform boundary | accepted | 2026-07-06 | RQ-025, RQ-030, RQ-031 |
+| [0017](adr-0017-branch-and-ci-cd-workflow.md) | Branch strategy, protection, release, and CI/CD workflow | accepted | 2026-07-06 | hw-radar port |
 
 ## Candidates not yet written
 

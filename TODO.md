@@ -3,7 +3,7 @@
 ## User Tracked Tasks
 
 - [ ] Assess ADR candidates
-- [ ]
+- [ ] Add branch strategy, branch protections, release process, and CI/CD pipeline based on the used by the `hw-radar` project/repo.
 
 ## Agent Tracked Tasks
 
@@ -16,6 +16,12 @@ Agents summarize outstanding work from `docs/handoff/state.md`, `docs/handoff/ar
 - [x] Follow up on the owner's OQ-007..022 comment batch (2026-07-05): 11 questions settled → RQ-011..021 in `docs/resolved-questions.md`; §21 statuses Resolved; spec §8.6 rewritten (Runtime vs Dev/Test); blocking OQs 3 → 1. Details in `STATUS.md`.
 - [x] Reconcile the 4 Deep-Research reports and follow up on the owner's OQ-001..014 comments (2026-07-05): 10 questions settled → RQ-001..010 in `docs/resolved-questions.md`, OQ-007 reframed, binding spec prose reworded, §21 statuses set to Resolved. Details in `STATUS.md`.
 - [ ] Add a `[project.scripts]` console entry point when the CLI module lands.
+
+## Completed Tasks
+
+<instruction> Agents should move completed tasks from both the user and agent sections to here. This space is not for agent tracking or handoff purposes; it is a user convenience and these will be deleted by the user once reviewed. </instruction>
+
+- [x] **Spec/ADR consistency audit (2026-07-05, spec v0.7):** multi-agent workflow (dimensional finders → adversarial verify → classify) found 8 distinct stale-prose defects, all reconciled to already-settled decisions — **zero RQ downgrades, zero escalations.** Fixes: OQ-001 six-not-seven transforms; `--write` added to §10.1/IR-003 (RQ-015); IR-007 → JSON+NDJSON manifest (RQ-004); "output root" removed from §8.5/§13.2 for in-place (RQ-013); `docmend.id` example → UUIDv7 (RQ-002); §9 stale OQ-013 note (RQ-014); `parallel.*` §18.2 surface with sequential-until-profiled defaults + IR-006 (RQ-016). ADR-0001 internally consistent and consistent with the spec. Note: overlaps the GAP-56 doc-fix below (§9 frontmatter) — reconcile when working those.
 
 ## Maintenance Notes
 

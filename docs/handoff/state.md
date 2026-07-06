@@ -4,7 +4,8 @@
 
 ## Current
 
-- **Decision backlog fully settled (2026-07-05):** all 23 spec open questions resolved (RQ-001..023); `docs/open-questions.md` is now empty of open items; zero blocking OQs. Latest: RQ-022 (encoding floor) + RQ-023 (review-artifact exposure); spec at v0.6.
+- **Decision backlog fully settled (2026-07-05):** all 23 spec open questions resolved (RQ-001..023); `docs/open-questions.md` is now empty of open items; zero blocking OQs. Latest: RQ-022 (encoding floor) + RQ-023 (review-artifact exposure).
+- **Spec/ADR consistency audit (2026-07-05, spec v0.7):** multi-agent audit (dimensional finders → adversarial verify → classify) found 12 confirmed defects collapsing to 8 distinct — **all stale spec prose lagging settled decisions, zero RQ downgrades, zero unresolved/escalations.** Fixed in spec: OQ-001 six-not-seven transforms; `--write` opt-in added to §10.1/IR-003 (RQ-015); IR-007 → JSON+NDJSON manifest (RQ-004); "output root" removed from §8.5/§13.2 for in-place (RQ-013); `docmend.id` example → UUIDv7 (RQ-002); §9 stale OQ-013 note (RQ-014); `parallel.*` config surface added to §18.2 with sequential-until-profiled defaults + IR-006 (RQ-016). ADR-0001 internally consistent and consistent with the spec (only one ADR, so no ADR↔ADR conflicts possible).
 
 - Pre-implementation: no conversion pipeline or CLI entry point yet — only a build/tooling scaffold (`pyproject.toml`, CI, `src/docmend/` + `tests/` skeleton) and a version smoke test.
 - A multi-agent gap analysis (2026-07-05) added `docs/gap-analysis.md` (71 ranked gaps), OQ-015..020 + 8 research supplements in `docs/open-questions.md`, 22 initial `docs/research/` reports, and 4 ChatGPT Deep-Research prompts.

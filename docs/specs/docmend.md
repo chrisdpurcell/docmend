@@ -31,6 +31,7 @@ related:
 | 0.3 | `2026-07-05` | `coding-agent` | Reconciled §21 with `docs/open-questions.md`: added OQ-012..OQ-014 (defined in open-questions but missing from §21) and OQ-015..OQ-020 from the gap analysis (`docs/gap-analysis.md`, 22 new `docs/research/` reports) |
 | 0.4 | `2026-07-05` | `coding-agent` | Added OQ-021 (`pydantic` v2 internal models) and OQ-022 (frontmatter YAML codec) from `docs/research/python-library-research.md`; §8.6 dependency-policy rewrite pending OQ-017/018/019/021/022 |
 | 0.5 | `2026-07-05` | `coding-agent` | Owner settled OQ-007/011/012/013/014/016/017/018/019/021/022 → RQ-011..021 (`docs/resolved-questions.md`); set §21 statuses Resolved; rewrote §8.6 into Runtime vs Dev/Test tables, resolving the conditional validator row (`jsonschema`) and adding `structlog`/`pydantic`/`ruamel.yaml` runtime + `hypothesis`/`pyfakefs`/`pytest-xdist` dev rows. Blocking OQs now 1 (OQ-015) |
+| 0.7 | `2026-07-05` | `coding-agent` | **Spec/ADR consistency audit** (multi-agent: dimensional finders → adversarial verify → classify). Reconciled 8 distinct stale-prose defects to already-settled decisions — zero RQ downgrades: §21 OQ-001 "seven"→"six" mechanical transforms; added the `--write` opt-in to §10.1 and IR-003 (RQ-015); reworded IR-007 to JSON + NDJSON manifest (RQ-004); removed stray "output root" language from §8.5/§13.2 for in-place mutation (RQ-013); fixed the §9 `docmend.id` example to UUIDv7 (RQ-002); refreshed the §9 "once OQ-013 settles" note (RQ-014); added the `parallel.*` config surface to §18.2 with sequential-until-profiled defaults + IR-006 domain list (RQ-016). ADR-0001 found internally consistent and consistent with the spec. |
 | 0.6 | `2026-07-05` | `coding-agent` | Owner settled the last two open questions → **RQ-022/RQ-023** (`docs/resolved-questions.md`); §21 OQ-015/OQ-023 set Resolved. **RQ-022** (encoding): reworded FR-007 to `charset-normalizer`-sole + `1.0 − chaos` confidence (no `.confidence` API) + dual skip gate with a non-ASCII byte-count floor (default 20, family-aware/ratio deferred behind the RQ-010 seam) and gate ordering; added `encoding.non_ascii_floor` to §18.2; broadened A-003/FR-015/AW-003/R-001; fixed the §8.6 charset-normalizer RQ mislink; added the floor fixture recipe to §17.2/§17.3. **RQ-023** (review-artifact exposure): NG-001 boundary reframed to public-repo/tool surface vs operator screen in §2.2/§11, with metadata-only-artifact + external-render rows added to §13.4/§13.5. **Blocking OQs now 0; backlog fully settled (RQ-001..023).** |
 
 **Spec lifecycle:** This document is **living until `approved`**, then **change-controlled**: post-approval edits require a new revision row and, for scope-affecting changes, re-approval by the owner. Implementation deviations are recorded in the [Deviations Log](#deviations-log), not silently patched into requirements. When replaced, set `status: superseded` and `superseded_by:` in the frontmatter.
@@ -259,11 +260,11 @@ APIs, CLIs, UIs, files, databases, queues, protocols, external systems, hardware
 | --- | --- | --- | --- | --- |
 | IR-001 | CLI | The system shall expose `docmend scan PATH` producing an inventory. | `docmend scan PATH [--report FILE]` | Command exists, exits 0 on success, writes DR-001 artifact. |
 | IR-002 | CLI | The system shall expose `docmend plan` consuming a path/inventory and config, producing a plan file. | `docmend plan PATH --config cleaner.toml --out plan.json` | Command produces DR-002 artifact; exits non-zero on config errors. |
-| IR-003 | CLI | The system shall expose `docmend apply` consuming a plan file, honoring dry-run and backup options. | `docmend apply plan.json [--dry-run] [--backup-dir PATH]` | Behaviors per FR-003–FR-006; exits non-zero when the safety gate refuses. |
+| IR-003 | CLI | The system shall expose `docmend apply` consuming a plan file, honoring an explicit real-write opt-in, dry-run, and backup options. | `docmend apply plan.json [--write \| --dry-run] [--backup-dir PATH]` (`--write` opts into real mutation per RQ-015; `--write` and `--dry-run` are mutually exclusive; apply dry-runs by default when neither is given) | Behaviors per FR-003–FR-006; exits non-zero when the safety gate refuses. |
 | IR-004 | CLI | The system shall expose `docmend verify PATH` running the FR-014 checks. | `docmend verify PATH` | Exit 0 iff all checks pass; findings enumerated in output/report. |
 | IR-005 | CLI | The system shall support the global flags `--help`/`-h`, `--dry-run`/`-n`, `--verbose`/`-v`, and `--quiet`/`-q`. | Standard CLI conventions; `--quiet` limits output to errors and critical messages. | Flag behavior covered by CLI tests. |
-| IR-006 | Config file | The system shall read configuration from a TOML file covering paths, rename, encoding, newline, whitespace, and write settings. | TOML; reference table in §18.2; parsed with stdlib `tomllib`. | Unknown keys rejected with a clear error; defaults per §18.2 when file omitted. |
-| IR-007 | Artifacts | The system shall read and write its durable artifacts (inventory, plan, report, manifest) as JSON. | JSON; shapes per §9 (exact schemas tracked in RQ-004). | Artifacts round-trip (write → read → identical model) in tests. |
+| IR-006 | Config file | The system shall read configuration from a TOML file covering paths, rename, encoding, newline, whitespace, write, and parallelism settings. | TOML; reference table in §18.2; parsed with stdlib `tomllib`. | Unknown keys rejected with a clear error; defaults per §18.2 when file omitted. |
+| IR-007 | Artifacts | The system shall read and write its durable artifacts as JSON: a single JSON document for inventory, plan, and report; JSON Lines (NDJSON) for the append-only manifest (a single JSON document cannot be appended crash-safely; RQ-004). | JSON; shapes per §9 (exact schemas tracked in RQ-004). | Inventory/plan/report round-trip (write → read → identical model); manifest round-trips per record (each NDJSON line parses to an identical record model) in tests. |
 
 Selection and transformation options (e.g. `--include`/`--exclude` patterns, `--rename-txt-to-md`, `--detect-encoding`, `--normalize-newlines lf`, `--trim-trailing-whitespace`, `--ensure-final-newline`, `--collapse-blank-lines 3`, `--fail-on-low-confidence-encoding`, `--backup-dir PATH`, `--report FILE`) mirror the configuration surface in §18.2; the config file is authoritative and flags override it.
 
@@ -370,7 +371,7 @@ Constraints the implementer must not violate:
 - Transforms are pure functions; only the writer layer touches the filesystem for mutation (NFR-005).
 - The writer refuses to overwrite unless explicitly allowed and writes UTF-8/LF only.
 - Low-confidence or risky files are never silently "fixed" — skip and report (FR-015).
-- Output paths must stay inside the intended output root (§13.5).
+- Written paths must stay inside the source root (§13.5) — v1 mutates in place; there is no separate output root (RQ-013).
 - Dry-run is the default; every destructive capability is opt-in (NFR-004).
 - Artifacts (DR-001–DR-004) are written for every run; a run that leaves no audit trail is a defect.
 
@@ -415,7 +416,7 @@ The frontmatter contract is the durable heart of the data model. Generated front
 
 Schema strategy:
 
-- Frontmatter emission is **optional** (RQ-008): a run may emit none. When emitted, v1 produces at most a **minimal skeleton** — the required mechanical fields plus a placeholder `title` — for processed-document tracking; richer or inferred semantic metadata is deferred to later versions. The null-heavy worked example below is the eventual target shape, not the v1 minimal output; it is rewritten once OQ-013 settles the required/null/omitted detail.
+- Frontmatter emission is **optional** (RQ-008): a run may emit none. When emitted, v1 produces at most a **minimal skeleton** — the required mechanical fields plus a placeholder `title` — for processed-document tracking; richer or inferred semantic metadata is deferred to later versions. The null-heavy worked example below is the eventual target shape, not the v1 minimal output; per RQ-014, it is rewritten to the required/null/omitted convention when `schemas/frontmatter.schema.json` is authored (GAP-56).
 - Store the canonical schema in the repository, e.g. `schemas/frontmatter.schema.json` (DR-005).
 - Validate generated frontmatter during `plan`, `apply`, and `verify` (FR-016).
 - Reject duplicate frontmatter keys at YAML parse time, before schema validation — a permissive parser silently collapses duplicates, and schema validation only ever sees the already-collapsed result (C-006).
@@ -453,7 +454,7 @@ deduplication:
   canonical: null
   confidence: null
 docmend:
-  id: 'dmnd_0000000000000000'
+  id: '00000000-0000-7000-8000-000000000000'
   schema_version: '0.1'
   generated_at: '2026-07-05T00:00:00Z'
   conversion_version: 'docmend 0.1.0'
@@ -496,7 +497,7 @@ sequenceDiagram
     CLI-->>Owner: plan.json (actions, skips, hashes)
     Owner->>CLI: docmend apply plan.json --dry-run
     CLI-->>Owner: report.json (would-be outcomes)
-    Owner->>CLI: docmend apply plan.json --backup-dir PATH
+    Owner->>CLI: docmend apply plan.json --write --backup-dir PATH
     CLI->>FS: safety gate, backup, atomic writes
     CLI-->>Owner: report.json + manifest.json
     Owner->>CLI: docmend verify PATH
@@ -607,7 +608,7 @@ Not applicable — docmend is a local, single-user CLI running with the invoking
 
 | Actor / Role | Allowed Actions | Denied Actions |
 | --- | --- | --- |
-| Invoking user | Scan, plan, apply, verify within the configured source/output roots and backup dir. | Writes outside the intended roots — the tool enforces path containment regardless of user permissions. |
+| Invoking user | Scan, plan, apply, verify within the configured source root, target paths, and backup dir (in-place mutation; no separate output root in v1 — RQ-013). | Writes outside the source root or backup dir — the tool enforces path containment regardless of user permissions. |
 
 ### 13.3 Secrets
 
@@ -777,6 +778,12 @@ Configuration is a TOML file (D-005, IR-006); flags override file values.
 | `write.dry_run_default` | No | `true` | Apply defaults to dry-run (FR-004, NFR-004). |
 | `write.backup_dir` | No | unset | Backup destination; enables the tool-backup preservation strategy. |
 | `write.atomic` | No | `true` | Atomic replace writes (NFR-002). |
+| `parallel.enabled` | No | `false` | Master switch for in-process parallelism. **Sequential by default until MS-5 profiling** (RQ-016; correctness/safety first per RQ-009); `true` opts into the process pool. `parallel.workers = 1` also forces the sequential path. |
+| `parallel.model` | No | `"process"` | Concurrency primitive used when `enabled = true`. v1 supports only `"process"` (`ProcessPoolExecutor`) and `"sequential"`; `"thread"` (free-threaded build) and `"interpreter"` (PEP 734) are reserved and rejected with a clear "not supported in this release" error until the RQ-016 re-open checklist fires. |
+| `parallel.workers` | No | `"auto"` | Worker count when parallel: `"auto"` resolves to `os.process_cpu_count()` at run time; an explicit positive integer overrides it (`1` is equivalent to `enabled = false`). |
+| `parallel.start_method` | No | `"forkserver"` | `multiprocessing` start method, pinned explicitly (not left to the platform default) for reproducibility across dev/CI/field; `"spawn"` also allowed, `"fork"` is not offered (unsafe with threads present). |
+| `parallel.chunksize` | No | `"auto"` | Task-batching size passed to the pool's `map`/`imap_unordered` to amortize forkserver IPC on small per-file tasks; `"auto"` derives from inventory and worker counts, an explicit integer overrides. |
+| `parallel.maxtasksperchild` | No | unset | Optional worker-recycling threshold (files per worker before replacement), a hedge against per-worker memory growth on full-library runs; unset keeps workers for the pool's lifetime. |
 
 Environment matrix: not applicable — a single local environment; there is no dev/staging/prod split for a local CLI.
 
@@ -919,7 +926,7 @@ Questions may proceed on a recorded **current assumption** unless marked blockin
 
 | ID | Question | Current Assumption | Blocking? | Owner | Needed By | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| OQ-001 | What is the exact first-version boundary and the complete explicit non-goals list? (Draft's Phase-1 and non-goals sections were placeholders.) | v1 = the §2.1 capability set with the seven mechanical transformations; NG-001–NG-003 stand; anything semantic is §2.3. | Yes | owner | MS-1 | Resolved (RQ-001) |
+| OQ-001 | What is the exact first-version boundary and the complete explicit non-goals list? (Draft's Phase-1 and non-goals sections were placeholders.) | v1 = the §2.1 capability set with the six mechanical transformations; NG-001–NG-003 stand; anything semantic is §2.3. | Yes | owner | MS-1 | Resolved (RQ-001) |
 | OQ-002 | Naming policy: when is a filename changed mechanically vs. meaningfully; how are collisions resolved; how are stable IDs and old→new mappings preserved across renames? | v1 renames extensions only (FR-010); collisions per FR-011; `docmend.id` + manifest carry identity and path history. | No | owner | MS-2 | Resolved (RQ-002) |
 | OQ-003 | Resume model: plan-file-based, apply-journal, per-file result records, or a combination? How are partial writes detected and failed files retried, and how does resume interact with backups/manifests? | Apply journal + per-file manifest records; atomic writes make partial writes impossible (NFR-002); failed files retried by re-plan. | No | implementer | MS-4 | Resolved (RQ-003) |
 | OQ-004 | Exact JSON Schemas for inventory, plan, apply report, and manifest (including symlink policy, EC-008). | Shapes as outlined in DR-001–DR-004; schemas pinned in-repo before MS-1 code freezes them. | Yes | implementer | MS-1 | Resolved (RQ-004) — ADR candidate |

@@ -6,7 +6,7 @@ description: "One consolidated record for the five dependency choices resolved a
 doc_type: 'adr'
 status: 'accepted'
 created: '2026-07-05'
-updated: '2026-07-05'
+updated: '2026-07-06'
 reviewed: null
 owner: 'chrisdpurcell'
 consumer: 'agent'
@@ -84,6 +84,7 @@ Confirmed by: `pyproject.toml` listing exactly these runtime deps in `[project.d
 
 ## More Information
 
+- **Amendment (2026-07-06): three dev-only additions to §8.6**, each owner-approved through the OQ gate this ADR requires. `allpairspy` — pairwise/t=3 combinatorial coverage over the safety-gate predicates (RQ-005/ADR-0004's confirmation mechanism; no serious alternative evaluated beyond hand-enumerating combinations, which does not scale past a few predicates). `import-linter` — CI-enforced NFR-005 purity contract (RQ-033; rejected: Tach — interactive-discovery workflow suits evolving boundaries, not docmend's settled five-layer design; `pytest-test-categories` — turnkey runtime blocking but single-maintainer pre-1.0, so the runtime layer is a hand-rolled fixture instead). `faker` — provably synthetic, auditable-by-inspection filler text for the test-corpus generator (RQ-032/ADR-0015; rejected: LLM-generated realistic prose — not provably content-free; hand-written prose — accidental-resemblance risk). All dev-group only, never distributed.
 - Spec: §8.6 (runtime and dev/test dependency tables), Appendix B.2 (unlisted-dependency prohibition), NFR-003, DR-005, §17.2.
 - Research: `structured-logging-library`, `json-schema-validator-library`, `property-based-testing-hypothesis`, `python-library-research`, `safe-yaml-loading`, `python-314-wheel-readiness` (rpds-py / pydantic-core wheel status), `license-compliance-tooling` (the GAP-59 license scan).
 - Decision owner: owner (RQ-017–RQ-021, all 2026-07-05). Consumers: ADR-0005 (jsonschema/pydantic realize the schema contract), ADR-0011 (ruamel realizes the frontmatter codec, jsonschema validates it).

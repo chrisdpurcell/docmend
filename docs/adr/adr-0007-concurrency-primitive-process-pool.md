@@ -71,6 +71,7 @@ Confirmed by: the transform-purity suite (NFR-005) passing in both `sequential` 
 ## More Information
 
 - **Amendment (2026-07-06, RQ-027 / spec OQ-027):** shared-artifact writes under parallelism are now specified — workers transform and return results over pool IPC; **only the parent process appends the shared NDJSON manifest and report** (single-writer; no cross-process file locking exists to get wrong), and a run-level lock file makes a second concurrent plan/apply against the same target refuse with exit 3 (spec §8.5, AW-005). Closes the gap that NFR-002's atomicity is per-document, not per shared artifact (gap-analysis GAP-23).
+- **Amendment (2026-07-06, RQ-028 / spec OQ-028):** the FR-019 per-file watchdog is deliberately **process-based** (join-with-timeout + terminate, scoped to discovery/detection/transform, never the writer) so it composes with this ADR's process-pool primitive and needs no new dependency; a thread-based timeout cannot safely kill a stuck CPU-bound task. Canonical detail lives in FR-019/ERR-009/R-007 and `docs/research/per-file-watchdog-timeout.md` — recorded here only because the process-vs-thread constraint is this ADR's concern.
 - Spec: NFR-001, §14, §18.2 (`parallel.*`).
 - Research: `python-314-concurrency-model`, `docmend-and-the-free-threaded-cpython-switch-decision`.
 - Decision owner: owner, implementer-proposed (RQ-016). Relates to ADR-0002 (process workers mirror writer fault-isolation) and RQ-009 (numeric perf targets deferred).

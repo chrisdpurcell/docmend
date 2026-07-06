@@ -384,17 +384,7 @@ _Text-rendering fork: **external tools render text** — docmend stops at detect
 **Decision owner:** owner
 **Canonical references:** spec §1 (tool-first Purpose & Background), §2.3 WH-008, §4 G-006, §7.2 NFR-006, §7.3 (single-file `PATH` semantics), §14 (lower-bound row), §17.2/§17.3, §20 (scale-flexibility row), §21 OQ-024 (Status: Resolved). **Amends [RQ-010](#rq-010--genericity-design-for-pluggable-build-minimal) / [ADR-0010](adr/adr-0010-pluggable-policy-seams.md)** (amendment note added to the ADR).
 
-The product is the **tool**, not the pipeline: the >100k-file library migration is the impetus use case, made possible by the tool, not the tool's definition. docmend must be fully functional from a single file to entire libraries, and users without substantial software/hardware resources must not be effectively locked out. This upgrades RQ-010's genericity resolution from _architectural principle only_ to a **binding requirement**:
-
-1. **G-006** (scale-flexibility goal) and **NFR-006** (small-scale floor: single-file `PATH`s first-class in every command; no config file, parallelism, or preservation infrastructure beyond the FR-005 low-risk opt-in) are added as Must-level spec items.
-2. **The v1 surface stays the pipeline, scaled down.** Ceremony scales; it is never waived — scan→plan→apply→verify must simply work over a single file. A low-ceremony one-shot command (e.g. `docmend fix PATH`) is deferred as **WH-008** because the reviewable plan file is the v1 safety artifact and an implicit-plan flow needs its own safety-gate design.
-3. **§1's broader verb list stays product vision** bounded by §2.3; "confirmed a total loss" maps to the existing skip-and-report posture (FR-015) — no new triage FR.
-4. **ADR-0010's seam design stands unchanged**: the new requirement binds the pipeline's _floor_ (small-scale operation), not new policy machinery; design-for-pluggable / build-minimal is unaffected.
-
-#### Rationale
-
-- The reframing is a clarification of a previously under-defined framework, and §1 is the basis for the whole document — leaving it as untestable prose would reproduce the drift OQ-020 tried to settle.
-- FR-005's risk-scaled preservation gate and D-009's seams already anticipated small-scale use; binding G-006/NFR-006 mostly makes existing posture testable rather than adding scope.
+**Canonical record — now formalized in [ADR-0014](adr/adr-0014-tool-first-product-scope.md).** See the ADR for the full decision, drivers, considered alternatives, and consequences.
 
 #### My Comments
 
@@ -406,6 +396,8 @@ _Owner decision (from the OQ-024 AskUserQuestion, 2026-07-06): binding requireme
 **Source questions:** OQ-025..033 (minted from `docs/gap-analysis.md` Batch B triage — the nine decision-bearing gaps that survived the 2026-07-06 status audit)
 **Decision owner:** owner (two AskUserQuestion rounds plus an individual walkthrough of the GAP-49/GAP-52 research reports, 2026-07-06)
 **Canonical references:** spec §21 OQ-025..033 rows carry each decision's assumption; the spec body sections listed per item below are the binding text. Recorded together because all nine were settled in one sitting from one triage; split any item out if it is later amended individually.
+
+**Canonical records (2026-07-06 ADR review):** RQ-032 → [ADR-0015](adr/adr-0015-test-corpus-and-anonymization.md); RQ-025/030/031 → [ADR-0016](adr/adr-0016-mechanical-transform-boundary.md) (consolidated); RQ-026/027/028/033 → amendment notes on ADR-0009 / ADR-0007 / ADR-0007 / ADR-0002 (+ ADR-0013 for the dev deps); RQ-029 stays spec-canonical (§18.2, deliberate skip per `adr/adr-backlog.md`).
 
 | RQ | Gap | Decision (canonical spec home) |
 | --- | --- | --- |

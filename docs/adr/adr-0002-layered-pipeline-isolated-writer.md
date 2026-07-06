@@ -6,7 +6,7 @@ description: 'docmend is structured as a layered pipeline — discovery, plannin
 doc_type: 'adr'
 status: 'accepted'
 created: '2026-07-05'
-updated: '2026-07-05'
+updated: '2026-07-06'
 reviewed: null
 owner: 'chrisdpurcell'
 consumer: 'agent'
@@ -69,6 +69,7 @@ Confirmed by: NFR-005 purity tests proving transforms perform no filesystem muta
 
 ## More Information
 
+- **Amendment (2026-07-06, RQ-033 / spec OQ-033):** the transform-layer purity constraint this ADR asserts is now mechanically enforced from MS-0 — an `import-linter` forbidden contract in CI (static: `docmend.transform` may not import filesystem modules or `docmend.writer`) layered with an autouse fixture blocking `open`/`os.open`/`io.FileIO` in `tests/unit/transform/` (dynamic: catches indirect I/O the import graph cannot see). Dependency record in ADR-0013's amendment.
 - Spec: §8.1–§8.3 (D-003 layered pipeline, D-006 plan-file workflow), §8.5 design constraints.
 - This decision is the backbone the other Tier-1 ADRs hang on: the writer's output model (ADR-0003), the gate that guards it (ADR-0004), and the artifact contract the plan/report/manifest obey (ADR-0005).
 - Revisit only if the pipeline model itself is challenged (e.g. a streaming single-pass mode is ever needed); the plan-file review point is a hard requirement, not an optimization.

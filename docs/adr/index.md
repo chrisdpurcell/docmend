@@ -17,7 +17,10 @@ Sequential index of docmend's Architecture Decision Records. See [README.md](REA
 | [0011](adr-0011-frontmatter-optional-minimal-split.md) | Frontmatter — optional, minimal, mechanical/semantic split | accepted | 2026-07-05 | RQ-008, RQ-014, D-001, D-007 |
 | [0012](adr-0012-verify-semantics-exit-code-taxonomy.md) | verify semantics and tool-wide exit-code taxonomy | accepted | 2026-07-05 | RQ-006 |
 | [0013](adr-0013-v1-dependency-selection.md) | v1 runtime and dev dependency selection | accepted | 2026-07-05 | RQ-017–021 |
+| [0014](adr-0014-tool-first-product-scope.md) | Tool-first product scope — scale-flexibility binding | accepted | 2026-07-06 | RQ-024 |
+| [0015](adr-0015-test-corpus-and-anonymization.md) | Two-corpus test architecture and anonymization | accepted | 2026-07-06 | RQ-032 |
+| [0016](adr-0016-mechanical-transform-boundary.md) | The mechanical-transform boundary | accepted | 2026-07-06 | RQ-025, RQ-030, RQ-031 |
 
 ## Candidates not yet written
 
-Tracked with scoring and rationale in [adr-backlog.md](adr-backlog.md): all Tier-1, Tier-2, and Tier-3 candidates are now written up. The only remaining candidates are those **deliberately deferred until their downstream work is scheduled** — chiefly RQ-023's review-artifact exposure ADR (blocked on WH-002/WH-005) — plus the items in the backlog's "Deliberately not ADRs" table.
+Tracked with scoring and rationale in [adr-backlog.md](adr-backlog.md): all candidates from both review passes (2026-07-05 over D-001..009/RQ-001..023; 2026-07-06 over RQ-024..033) are now written up. The only remaining candidates are those **deliberately deferred until their downstream work is scheduled** — chiefly RQ-023's review-artifact exposure ADR (blocked on WH-002/WH-005) — plus the items in the backlog's "Deliberately not ADRs" table.

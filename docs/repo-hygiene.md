@@ -39,9 +39,9 @@ Use this checklist for periodic cleanup passes and before declaring a broad repo
 
 ## Document Pruning
 
-The following files may be deleted:
+The following may be deleted:
 
-- [ ] Completed plans from `docs/plans/` and `docs/superpowers/plans/`.
+- [ ] Completed plans from `docs/plans/` and `docs/superpowers/plans/`. Plans for sub-phases of a larger project should be retained until the overall project is complete.
 - [ ] Fully addressed reviews from `docs/codex-reviews/`.
 
 ## Document Specific Maintenance

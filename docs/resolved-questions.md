@@ -32,6 +32,7 @@
     - [RQ-021 — frontmatter YAML codec](#rq-021--frontmatter-yaml-codec)
     - [RQ-022 — encoding detector and non-ASCII skip floor](#rq-022--encoding-detector-and-non-ascii-skip-floor)
     - [RQ-023 — deferred-review-artifact content-exposure policy (WH-002/WH-005)](#rq-023--deferred-review-artifact-content-exposure-policy-wh-002wh-005)
+    - [RQ-024 — scale-flexibility is binding: tool-first reframing (amends RQ-010)](#rq-024--scale-flexibility-is-binding-tool-first-reframing-amends-rq-010)
   - [How to use this document](#how-to-use-this-document)
 
 ## Resolved questions
@@ -374,6 +375,29 @@ _Owner decision, verbatim (from the OQ-023 AskUserQuestion, 2026-07-05):_
 > It's perfectly acceptable to show contents of the documents to the user as part of the tool's output and process flow. It is not acceptable to bake-in information to the official tool itself and repository (like certain frontmatter dictionaries) which are publicly accessible and may hint at the contents of potentially sensitive documents.
 
 _Text-rendering fork: **external tools render text** — docmend stops at detection + decision-recording and emits only a machine-readable handoff bundle._
+
+### RQ-024 — scale-flexibility is binding: tool-first reframing (amends RQ-010)
+
+**Resolved:** 2026-07-06
+**Source question:** OQ-024 (raised by the owner's 2026-07-06 rewrite of spec §1)
+**Decision owner:** owner
+**Canonical references:** spec §1 (tool-first Purpose & Background), §2.3 WH-008, §4 G-006, §7.2 NFR-006, §7.3 (single-file `PATH` semantics), §14 (lower-bound row), §17.2/§17.3, §20 (scale-flexibility row), §21 OQ-024 (Status: Resolved). **Amends [RQ-010](#rq-010--genericity-design-for-pluggable-build-minimal) / [ADR-0010](adr/adr-0010-pluggable-policy-seams.md)** (amendment note added to the ADR).
+
+The product is the **tool**, not the pipeline: the >100k-file library migration is the impetus use case, made possible by the tool, not the tool's definition. docmend must be fully functional from a single file to entire libraries, and users without substantial software/hardware resources must not be effectively locked out. This upgrades RQ-010's genericity resolution from _architectural principle only_ to a **binding requirement**:
+
+1. **G-006** (scale-flexibility goal) and **NFR-006** (small-scale floor: single-file `PATH`s first-class in every command; no config file, parallelism, or preservation infrastructure beyond the FR-005 low-risk opt-in) are added as Must-level spec items.
+2. **The v1 surface stays the pipeline, scaled down.** Ceremony scales; it is never waived — scan→plan→apply→verify must simply work over a single file. A low-ceremony one-shot command (e.g. `docmend fix PATH`) is deferred as **WH-008** because the reviewable plan file is the v1 safety artifact and an implicit-plan flow needs its own safety-gate design.
+3. **§1's broader verb list stays product vision** bounded by §2.3; "confirmed a total loss" maps to the existing skip-and-report posture (FR-015) — no new triage FR.
+4. **ADR-0010's seam design stands unchanged**: the new requirement binds the pipeline's _floor_ (small-scale operation), not new policy machinery; design-for-pluggable / build-minimal is unaffected.
+
+#### Rationale
+
+- The reframing is a clarification of a previously under-defined framework, and §1 is the basis for the whole document — leaving it as untestable prose would reproduce the drift OQ-020 tried to settle.
+- FR-005's risk-scaled preservation gate and D-009's seams already anticipated small-scale use; binding G-006/NFR-006 mostly makes existing posture testable rather than adding scope.
+
+#### My Comments
+
+_Owner decision (from the OQ-024 AskUserQuestion, 2026-07-06): binding requirements (G-006 + NFR-006, OQ-024 amending OQ-020); pipeline-on-one-file for v1 with the one-shot command deferred as WH-008; keep the §1 verb list and map "total loss" to skip-and-report._
 
 ## How to use this document
 

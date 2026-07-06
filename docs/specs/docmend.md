@@ -6,7 +6,7 @@ profile: full # this is the Full template; see header note for sibling profiles
 owner: 'Chris Purcell'
 implementer: 'coding-agent'
 created: '2026-07-05'
-last_reviewed: '2026-07-05'
+last_reviewed: '2026-07-06'
 supersedes: null # SPEC id this replaces, if any
 superseded_by: null # filled in when this spec is retired
 related:
@@ -45,64 +45,131 @@ related:
 | 0.5 | `2026-07-05` | `coding-agent` | Owner settled OQ-007/011/012/013/014/016/017/018/019/021/022 (recorded in `docs/resolved-questions.md`); set §21 statuses Resolved; rewrote §8.6 into Runtime vs Dev/Test tables, resolving the conditional validator row (`jsonschema`) and adding `structlog`/`pydantic`/`ruamel.yaml` runtime + `hypothesis`/`pyfakefs`/`pytest-xdist` dev rows. Blocking OQs now 1 (OQ-015) |
 | 0.7 | `2026-07-05` | `coding-agent` | **Spec/ADR consistency audit** (multi-agent: dimensional finders → adversarial verify → classify). Reconciled 8 distinct stale-prose defects to already-settled decisions — zero RQ downgrades: §21 OQ-001 "seven"→"six" mechanical transforms; added the `--write` opt-in to §10.1 and IR-003 (OQ-014); reworded IR-007 to JSON + NDJSON manifest (OQ-004); removed stray "output root" language from §8.5/§13.2 for in-place mutation (OQ-012); fixed the §9 `docmend.id` example to UUIDv7 (OQ-002); refreshed the §9 "once OQ-013 settles" note (OQ-013); added the `parallel.*` config surface to §18.2 with sequential-until-profiled defaults + IR-006 domain list (OQ-016). ADR 0001 found internally consistent and consistent with the spec. |
 | 0.6 | `2026-07-05` | `coding-agent` | Owner settled the last two open questions → **OQ-015/OQ-023** (`docs/resolved-questions.md`); §21 OQ-015/OQ-023 set Resolved. **OQ-015** (encoding): reworded FR-007 to `charset-normalizer`-sole + `1.0 − chaos` confidence (no `.confidence` API) + dual skip gate with a non-ASCII byte-count floor (default 20, family-aware/ratio deferred behind the OQ-020 seam) and gate ordering; added `encoding.non_ascii_floor` to §18.2; broadened A-003/FR-015/AW-003/R-001; fixed the §8.6 charset-normalizer RQ mislink; added the floor fixture recipe to §17.2/§17.3. **OQ-023** (review-artifact exposure): NG-001 boundary reframed to public-repo/tool surface vs operator screen in §2.2/§11, with metadata-only-artifact + external-render rows added to §13.4/§13.5. **Blocking OQs now 0; backlog fully settled (OQ-001..023).** |
+| 0.8 | `2026-07-06` | owner + `coding-agent` | **Tool-first reframing.** Owner rewrote §1: the product is the scale-flexible tool; the >100k-file library pipeline is the impetus use case, not the product. Downstream (OQ-024, amending OQ-020's principle-only resolution): mission statement rewritten tool-first; added G-006 (scale flexibility), NFR-006 (small-scale floor), WH-008 (one-shot command, deferred); single-file `PATH` semantics stated in §7.3; §3.2/§5/§14 corpus-vs-tool clarifications; §17.2/§17.3 and §20 coverage rows; §1 "total loss" mapped to skip-and-report (FR-015), no new triage FR; ADR-0010 seam design reviewed, stands. TOC re-nested (editor regen), tabs converted to spaces. |
 
 **Spec lifecycle:** This document is **living until `approved`**, then **change-controlled**: post-approval edits require a new revision row and, for scope-affecting changes, re-approval by the owner. Implementation deviations are recorded in the [Deviations Log](#deviations-log), not silently patched into requirements. When replaced, set `status: superseded` and `superseded_by:` in the frontmatter.
 
 ---
 
-- [Revision History](#revision-history)
-- [1. Purpose \& Background](#1-purpose--background)
-- [2. Scope](#2-scope) - [2.1 In Scope](#21-in-scope) - [2.2 Out of Scope (Non-Goals — never)](#22-out-of-scope-non-goals--never) - [2.3 Won't Have in v1 (deferred — not never)](#23-wont-have-in-v1-deferred--not-never) - [2.4 Boundaries](#24-boundaries)
-- [3. Context](#3-context) - [3.1 Current State](#31-current-state) - [3.2 Target State](#32-target-state) - [3.3 Assumptions](#33-assumptions) - [3.4 Constraints](#34-constraints)
-- [4. Goals](#4-goals)
-- [5. Stakeholders and Users](#5-stakeholders-and-users)
-- [6. Glossary](#6-glossary)
-- [7. Requirements](#7-requirements) - [7.1 Functional Requirements](#71-functional-requirements) - [7.2 Non-Functional Requirements](#72-non-functional-requirements) - [7.3 Interface Requirements](#73-interface-requirements) - [7.4 Data Requirements](#74-data-requirements)
-- [8. Architecture and Design](#8-architecture-and-design) - [8.1 Architecture Summary](#81-architecture-summary) - [8.2 Architecture Views](#82-architecture-views) - [8.2.1 Context View](#821-context-view) - [8.2.2 Container / Deployment View](#822-container--deployment-view) - [8.2.3 Component View](#823-component-view) - [8.3 Design Decisions](#83-design-decisions) - [8.4 Solution Alternatives Considered](#84-solution-alternatives-considered) - [8.5 Design Constraints](#85-design-constraints) - [8.6 Dependency Policy](#86-dependency-policy)
-- [9. Data Model](#9-data-model)
-- [10. Behavior and Workflows](#10-behavior-and-workflows) - [10.1 Primary Workflow](#101-primary-workflow) - [10.2 Alternate Workflows](#102-alternate-workflows) - [10.3 Edge Cases](#103-edge-cases) - [10.4 State Transitions](#104-state-transitions)
-- [11. UI Pages / API Endpoints](#11-ui-pages--api-endpoints)
-- [12. Error Handling and Recovery](#12-error-handling-and-recovery) - [12.1 Expected Failures](#121-expected-failures) - [12.2 Retry and Idempotency](#122-retry-and-idempotency) - [12.3 Rollback / Recovery](#123-rollback--recovery)
-- [13. Security and Privacy](#13-security-and-privacy) - [13.1 Authentication](#131-authentication) - [13.2 Authorization](#132-authorization) - [13.3 Secrets](#133-secrets) - [13.4 Sensitive Data](#134-sensitive-data) - [13.5 Threats and Mitigations](#135-threats-and-mitigations) - [13.6 Hardening Checklist](#136-hardening-checklist)
-- [14. Capacity and Scale Assumptions](#14-capacity-and-scale-assumptions)
-- [15. Risks](#15-risks)
-- [16. Compliance, Licensing, and Data Rights](#16-compliance-licensing-and-data-rights)
-- [17. Testing and Acceptance](#17-testing-and-acceptance) - [17.1 Definition of Done](#171-definition-of-done) - [17.2 Test Strategy](#172-test-strategy) - [17.3 Requirement-to-Test Traceability](#173-requirement-to-test-traceability)
-- [18. Deployment and Operations](#18-deployment-and-operations) - [18.1 Runtime Environment](#181-runtime-environment) - [18.2 Configuration](#182-configuration) - [18.3 Deployment Flow](#183-deployment-flow) - [18.4 Rollout Controls](#184-rollout-controls) - [18.5 Observability](#185-observability) - [18.6 Backup and Disaster Recovery](#186-backup-and-disaster-recovery) - [18.7 Documentation Deliverables](#187-documentation-deliverables)
-- [19. Implementation Plan](#19-implementation-plan) - [Waves](#waves) - [MS-0 — Foundation](#ms-0--foundation) - [MS-1 — Core workflow](#ms-1--core-workflow) - [MS-2 — Domain logic](#ms-2--domain-logic) - [MS-3 — User and admin experience](#ms-3--user-and-admin-experience) - [MS-4 — Automation / notifications / external actions](#ms-4--automation--notifications--external-actions) - [MS-5 — Hardening and production readiness](#ms-5--hardening-and-production-readiness) - [Milestone Summary](#milestone-summary)
-- [20. Success Evaluation](#20-success-evaluation)
-- [21. Open Questions and Decisions](#21-open-questions-and-decisions)
-- [Deviations Log](#deviations-log)
-- [References](#references) - [Standards](#standards) - [Project References](#project-references)
-- [Appendix A: ID Conventions](#appendix-a-id-conventions)
-- [Appendix B: Agent Implementation Contract](#appendix-b-agent-implementation-contract) - [B.1 Implementation Rules](#b1-implementation-rules) - [B.2 Prohibited Behaviors](#b2-prohibited-behaviors) - [B.3 Required Completion Report (verification gate)](#b3-required-completion-report-verification-gate) - [B.4 Session Handoff](#b4-session-handoff)
-- [Appendix C: Optional Modules](#appendix-c-optional-modules) - [C.1 External Data Integration](#c1-external-data-integration) - [C.2 Scheduled Work, Throttling, and Circuit Breaker](#c2-scheduled-work-throttling-and-circuit-breaker) - [C.3 Identity / Entity Resolution](#c3-identity--entity-resolution) - [C.4 Scoring / Ranking / Decision Logic](#c4-scoring--ranking--decision-logic) - [C.5 Relational Schema Examples](#c5-relational-schema-examples)
-- [Appendix D: Tailoring Guide](#appendix-d-tailoring-guide)
+- [`docmend` — Specification (Full)](#docmend--specification-full)
+  - [Revision History](#revision-history)
+  - [1. Purpose \& Background](#1-purpose--background)
+  - [2. Scope](#2-scope)
+    - [2.1 In Scope](#21-in-scope)
+    - [2.2 Out of Scope (Non-Goals — never)](#22-out-of-scope-non-goals--never)
+    - [2.3 Won't Have in v1 (deferred — not never)](#23-wont-have-in-v1-deferred--not-never)
+    - [2.4 Boundaries](#24-boundaries)
+  - [3. Context](#3-context)
+    - [3.1 Current State](#31-current-state)
+    - [3.2 Target State](#32-target-state)
+    - [3.3 Assumptions](#33-assumptions)
+    - [3.4 Constraints](#34-constraints)
+  - [4. Goals](#4-goals)
+  - [5. Stakeholders and Users](#5-stakeholders-and-users)
+  - [6. Glossary](#6-glossary)
+  - [7. Requirements](#7-requirements)
+    - [7.1 Functional Requirements](#71-functional-requirements)
+    - [7.2 Non-Functional Requirements](#72-non-functional-requirements)
+    - [7.3 Interface Requirements](#73-interface-requirements)
+    - [7.4 Data Requirements](#74-data-requirements)
+  - [8. Architecture and Design](#8-architecture-and-design)
+    - [8.1 Architecture Summary](#81-architecture-summary)
+    - [8.2 Architecture Views](#82-architecture-views)
+      - [8.2.1 Context View](#821-context-view)
+      - [8.2.2 Container / Deployment View](#822-container--deployment-view)
+      - [8.2.3 Component View](#823-component-view)
+    - [8.3 Design Decisions](#83-design-decisions)
+    - [8.4 Solution Alternatives Considered](#84-solution-alternatives-considered)
+    - [8.5 Design Constraints](#85-design-constraints)
+    - [8.6 Dependency Policy](#86-dependency-policy)
+  - [9. Data Model](#9-data-model)
+  - [10. Behavior and Workflows](#10-behavior-and-workflows)
+    - [10.1 Primary Workflow](#101-primary-workflow)
+    - [10.2 Alternate Workflows](#102-alternate-workflows)
+    - [10.3 Edge Cases](#103-edge-cases)
+    - [10.4 State Transitions](#104-state-transitions)
+  - [11. UI Pages / API Endpoints](#11-ui-pages--api-endpoints)
+  - [12. Error Handling and Recovery](#12-error-handling-and-recovery)
+    - [12.1 Expected Failures](#121-expected-failures)
+    - [12.2 Retry and Idempotency](#122-retry-and-idempotency)
+    - [12.3 Rollback / Recovery](#123-rollback--recovery)
+  - [13. Security and Privacy](#13-security-and-privacy)
+    - [13.1 Authentication](#131-authentication)
+    - [13.2 Authorization](#132-authorization)
+    - [13.3 Secrets](#133-secrets)
+    - [13.4 Sensitive Data](#134-sensitive-data)
+    - [13.5 Threats and Mitigations](#135-threats-and-mitigations)
+    - [13.6 Hardening Checklist](#136-hardening-checklist)
+  - [14. Capacity and Scale Assumptions](#14-capacity-and-scale-assumptions)
+  - [15. Risks](#15-risks)
+  - [16. Compliance, Licensing, and Data Rights](#16-compliance-licensing-and-data-rights)
+  - [17. Testing and Acceptance](#17-testing-and-acceptance)
+    - [17.1 Definition of Done](#171-definition-of-done)
+    - [17.2 Test Strategy](#172-test-strategy)
+    - [17.3 Requirement-to-Test Traceability](#173-requirement-to-test-traceability)
+  - [18. Deployment and Operations](#18-deployment-and-operations)
+    - [18.1 Runtime Environment](#181-runtime-environment)
+    - [18.2 Configuration](#182-configuration)
+    - [18.3 Deployment Flow](#183-deployment-flow)
+    - [18.4 Rollout Controls](#184-rollout-controls)
+    - [18.5 Observability](#185-observability)
+    - [18.6 Backup and Disaster Recovery](#186-backup-and-disaster-recovery)
+    - [18.7 Documentation Deliverables](#187-documentation-deliverables)
+  - [19. Implementation Plan](#19-implementation-plan)
+    - [Waves](#waves)
+    - [MS-0 — Foundation](#ms-0--foundation)
+    - [MS-1 — Core workflow](#ms-1--core-workflow)
+    - [MS-2 — Domain logic](#ms-2--domain-logic)
+    - [MS-3 — User and admin experience](#ms-3--user-and-admin-experience)
+    - [MS-4 — Automation / notifications / external actions](#ms-4--automation--notifications--external-actions)
+    - [MS-5 — Hardening and production readiness](#ms-5--hardening-and-production-readiness)
+    - [Milestone Summary](#milestone-summary)
+  - [20. Success Evaluation](#20-success-evaluation)
+  - [21. Open Questions and Decisions](#21-open-questions-and-decisions)
+  - [Deviations Log](#deviations-log)
+  - [References](#references)
+    - [Standards](#standards)
+    - [Project References](#project-references)
+  - [Appendix A: ID Conventions](#appendix-a-id-conventions)
+  - [Appendix B: Agent Implementation Contract](#appendix-b-agent-implementation-contract)
+    - [B.1 Implementation Rules](#b1-implementation-rules)
+    - [B.2 Prohibited Behaviors](#b2-prohibited-behaviors)
+    - [B.3 Required Completion Report (verification gate)](#b3-required-completion-report-verification-gate)
+    - [B.4 Session Handoff](#b4-session-handoff)
+  - [Appendix C: Optional Modules](#appendix-c-optional-modules)
+    - [C.1 External Data Integration](#c1-external-data-integration)
+    - [C.2 Scheduled Work, Throttling, and Circuit Breaker](#c2-scheduled-work-throttling-and-circuit-breaker)
+    - [C.3 Identity / Entity Resolution](#c3-identity--entity-resolution)
+    - [C.4 Scoring / Ranking / Decision Logic](#c4-scoring--ranking--decision-logic)
+    - [C.5 Relational Schema Examples](#c5-relational-schema-examples)
+  - [Appendix D: Tailoring Guide](#appendix-d-tailoring-guide)
 
 ---
 
 ## 1. Purpose & Background
 
-`docmend` is a Python CLI tool for managing and maintaining large libraries of text-based documents. It helps its user clean up, modernize, and convert poorly formatted text and HTML documents into well-structured Markdown files.
+`docmend` is a Python CLI tool for converting, repairing, restructuring, classifying, managing, and maintaining text-based documents on scales of individual files to entire libraries. It helps its user clean up, modernize, and convert poorly formatted, broken, mangled, corrupted, and other structurally deficient text and HTML documents into well-structured Markdown files.
 
-The owner has a large personal library (more than 100,000 files) of poorly formatted `.txt` and HTML (`.html`, `.htm`, and similar) documents that need to be modernized and converted to Markdown (`.md`). Many documents date back to the 1990s and earlier, and years of handling and editing have left them in notable states of disrepair:
+The impetus of the project was to address the needs of the owner, who has a large personal library (more than 100,000 files) of poorly formatted `.txt` and HTML (`.html`, `.htm`, and similar) documents collected over three decades that need to be modernized, harmonized, and converted to Markdown (`.md`).
+
+`docmend` needs to be able to handle a variety of issues including, but not limited to:
 
 - Poor and broken formatting: inconsistent headings, spacing, and indentation.
 - A mix of encodings (UTF-8, ISO-8859-1, Windows-1252, and others), character sets (ASCII, Latin-1), and end-of-line conventions (LF, CRLF, CR) that need to be normalized to UTF-8 and LF.
-- No file naming convention or structure; many files carry non-descriptive names (`doc1.txt`, `file2.html`) that should eventually be renamed to something meaningful.
-- Wide variation in line and paragraph breaking, inconsistent and missing whitespace (words run together, paragraphs no longer separate), and tab/indentation inconsistencies.
+- Minimal to no file naming conventions and organization.
+- Inconsistent and broken line and paragraph breaking, missing whitespace (words merged together, paragraphs no longer separated), and tab/indentation inconsistencies, and a variety of hardcoded word wrapping styles.
 - Poor spelling, grammar, and punctuation.
-- Files that appear corrupted or broken and need repair or reconstruction.
+- Files appearing corrupted, broken, or mangled that need repair or, where repair is not safely possible, an explicit skip-and-report verdict (FR-015) rather than a silent guess or quiet discard.
 - Garbled and garbage text, stray HTML tags, and other "ASCII pollution."
-- Many duplicates and near-duplicates that existing tools fail to detect because of noise and drift in the text.
+- Duplicates and near-duplicates that evade existing tools due to noisy text and decades of drift.
 
-No existing single tool handles this combination safely at this scale, and the file volume makes complete manual review impossible — which is why safety mechanisms (backups, dry-run, resumability, detailed logging) are core requirements rather than conveniences.
+No existing single tool handles this combination safely at the scale required, and manual correction is impractical and unrealistic, which is why safety mechanisms (backups, dry-run, resumability, detailed logging) are core requirements rather than conveniences.
 
-After successful implementation, the library is a normalized corpus: UTF-8, LF-terminated, Pandoc-flavored Markdown with strict, schema-validated YAML frontmatter, produced by a pipeline whose every mutation is planned, reviewable, reversible, and logged. The first release deliberately optimizes for the **safe migration substrate** (mechanical, conservative transformations with full auditability); semantic cleanup (meaningful renames, reconstruction, spelling/grammar repair, deduplication) builds on that substrate later and must remain possible, but is not required for the first working version.
+Though the tool is designed from the ground up to handle enormous libraries, docmend is also intended to be perfectly functional for small-scale and individual document manipulation tasks. It is extensible and modular so that additional functionality can be added where needed but not required for basic functionality. Users must not be effectively locked out of the tool if they do not have substantial software and hardware resources.
 
-The tooling is not limited to strictly producing the target library: it should remain generally useful for cleaning up and modernizing text and HTML documents in a variety of ways.
+Though useful at small scale, docmend offers a greatly expanded set of capabilities for large-scale library normalization, safe and secure handling, and comprehensive auditing. After successful implementation, the library is a normalized corpus: UTF-8, LF-terminated, Pandoc-flavored Markdown with strict, schema-validated YAML frontmatter, produced by a pipeline whose every mutation is planned, reviewable, reversible, and logged. The first release deliberately optimizes for the **safe migration substrate** (mechanical, conservative transformations with full auditability); semantic cleanup (meaningful renames, reconstruction, spelling/grammar repair, deduplication) builds on that substrate later and must remain possible, but is not required for the first working version.
 
-> This project provides a safe, resumable, auditable document-normalization pipeline so that the owner can convert a >100k-file legacy text/HTML library into clean, well-structured Markdown without risking silent data loss or requiring manual review of individual results.
+> This project delivers `docmend`: a safe, resumable, auditable document-normalization tool, fully functional from a single file to an entire library (G-006, OQ-024). Its first proving ground is the owner's >100k-file legacy text/HTML library, which the tool's pipeline workflow converts into clean, well-structured Markdown without risking silent data loss or requiring manual review of individual results.
 
 ---
 
@@ -142,6 +209,7 @@ Things that are goals eventually but **excluded from this release** to control s
 | WH-005 | Duplicate/near-duplicate detection and consolidation. | Noisy, drifted text defeats existing tools; needs the entity-resolution ladder in C.3. | Normalized corpus exists (normalization materially improves matching). |
 | WH-006 | Frontmatter semantic enrichment (inferred titles, authors, summaries, classifications). | Depends on inference/external assistance; mechanical metadata comes first (see §9). | Frontmatter schema (DR-005) stable and validated in production use. |
 | WH-007 | Search/index integration. | Downstream consumer concern; frontmatter is designed to feed it, but integration is separate. | Corpus conversion is substantially complete. |
+| WH-008 | Low-ceremony one-shot command (e.g. `docmend fix PATH`) collapsing plan + apply for quick single-file / small-batch jobs. | The reviewable plan file is the v1 safety artifact (D-006); a flow that makes it implicit needs its own safety-gate design and must not weaken the FR-004/FR-005 posture (OQ-024). | Single-file pipeline flow (NFR-006) proven in real use; demand for lower ceremony demonstrated. |
 
 ### 2.4 Boundaries
 
@@ -161,7 +229,7 @@ The library is a directory tree of more than 100,000 `.txt` and HTML files accum
 
 ### 3.2 Target State
 
-A normalized corpus in which every in-scope document is UTF-8 (no BOM), LF-terminated, Pandoc-flavored Markdown — CommonMark-ish body, strict schema-validated YAML frontmatter (§9) — with every mutation traceable through plan, report, and manifest artifacts, and every original recoverable. Files the tool could not confidently process are skipped and reported, not guessed at.
+A normalized corpus in which every in-scope document is UTF-8 (no BOM), LF-terminated, Pandoc-flavored Markdown — CommonMark-ish body, strict schema-validated YAML frontmatter (§9) — with every mutation traceable through plan, report, and manifest artifacts, and every original recoverable. Files the tool could not confidently process are skipped and reported, not guessed at. (This subsection describes the impetus corpus; the tool itself remains corpus-agnostic and scale-flexible per G-006.)
 
 ### 3.3 Assumptions
 
@@ -196,12 +264,15 @@ Goals are outcomes; requirements (§7) are behaviors. A goal should be traceable
 | G-003 | Unattended batch operation at library scale. | A full-library run survives interruption and resumes without redoing or corrupting completed work. | FR-013, NFR-001, NFR-002, NFR-003 |
 | G-004 | Machine-validated document metadata. | Generated frontmatter validates against the canonical schema during plan, apply, and verify. | FR-016, DR-005 |
 | G-005 | Trustworthy automation: the tool never silently guesses on ambiguous input. | Risky files (low-confidence encoding, apparent binary, collisions) are skipped and reported, never rewritten. | FR-011, FR-015, NFR-004, ERR-002 |
+| G-006 | Scale-flexible tool: fully functional from a single file to a >100k-file library, with no heavyweight setup for small jobs (OQ-024). | The complete scan → plan → apply → verify workflow succeeds on a single file, on modest hardware, with default configuration and only the FR-005 low-risk opt-in — no preservation infrastructure, parallelism, or config file required. | FR-005, NFR-006 |
 
 ---
 
 ## 5. Stakeholders and Users
 
 Solo, single-user project: the owner is simultaneously the end user, operator, and approver; implementation is by a coding agent under Appendix B. A stakeholder matrix would repeat one name in every row, so per the template's tailoring guidance this section records that fact and nothing more.
+
+The repository is public and the tool is intended to be generally useful beyond this library (G-006, OQ-024): external users are an anticipated secondary audience, but they hold no approval role in this spec — requirements serve them through the scale-flexibility goal rather than through stakeholder rows.
 
 ---
 
@@ -237,7 +308,7 @@ Define every domain term an implementer could misread. Ambiguous terminology is 
 | FR-002 | The system shall produce a machine-readable plan (DR-002) from an inventory and configuration, recording per-file actions, skip decisions, and the source hashes used. | The plan is where dangerous cases are caught before any file is touched. | Plan over a corpus containing each §10.3 edge case; assert expected actions and skips with reasons. | Must |
 | FR-003 | The system shall apply only actions recorded in a valid plan, and shall refuse a plan whose recorded source hashes no longer match the files. | Prevents acting on stale decisions after the library has changed. | Modify a file after planning; apply skips it, reports the hash mismatch (ERR-002), and exits non-zero. | Must |
 | FR-004 | The system shall support `--dry-run`, and apply shall default to dry-run unless the user explicitly opts into writes. | Previewing changes must be the default posture for bulk destructive edits. | Apply without the opt-in flag writes nothing; report shows would-be outcomes; corpus hashes unchanged. | Must |
-| FR-005 | The system shall gate every writing apply run behind a preservation check whose required strength scales with the operation's risk: a content-changing rewrite shall refuse to proceed unless a byte-preserving strategy is active (library in Git, external backups declared, or tool-written backups enabled), while a low-risk single-file operation may proceed under an explicit operator opt-in that accepts reduced or no rollback. A reversible manifest is always recorded but does not by itself satisfy preservation for a content rewrite. | Original-data preservation is non-negotiable at a scale that precludes manual review (§1); but docmend is a general-purpose processing tool (OQ-020) that must not force heavyweight backup setup onto quick, low-risk, single-file work, and the manifest records how to undo a change, not the original bytes (OQ-005/OQ-008). | A content-rewrite apply with no byte-preserving strategy exits non-zero with an explanatory message and writes nothing; a single-file run with the explicit low-risk opt-in proceeds and records a manifest entry; a manifest-only configuration does not satisfy preservation for a content rewrite. | Must |
+| FR-005 | The system shall gate every writing apply run behind a preservation check whose required strength scales with the operation's risk: a content-changing rewrite shall refuse to proceed unless a byte-preserving strategy is active (library in Git, external backups declared, or tool-written backups enabled), while a low-risk single-file operation may proceed under an explicit operator opt-in that accepts reduced or no rollback. A reversible manifest is always recorded but does not by itself satisfy preservation for a content rewrite. | Original-data preservation is non-negotiable at a scale that precludes manual review (§1); but docmend is a general-purpose processing tool (OQ-020, OQ-024) that must not force heavyweight backup setup onto quick, low-risk, single-file work, and the manifest records how to undo a change, not the original bytes (OQ-005/OQ-008). | A content-rewrite apply with no byte-preserving strategy exits non-zero with an explanatory message and writes nothing; a single-file run with the explicit low-risk opt-in proceeds and records a manifest entry; a manifest-only configuration does not satisfy preservation for a content rewrite. | Must |
 | FR-006 | The system shall, when backups are enabled, copy each original to the configured backup location and verify that backup (fsync, re-read, re-hash, and compare to the plan's recorded source hash) before mutating the original, and shall always record a reversible manifest entry (DR-004) for every mutation. | Rename/write operations are painful to undo without a manifest; verifying the backup before touching the original closes the window where a silently corrupted or short backup would leave no recoverable copy (OQ-005). | After an apply run, every changed file has a manifest entry with before/after hashes and a verified backup reference; a backup whose re-hash does not match the plan's source hash aborts the mutation (ERR-004) before the original is touched; restoring from manifest+backups reproduces the original corpus. | Must |
 | FR-007 | The system shall detect source encodings with `charset-normalizer` as the sole detector, resolving each file in fixed order — BOM sniff (authoritative), then strict full-file UTF-8 validity, then ASCII-only content treated as ASCII/UTF-8 (never detected as legacy) — convert content to UTF-8 without BOM, and skip a file that fails either of two independent gates: decode confidence (computed as 1.0 minus `CharsetMatch.chaos`; charset-normalizer 3.x exposes no `.confidence`) below the configured threshold (default 0.80), or, for a non-BOM, non-valid-UTF-8 file, fewer non-ASCII bytes than the configured floor (default 20). | Encoding detection is imperfect (UTF-8/Windows-1252/ISO-8859-1 ambiguity); low-confidence files must never be silently "fixed." A single confidence scalar cannot catch a short low-entropy false-accept — e.g. a 38-byte mostly-ASCII string mis-detected as Big5 at `chaos=0.0` (maximum confidence, wrong) — so a non-ASCII byte-count floor gates the legacy guess independently; skip-and-report is the safe failure for this `.txt`-heavy English corpus. | Fixtures in UTF-8, UTF-8-BOM, Windows-1252, and ISO-8859-1 convert correctly; an ambiguous fixture below the confidence threshold is skipped with reason; a short non-ASCII fixture below the non-ASCII floor is skipped with reason. | Must |
 | FR-008 | The system shall normalize all line endings (CRLF, CR, mixed) to LF. | Target corpus is LF-only (D-002). | Fixtures with CRLF, CR, and mixed endings all produce LF-only output. | Must |
@@ -263,6 +334,7 @@ Quality attributes: performance, reliability, maintainability, usability, observ
 | NFR-003 | Observability | The system shall log per-file processing detail and per-run summaries (changes made, errors, skips, statistics) sufficient to diagnose issues mid-batch without re-running. | Log assertions in integration tests; every non-default outcome carries a reason and file path. | Must |
 | NFR-004 | Safety | The system shall be conservative by default: every destructive capability is opt-in (dry-run default, backups gate, `skip` collision default, confidence threshold). | Config-default audit test: out-of-the-box invocation of apply cannot mutate anything. | Must |
 | NFR-005 | Testability | Transformations shall be pure functions (text in, text out) with filesystem effects isolated in the writer layer (§8). | Transform unit tests run with no filesystem access; writer tests are the only ones touching disk. | Must |
+| NFR-006 | Usability / Portability | The system shall be fully functional at small scale: every `PATH`-accepting command shall accept a single file as well as a directory tree, and a single-file or small-batch run shall require no configuration file, no parallelism, and no preservation infrastructure beyond the FR-005 low-risk opt-in — the pipeline ceremony scales down; it is never waived (G-006, OQ-024). | Single-file end-to-end test: scan → plan → apply `--write` (low-risk opt-in) → verify over one file with default configuration completes correctly with no additional setup; resource usage is proportional to the input, not to library-scale assumptions. | Must |
 
 ### 7.3 Interface Requirements
 
@@ -280,6 +352,8 @@ APIs, CLIs, UIs, files, databases, queues, protocols, external systems, hardware
 | IR-008 | CLI | The system shall expose `docmend restore`, replaying manifest records per `docmend.id` in LIFO order to return mutated files to their pre-apply state (canonical decision: `adr-0004-apply-safety-gate-and-preservation`, OQ-005). | `docmend restore [--manifest FILE \| --run-id ID] [--id DOCMEND_ID ...] [--write \| --dry-run]` (reads the DR-004 manifest; restores each record's original from its backup/preservation ref; dry-run previews by default, mirroring `apply`'s opt-in). | Restored bytes match the manifest's pre-apply `source.hash`; the tool-wide exit-code taxonomy (§18.5) applies (0 clean, 1 findings, 2 input error, 3 safety refusal); drilled in §18.6. |
 
 Selection and transformation options (e.g. `--include`/`--exclude` patterns, `--rename-txt-to-md`, `--detect-encoding`, `--normalize-newlines lf`, `--trim-trailing-whitespace`, `--ensure-final-newline`, `--collapse-blank-lines 3`, `--fail-on-low-confidence-encoding`, `--backup-dir PATH`, `--report FILE`) mirror the configuration surface in §18.2; the config file is authoritative and flags override it.
+
+In every command, `PATH` may be a single file or a directory tree; single-file invocation is a first-class flow (NFR-006, G-006), not a degenerate case of library processing.
 
 ### 7.4 Data Requirements
 
@@ -364,7 +438,7 @@ Guidance: keep domain logic separate from CLI glue; make the encoding-detection 
 | D-006 | Explicit plan-file workflow: `plan` emits a reviewable artifact that `apply` executes and re-validates against source hashes. | Separates decision from execution; the plan is the human/agent review surface and the stale-input guard (FR-003). | Direct scan-and-apply (no review point, no stale-input protection). | `adr-0002-layered-pipeline-isolated-writer` |
 | D-007 | Frontmatter separates mechanical from semantic metadata: Pandoc-recognized fields at the root, docmend-owned data under namespaced objects (`docmend`, `source`, `output`). | Mechanical fields are regenerable and trustworthy; semantic fields carry known/inferred/unknown status so low-confidence inference never masquerades as user-confirmed truth. | Flat schema (mixes regenerable and hand-curated data); fully namespaced (breaks Pandoc export compatibility). | `adr-0011-frontmatter-optional-minimal-split` |
 | D-008 | The repository's Markdown Frontmatter Standard is deliberately not adopted; the product frontmatter contract is governed by this spec alone. | The canonical repo-doc schema conflicts with docmend's Pandoc-oriented frontmatter contract. | Adopting the standard and excluding product output (still risks tooling conflation). | `adr-0001-no-markdown-frontmatter-standard` |
-| D-009 | Policy seams for design-for-pluggable genericity: naming policy, preservation strategy, controlled-vocabulary source, and frontmatter emission are each isolated behind an interface; v1 ships exactly one minimal default per seam and no swap-config machinery. | docmend must stay generally useful (§1, OQ-020) without building plugin configuration in v1; seams make later config-driven policies a non-breaking addition, while build-minimal keeps v1 focused on correctness and safety first. | Hardcode each policy (cheap now, breaking change to generalize later); build full pluggable config in v1 (scope creep competing with correctness-first). | `adr-0010-pluggable-policy-seams` |
+| D-009 | Policy seams for design-for-pluggable genericity: naming policy, preservation strategy, controlled-vocabulary source, and frontmatter emission are each isolated behind an interface; v1 ships exactly one minimal default per seam and no swap-config machinery. | docmend must stay generally useful (§1, OQ-020, OQ-024) without building plugin configuration in v1; seams make later config-driven policies a non-breaking addition, while build-minimal keeps v1 focused on correctness and safety first. | Hardcode each policy (cheap now, breaking change to generalize later); build full pluggable config in v1 (scope creep competing with correctness-first). | `adr-0010-pluggable-policy-seams` |
 
 ### 8.4 Solution Alternatives Considered
 
@@ -669,6 +743,7 @@ The numbers that drive design choices. If a choice in §9 depends on volume, the
 | Data volume | More than 100,000 files; multiple GiB of text. | Low — the library is a mostly static backlog. | Streaming per-file processing; bounded memory (NFR-001); no whole-corpus in-memory model. |
 | Request rate | Manually invoked batch runs; full-library runs are the peak. | Occasional incremental runs after initial pass. | Resumability (FR-013) matters more than throughput; idempotent re-runs (FR-017). |
 | Concurrency | Single user; optional parallel workers within one process. | None. | Parallelism is an internal optimization; no cross-process locking needed. |
+| Lower bound | Single files and small batches are first-class inputs (NFR-006). | — | No mandatory config file, parallelism, or preservation infrastructure for small jobs; ceremony scales down, never up-front (G-006, OQ-024). |
 
 ---
 
@@ -717,7 +792,7 @@ General project risks — schedule, technical, dependency, provider. Security th
 | Integration / adapter | Encoding detection, filesystem discovery, writer atomicity, backup/manifest recording. | Success, failure (ERR-001–ERR-006), and interruption paths. | Yes |
 | Snapshot / contract | Artifact shapes (DR-001–DR-004), frontmatter schema validation, converted-output fixtures. | Diffs reviewed intentionally; schema round-trips. | Yes |
 | Database | N/A — no database; artifact round-trip covered under snapshot/contract. | — | No |
-| End-to-end | Full CLI journey: scan → plan → apply --dry-run → apply → verify on a synthetic corpus. | Happy path plus at least one failure path (gate refusal, hash mismatch) and one interruption/resume path. | Yes |
+| End-to-end | Full CLI journey: scan → plan → apply --dry-run → apply → verify on a synthetic corpus, and the same journey over a single file (NFR-006). | Happy path plus at least one failure path (gate refusal, hash mismatch) and one interruption/resume path; the single-file journey with default configuration and the low-risk opt-in. | Yes |
 | Security | Path containment, symlink handling, log content (no document bodies at default verbosity). | Critical misuse cases from §13.5. | Yes |
 | Operations | Backup-and-restore drill from manifest; resume after kill; report/manifest consistency. | The §18.6 restore test, automated. | Yes |
 | Regression | The **weird-document corpus**: every anomaly class encountered (§10.3 plus real-world finds). | Each prior bug or anomaly class pinned by a fixture; corpus grows for the life of the project (extensive testing against weird documents is a headline requirement). The encoding-floor fixtures (OQ-015) vary three axes — total length × non-ASCII count × placement — with explicit false-accept and false-skip boundary sets and family-equivalent decode outcomes (e.g. cp932 vs Shift_JIS, GBK vs GB18030). | Yes |
@@ -751,6 +826,7 @@ The implementer fills this in as the completion evidence ([Appendix B.3](#b3-req
 | NFR-003 | Log content assertions in integration tests. | Not Started |
 | NFR-004 | Config-default audit test (no mutation out of the box). | Not Started |
 | NFR-005 | Transform purity check (no filesystem access in transform tests). | Not Started |
+| NFR-006 | Single-file end-to-end test with default configuration and the FR-005 low-risk opt-in. | Not Started |
 
 ---
 
@@ -930,6 +1006,7 @@ Post-launch evaluation targets, defined **before** implementation. Measured afte
 | Performance | A full-library batch is practical: completes across sessions via resume without operator babysitting. | Run records from the real-library rollout; concrete numeric throughput targets deferred (OQ-010). |
 | Cost control | Not applicable in v1 — no paid services (§8.6). | — |
 | Operational usability | Skips and failures are reviewable from reports alone — no per-file manual inspection needed. | Owner triages the real-library skip pile using reports only; gaps become new requirements. |
+| Scale flexibility | The tool is practical for one-off small jobs, not only library migration (G-006). | NFR-006 single-file end-to-end test passes; a small job requires no library-scale setup (config file, preservation infrastructure, parallelism). |
 
 ---
 
@@ -958,10 +1035,11 @@ Questions may proceed on a recorded **current assumption** unless marked blockin
 | OQ-017 | Structured logging library, wire format, destination, field schema, and `--verbose`/`--quiet` level mapping (§8.6, NFR-003, §18.5). | `structlog` via stdlib handlers; per-run JSON Lines keyed on run-ID plus Rich console; console verbosity decoupled from a DEBUG-floored file sink (`docs/research/structured-logging-library.md`). | No | owner | MS-0 | Resolved |
 | OQ-018 | JSON Schema validator library for Draft 2020-12 with format assertions at scale (§8.6, FR-016, DR-005). | `jsonschema>=4.26` with the `format-nongpl` extra and an explicit `Draft202012Validator`/`FormatChecker`, one reused validator per schema (`docs/research/json-schema-validator-library.md`). | Yes | owner | MS-1 | Resolved |
 | OQ-019 | Approve `Hypothesis` as a dev-only test dependency for §17.2 property tests (§8.6, NFR-005). | Adopt in `[dependency-groups].dev` with a CI settings profile; split §8.6 into Runtime vs. Dev/Test (`docs/research/property-based-testing-hypothesis.md`). | No | owner | MS-1 | Resolved |
-| OQ-020 | Are docmend's domain-specific parts (the §9 taxonomy and semantic fields) config-driven/pluggable or purpose-built, and is §1's "generally useful" ambition operationalized as a requirement or dropped? | Design-for-pluggable / build-minimal: v1 isolates naming, preservation, vocabulary, and frontmatter policies behind seams but ships one minimal default each; §1 genericity is kept as an architectural principle (D-009). | No | owner | MS-1 | Resolved; canonical ADR `adr-0010-pluggable-policy-seams` |
+| OQ-020 | Are docmend's domain-specific parts (the §9 taxonomy and semantic fields) config-driven/pluggable or purpose-built, and is §1's "generally useful" ambition operationalized as a requirement or dropped? | Design-for-pluggable / build-minimal: v1 isolates naming, preservation, vocabulary, and frontmatter policies behind seams but ships one minimal default each; §1 genericity is kept as an architectural principle (D-009). | No | owner | MS-1 | Resolved; canonical ADR `adr-0010-pluggable-policy-seams`; amended by OQ-024 |
 | OQ-021 | Internal data-model library: adopt `pydantic` v2 for config/inventory/plan/report/manifest models, or use stdlib dataclasses/typed dicts? (Appendix B.2 requires an OQ before adoption; §8.6.) | Adopt `pydantic` v2 (>= 2.12 for 3.14) with strict models (`extra='forbid'`); keep the hand-authored JSON Schemas (OQ-004) as the durable external contract (`docs/research/python-library-research.md`). | No | owner | MS-1 | Resolved |
 | OQ-022 | Frontmatter YAML codec: `ruamel.yaml` vs `PyYAML` for parsing/emitting product frontmatter (§8.6, §9). | `ruamel.yaml` behind a `FrontmatterCodec` (duplicate-key rejection, controlled emission), `PyYAML` + custom loader as fallback; override the timestamp constructor so date scalars stay strings (`docs/research/safe-yaml-loading.md`); timing gated by OQ-009. | No | owner | Frontmatter validation (gated by OQ-009) | Resolved |
 | OQ-023 | Content-exposure boundary and default posture for deferred WH-002 (semantic-correction) / WH-005 (fuzzy-duplicate) review artifacts, given NG-001's no-reading-UI non-goal and §13.4 confidential content. | The confidentiality boundary is the public-repo/official-tool surface, not the operator's screen — showing text to the operator during a run is fine, but nothing hinting at contents (e.g. vocab dictionaries) is baked into the repo (OQ-007, C-002); durable review artifacts stay metadata-only and external tools render text (WH-005 metadata-only cluster report; WH-002 metadata ledger with no embedded body text); exception-only default posture. | No | owner | WH-002 / WH-005 design (deferred) | Resolved |
+| OQ-024 | §1's tool-first reframing (owner, 2026-07-06): is scale-flexibility — "fully functional from single files to entire libraries; users without substantial software/hardware resources are not locked out" — a binding requirement or an architectural principle, amending OQ-020's principle-only resolution? | Binding: G-006 + NFR-006 added; the v1 surface stays the scan→plan→apply→verify pipeline with single-file `PATH`s first-class (§7.3) and the FR-005 low-risk opt-in covering preservation; a one-shot convenience command is deferred as WH-008; §1's broader verb list remains product vision bounded by §2.3, with "total loss" mapping to skip-and-report (FR-015) — no new triage FR. ADR-0010's seam design reviewed and stands (the requirement binds the pipeline's floor, not new policy machinery). | No | owner | MS-1 | Resolved; amends OQ-020 / `adr-0010-pluggable-policy-seams` (amendment note) |
 
 ---
 

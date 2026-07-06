@@ -6,7 +6,7 @@ description: 'docmend keeps its "generally useful" ambition as an architectural 
 doc_type: 'adr'
 status: 'accepted'
 created: '2026-07-05'
-updated: '2026-07-05'
+updated: '2026-07-06'
 reviewed: null
 owner: 'chrisdpurcell'
 consumer: 'agent'
@@ -80,6 +80,7 @@ Confirmed by: the frontmatter validator accepting an externally-supplied vocabul
 
 ## More Information
 
+- **Amendment (2026-07-06, RQ-024 / spec OQ-024):** the owner's tool-first rewrite of spec §1 upgrades the genericity ambition from architectural principle to **binding requirement** (spec G-006 scale-flexibility goal, NFR-006 small-scale floor, WH-008 deferred one-shot command). This ADR's seam design and build-minimal posture were reviewed and **stand unchanged**: the new requirement binds the _pipeline's floor_ (single-file, low-resource operation of the existing scan→plan→apply→verify surface), not new policy machinery, so "principle governing shape" in the Decision Outcome below is superseded only in the sense that shape is now also backed by testable requirements.
 - Spec: §1 (generally-useful ambition), §8 architecture, §9, D-009.
 - Decision owner: owner, decided in session via the genericity AskUserQuestion (RQ-010, 2026-07-05).
 - This is a **philosophy ADR**: it governs the shape of several other decisions rather than a single mechanism. Instances live in ADR-0002 (layered pipeline), ADR-0004 (preservation interface), ADR-0008 (naming-policy seam), and ADR-0011 (frontmatter emission). RQ-011 (external per-corpus vocabularies) is recorded here as an instance rather than as its own ADR.

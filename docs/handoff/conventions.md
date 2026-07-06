@@ -168,8 +168,10 @@ uv run python scripts/fix_spec_toc.py
 
 **Rule:** Don't hand-edit these to bypass a check, except with a documented ADR exception. `.project-standards.yml`'s `spec:` `include`/`exclude` globs are the one adoption-config surface edited normally. Adding a new, additive, non-bypassing entry (e.g. a new VS Code task) is not itself a check-bypass, but is still worth a deliberate decision rather than a silent edit.
 
+**Dependabot action-version bumps are an accepted exception (adr-0017).** Dependabot's `github-actions` ecosystem scans _every_ workflow file — including standard-owned ones like `check.yml` — and cannot exclude a single file. A version bump it authors (e.g. `actions/checkout@v6→v7`) is not a hand-edit and not a check-bypass; it keeps action pins current, which is the posture the standards endorse. Merge such PRs normally. The only side effect is possible churn if a future `project-standards` sync resets the pin — accepted as low-cost. This exception is scoped to **action-version bumps**; any _other_ change to a standard-owned workflow still needs an ADR exception.
+
 **Why:** these files are the mechanism CI enforcement depends on; unreviewed edits here can silently weaken the gate.
 
-**Sources:** four adopted Project Standards (python-tooling, markdown-tooling, project-spec, adr), pinned to `@v4`.
+**Sources:** four adopted Project Standards (python-tooling, markdown-tooling, project-spec, adr), pinned to `@v4`; adr-0017 (Dependabot exception).
 
 **Related:** #1, #2, #3, #5.

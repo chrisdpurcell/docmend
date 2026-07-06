@@ -1,0 +1,39 @@
+# Dependabot configuration — ported from the hw-radar workflow (adr-0017).
+# See the uv-strict-python security-setup reference for advanced options.
+#
+# docmend has no production dependencies yet (`dependencies = []`); the
+# production-dependencies group below is inert until the CLI's runtime deps
+# land at MS-0+, kept now so the policy is in place before the first one is
+# added rather than retrofitted after.
+
+version: 2
+updates:
+  # Python dependencies (pyproject.toml / uv.lock)
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    # 7-day cooldown: don't update packages published < 7 days ago.
+    # Mitigates supply-chain attacks via malicious fresh releases.
+    cooldown:
+      default-days: 7
+    # Group minor/patch updates to reduce PR noise.
+    groups:
+      dev-dependencies:
+        dependency-type: development
+        update-types: [minor, patch]
+      production-dependencies:
+        dependency-type: production
+        update-types: [patch]
+
+  # GitHub Actions (keeps the SHA-pinned setup-uv in check.yml current)
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: [minor, patch]

@@ -139,6 +139,23 @@ class TestClassification:
         legacy = {f.path: f for f in inventory.files}["legacy.txt"]
         assert legacy.encoding.detected is None
 
+    def test_legacy_detection__nul_bearing_file_skips_charset_normalizer(
+        self, tmp_path: Path
+    ) -> None:
+        """The `not record.nul_bytes` gate clause (adr-0009 gate order) has no
+        other test where it is the deciding reason detection is skipped:
+        nulls.txt in the corpus never reaches the gate at all, because NUL is
+        already a valid UTF-8 code point (EC-006) and utf8_valid short-circuits
+        first. This fixture is BOM-less, non-UTF-8-valid (0xE9 followed by a
+        non-continuation byte), and NUL-bearing, so it clears the BOM and
+        utf8_valid clauses and is stopped by the NUL clause specifically."""
+        (tmp_path / "nul.txt").write_bytes(b"caf\xe9 text\x00more \xe9\xe8 here")
+        record = run_scan(tmp_path).files[0]
+        assert record.nul_bytes is True
+        assert record.encoding.utf8_valid is False
+        assert record.encoding.bom is None
+        assert record.encoding.detected is None
+
     def test_legacy_detection__detector_failure_is_an_unreadable_skip(
         self, corpus: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -7,11 +7,16 @@ requires-python = ">=3.14"
 license = "MIT"
 authors = [{ name = "Chris Purcell" }]
 keywords = ["markdown", "pandoc", "text-normalization", "document-conversion", "cli"]
-dependencies = []
+dependencies = [
+    "pydantic>=2.12",
+    "rich>=15.0.0",
+    "structlog>=26.1.0",
+    "typer>=0.26.8",
+]
 
-# NOTE: no [project.scripts] entry point yet — docmend is pre-implementation
-# (src/docmend/ currently holds only a version smoke-test surface). Add the
-# console script (e.g. docmend = "docmend.cli:main") when the CLI module lands.
+[project.scripts]
+# Typer app objects are callable; this is the whole console entry point (IR-005).
+docmend = "docmend.cli:app"
 
 [dependency-groups]
 # pytest floor matches [tool.pytest.ini_options].minversion; ruff>=0.14 is the first
@@ -19,8 +24,11 @@ dependencies = []
 # pytest-cov is intentionally absent: the gate measures coverage with coverage.py
 # directly, and a second coverage entry point creates competing instructions.
 dev = [
+    "allpairspy>=2.5.1",
     "basedpyright",
     "coverage[toml]",
+    "faker>=40.28.1",
+    "import-linter>=2.13",
     "pip-audit",
     "pytest>=9.0",
     "ruff>=0.14",
@@ -69,3 +77,26 @@ source = ["src"]
 show_missing = true
 skip_covered = true
 fail_under = 85
+
+# --- import-linter (repo-owned, additive; NOT part of the python-tooling standard) ---
+# NFR-005 purity contract (spec OQ-033 / adr-0002): the transform layer is pure —
+# text in, text out. CI enforcement runs via tests/test_import_contracts.py inside
+# the existing pytest gate, so the standard-owned check workflow needs no edit
+# (conventions #8). The runtime half of the enforcement is the autouse fixture in
+# tests/unit/transform/conftest.py.
+[tool.importlinter]
+root_package = "docmend"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "NFR-005: transform layer is pure (no filesystem modules, never the writer)"
+type = "forbidden"
+source_modules = ["docmend.transform"]
+forbidden_modules = [
+    "docmend.writer",
+    "os",
+    "io",
+    "pathlib",
+    "shutil",
+    "tempfile",
+]

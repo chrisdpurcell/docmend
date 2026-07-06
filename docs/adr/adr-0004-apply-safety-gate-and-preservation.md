@@ -74,5 +74,5 @@ Confirmed by: pairwise combinatorial tests over the predicate set (t=3 for the p
 
 - Spec: §7.1 FR-005/FR-006, §8.5, §18.6, §21 OQ-005 (Resolved RQ-005) and OQ-008 (Resolved RQ-007).
 - Research: `backup-integrity-verification`, `restore-from-manifest-design`, `combinatorial-safety-gate-testing`.
-- The preservation _strategy_ selection is RQ-007 (agnostic); its pluggability is the seams principle (ADR-0010 candidate, RQ-010); the `--write` opt-in that this gate requires is RQ-015; the output model it guards is ADR-0003; the manifest it writes obeys ADR-0005.
+- The preservation _strategy_ selection is RQ-007 (agnostic); its pluggability is the seams principle (ADR-0010, RQ-010); the `--write` opt-in that this gate requires is RQ-015; the output model it guards is ADR-0003; the manifest it writes obeys ADR-0005.
 - Revisit if a new preservation class (e.g. content-addressed store) needs first-class gate support, or if risk-tier definitions need to be made configurable.

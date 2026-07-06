@@ -62,7 +62,7 @@ Chosen option: **"In-place mutation via atomic same-directory replace."** v1 mut
 ### Consequences
 
 - Good, because the output model is simpler and already fully specified by the safety model (ADR-0004): dry-run default, preservation, backups, manifest, atomic writes, containment.
-- Good, because atomic replace guarantees a crash leaves only "completed", "not started", or "failed before mutation" — never a partial target (NFR-002), which is what makes resume (ADR-0006 candidate) tractable.
+- Good, because atomic replace guarantees a crash leaves only "completed", "not started", or "failed before mutation" — never a partial target (NFR-002), which is what makes resume (ADR-0006) tractable.
 - Bad, because adding a separate output root later is a breaking config redesign (a full second-tree config, path mapping, cross-tree collision/verify/restore) — accepted and deferred, not precluded.
 - Bad, because safety rests entirely on the gate + atomic writes rather than on physical source/output tree isolation; this raises the stakes on ADR-0004 being correct.
 
@@ -73,6 +73,6 @@ Confirmed by: atomic-write / fsync / crash / permission / symlink tests run agai
 ## More Information
 
 - Spec: §8.5, §13.2, §18.2, §21 OQ-012 (Resolved RQ-013); D-004 (atomic replace).
-- Resolved question: RQ-013 (owner: "Agree. Defer [output-root] to later"). Preservation strength that guards the write is governed by ADR-0004 (RQ-005/RQ-007); pluggability of the writer's preservation step by the seams principle (ADR-0010 candidate, RQ-010).
+- Resolved question: RQ-013 (owner: "Agree. Defer [output-root] to later"). Preservation strength that guards the write is governed by ADR-0004 (RQ-005/RQ-007); pluggability of the writer's preservation step by the seams principle (ADR-0010, RQ-010).
 - Reconciles the §8.2.2 "Converted library" diagram's copy-out implication to in-place (GAP-70) when the writer is specified.
 - Revisit when an export or structural-conversion phase (WH-004) needs a copy-out tree; the seam design keeps that a non-breaking addition.

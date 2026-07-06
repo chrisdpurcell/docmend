@@ -420,6 +420,8 @@ Top three priorities, in order: (a) fix the §21/handoff drift and land the trac
 
 **Downstream impact:** Prevents a silent undocumented divergence contradicting FR-015/NFR-004; adds inode/alias fields to the inventory schema.
 
+**Resolved (2026-07-06):** owner adopted this policy. Now specified in spec §10.3 EC-011, DR-001 (shared-inode alias group), §21 OQ-004, and `docs/adr/adr-0005-durable-artifact-schema-contract.md` (amendment): skip-and-report hard-linked files at apply.
+
 ### GAP-38 — No disk-space/backup-storage preflight or §14 storage-overhead dimension
 
 **Priority:** Medium · **Disposition:** spec-change · **Related OQ:** OQ-010 · **Report:** [`batch-throughput-and-capacity.md`](research/batch-throughput-and-capacity.md)
@@ -563,6 +565,8 @@ Top three priorities, in order: (a) fix the §21/handoff drift and land the trac
 **Recommendation:** Update adr-0001's frontmatter related: list (line 21) and body link (line 45) from the removed docs/specs/docmend-spec-draft.md to the canonical docs/specs/docmend.md.
 
 **Downstream impact:** Repairs a broken cross-reference in an accepted decision record; documentation-only.
+
+**Resolved (2026-07-06):** already fixed in an earlier commit — `adr-0001` links `docs/specs/docmend.md` at both the frontmatter `related:` list and the body link; the removed `docmend-spec-draft.md` reference is gone. No action outstanding.
 
 ### GAP-70 — Architecture diagram's 'Converted library' node contradicts in-place recommendation
 

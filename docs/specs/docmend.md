@@ -48,107 +48,107 @@ related:
 | 0.5 | `2026-07-05` | `coding-agent` | Owner settled OQ-007/011/012/013/014/016/017/018/019/021/022 (recorded in `docs/resolved-questions.md`); set §21 statuses Resolved; rewrote §8.6 into Runtime vs Dev/Test tables, resolving the conditional validator row (`jsonschema`) and adding `structlog`/`pydantic`/`ruamel.yaml` runtime + `hypothesis`/`pyfakefs`/`pytest-xdist` dev rows. Blocking OQs now 1 (OQ-015) |
 | 0.7 | `2026-07-05` | `coding-agent` | **Spec/ADR consistency audit** (multi-agent: dimensional finders → adversarial verify → classify). Reconciled 8 distinct stale-prose defects to already-settled decisions — zero RQ downgrades: §21 OQ-001 "seven"→"six" mechanical transforms; added the `--write` opt-in to §10.1 and IR-003 (OQ-014); reworded IR-007 to JSON + NDJSON manifest (OQ-004); removed stray "output root" language from §8.5/§13.2 for in-place mutation (OQ-012); fixed the §9 `docmend.id` example to UUIDv7 (OQ-002); refreshed the §9 "once OQ-013 settles" note (OQ-013); added the `parallel.*` config surface to §18.2 with sequential-until-profiled defaults + IR-006 domain list (OQ-016). ADR 0001 found internally consistent and consistent with the spec. |
 | 0.6 | `2026-07-05` | `coding-agent` | Owner settled the last two open questions → **OQ-015/OQ-023** (`docs/resolved-questions.md`); §21 OQ-015/OQ-023 set Resolved. **OQ-015** (encoding): reworded FR-007 to `charset-normalizer`-sole + `1.0 − chaos` confidence (no `.confidence` API) + dual skip gate with a non-ASCII byte-count floor (default 20, family-aware/ratio deferred behind the OQ-020 seam) and gate ordering; added `encoding.non_ascii_floor` to §18.2; broadened A-003/FR-015/AW-003/R-001; fixed the §8.6 charset-normalizer RQ mislink; added the floor fixture recipe to §17.2/§17.3. **OQ-023** (review-artifact exposure): NG-001 boundary reframed to public-repo/tool surface vs operator screen in §2.2/§11, with metadata-only-artifact + external-render rows added to §13.4/§13.5. **Blocking OQs now 0; backlog fully settled (OQ-001..023).** |
-| 0.8 | `2026-07-06` | owner + `coding-agent` | **Tool-first reframing.** Owner rewrote §1: the product is the scale-flexible tool; the >100k-file library pipeline is the impetus use case, not the product. Downstream (OQ-024, amending OQ-020's principle-only resolution): mission statement rewritten tool-first; added G-006 (scale flexibility), NFR-006 (small-scale floor), WH-008 (one-shot command, deferred); single-file `PATH` semantics stated in §7.3; §3.2/§5/§14 corpus-vs-tool clarifications; §17.2/§17.3 and §20 coverage rows; §1 "total loss" mapped to skip-and-report (FR-015), no new triage FR; ADR-0010 seam design reviewed, stands. TOC re-nested (editor regen), tabs converted to spaces. |
-| 0.9 | `2026-07-06` | `coding-agent` | **Gap-register sweep, Batch A** — synced spec prose to already-settled ADR decisions and closed mechanical gaps from `docs/gap-analysis.md`, no new decisions: IR-002 plan-consumes-inventory (GAP-13, OQ-004); IR-004 verify artifact flags + read-only (GAP-12, OQ-006); IR-005 `--version` + verbosity contract (GAP-14/17, OQ-017); IR-006 strict config validation (GAP-15, OQ-021); DR-002 per-action ID + §9 identity fields (GAP-27/28, OQ-004); §8.5 backup-outside-target + disk preflight (GAP-36/38, OQ-005); §8.6 `allpairspy` + §17.2 pairwise gate tests (GAP-39, OQ-005); ERR-007/ERR-008 (GAP-18); scan/plan re-run posture (GAP-25, OQ-003); EC-009 zero-byte (GAP-48); §17.1 coverage gate (GAP-51); §17.3 IR-/DR- rows (GAP-53); §18.5 console-summary note (GAP-21, OQ-017); `docs/handoff/` pointers (GAP-66). |
-| 0.10 | `2026-07-06` | owner + `coding-agent` | **Gap-register sweep, Batch B** — owner settled the nine decision-bearing gaps as **OQ-025..033** (all Resolved; recorded in `docs/resolved-questions.md` RQ-025..033): HTML mechanical-only include (OQ-025: §2.1, §18.2 defaults); UTF-16/32 BOM-before-NUL policy + `utf16-suspect` skip reason (OQ-026: FR-007, FR-015, EC-010; ADR-0009 amendment); parent single-writer + run-level lock (OQ-027: §8.5, AW-005; ADR-0007 amendment); per-file watchdog + size guard (OQ-028: FR-019, ERR-009, R-007, `limits.*`); config precedence/replace-lists/auto-discovery (OQ-029: §18.2 intro); EC-005 non-whitespace invariant + `safety.shrink_ratio` (OQ-030); `normalize_tabs` leading-only semantics + `tab_width` (OQ-031: FR-009, §18.2); two-corpus synthetic strategy + anonymization procedure (OQ-032: §17.2, MS-5, `faker` dev dep); layered NFR-005 purity enforcement (OQ-033: NFR-005, MS-0, `import-linter` dev dep). |
-| 0.11 | `2026-07-06` | `coding-agent` | **Second ADR review pass** (over RQ-024..033): authored ADR-0014 (tool-first product scope, OQ-024), ADR-0015 (two-corpus test architecture + anonymization, OQ-032), ADR-0016 (mechanical-transform boundary, consolidated OQ-025/030/031); amended ADR-0013 (three Batch-B dev deps), ADR-0002 (OQ-033 enforcement), ADR-0007 (OQ-028 process-based watchdog constraint); recorded deliberate skips (OQ-028/029 and OQ-026/027/033-as-own-ADR) in `docs/adr/adr-backlog.md`. Spec changes: §21 status cells gain canonical-ADR stems for OQ-024/025/030/031/032; frontmatter `related.adrs` extended to 0014–0016. |
+| 0.8 | `2026-07-06` | owner + `coding-agent` | **Tool-first reframing.** Owner rewrote §1: the product is the scale-flexible tool; the >100k-file library pipeline is the impetus use case, not the product. Downstream (OQ-024, amending OQ-020's principle-only resolution): mission statement rewritten tool-first; added G-006 (scale flexibility), NFR-006 (small-scale floor), WH-008 (one-shot command, deferred); single-file `PATH` semantics stated in §7.3; §3.2/§5/§14 corpus-vs-tool clarifications; §17.2/§17.3 and §20 coverage rows; §1 "total loss" mapped to skip-and-report (FR-015), no new triage FR; the seam design (`adr-0010-pluggable-policy-seams`) reviewed, stands. TOC re-nested (editor regen), tabs converted to spaces. |
+| 0.9 | `2026-07-06` | `coding-agent` | **Gap-register sweep, Batch A** — synced spec prose to already-settled ADR decisions and closed mechanical gaps from `docs/gap-analysis.md`, no new decisions: IR-002 plan-consumes-inventory (gap-13, OQ-004); IR-004 verify artifact flags + read-only (gap-12, OQ-006); IR-005 `--version` + verbosity contract (gap-14/17, OQ-017); IR-006 strict config validation (gap-15, OQ-021); DR-002 per-action ID + §9 identity fields (gap-27/28, OQ-004); §8.5 backup-outside-target + disk preflight (gap-36/38, OQ-005); §8.6 `allpairspy` + §17.2 pairwise gate tests (gap-39, OQ-005); ERR-007/ERR-008 (gap-18); scan/plan re-run posture (gap-25, OQ-003); EC-009 zero-byte (gap-48); §17.1 coverage gate (gap-51); §17.3 IR-/DR- rows (gap-53); §18.5 console-summary note (gap-21, OQ-017); `docs/handoff/` pointers (gap-66). |
+| 0.10 | `2026-07-06` | owner + `coding-agent` | **Gap-register sweep, Batch B** — owner settled the nine decision-bearing gaps as **OQ-025..033** (all Resolved; recorded in `docs/resolved-questions.md` as OQ-025..033): HTML mechanical-only include (OQ-025: §2.1, §18.2 defaults); UTF-16/32 BOM-before-NUL policy + `utf16-suspect` skip reason (OQ-026: FR-007, FR-015, EC-010; `adr-0009-encoding-detection-dual-skip-gate` amendment); parent single-writer + run-level lock (OQ-027: §8.5, AW-005; `adr-0007-concurrency-primitive-process-pool` amendment); per-file watchdog + size guard (OQ-028: FR-019, ERR-009, R-007, `limits.*`); config precedence/replace-lists/auto-discovery (OQ-029: §18.2 intro); EC-005 non-whitespace invariant + `safety.shrink_ratio` (OQ-030); `normalize_tabs` leading-only semantics + `tab_width` (OQ-031: FR-009, §18.2); two-corpus synthetic strategy + anonymization procedure (OQ-032: §17.2, MS-5, `faker` dev dep); layered NFR-005 purity enforcement (OQ-033: NFR-005, MS-0, `import-linter` dev dep). |
+| 0.11 | `2026-07-06` | `coding-agent` | **Second ADR review pass** (over OQ-024..033): authored `adr-0014-tool-first-product-scope` (OQ-024), `adr-0015-test-corpus-and-anonymization` (OQ-032), `adr-0016-mechanical-transform-boundary` (consolidated OQ-025/030/031); amended `adr-0013-v1-dependency-selection` (three Batch-B dev deps), `adr-0002-layered-pipeline-isolated-writer` (OQ-033 enforcement), `adr-0007-concurrency-primitive-process-pool` (OQ-028 process-based watchdog constraint); recorded deliberate skips (OQ-028/029 and OQ-026/027/033-as-own-ADR) in `docs/adr/adr-backlog.md`. Spec changes: §21 status cells gain canonical-ADR stems for OQ-024/025/030/031/032; frontmatter `related.adrs` extended to 0014–0016. |
+| 0.12 | `2026-07-06` | `coding-agent` | **Third consistency/drift audit** (multi-agent detect → adversarial-verify → classify, ground-truthed against `validate-specs`). Brought `validate-specs`, `spec lint`, markdownlint, and `check_traceability` all green. Standard conformance: bare uppercase decision tokens in the spec body that tripped `SV-ID-*` are gone — `RQ-`→`OQ-`, bare `adr-00NN` uppercase → lowercase `adr-00NN-…` stems, `gap-NN` cross-refs lowercased; ToC dead anchor via `fix_spec_toc.py` + reindent. Owner decisions: qualified G-002 / §20 Reliability for the FR-005 low-risk no-backup opt-in (reconciling `adr-0014-tool-first-product-scope`); adopted the gap-32 hard-link policy — EC-011, DR-001 shared-inode alias group, §21 OQ-004, `adr-0005-durable-artifact-schema-contract` amendment. Mechanical syncs: §10.4 Failed/Skipped entry conditions widened to ERR-004/ERR-005/ERR-009; §14 concurrency, §18.5 four-code exit taxonomy, and §17.2 ERR-001–ERR-008 range aligned to settled OQ-016/OQ-027 decisions and `adr-0012-verify-semantics-exit-code-taxonomy`; encoding family-aware table single-homed in `adr-0009-encoding-detection-dual-skip-gate`; FR-009 / §18.2 blank-line default de-duplicated; `cleaner.toml`→`docmend.toml`. |
 
 **Spec lifecycle:** This document is **living until `approved`**, then **change-controlled**: post-approval edits require a new revision row and, for scope-affecting changes, re-approval by the owner. Implementation deviations are recorded in the [Deviations Log](#deviations-log), not silently patched into requirements. When replaced, set `status: superseded` and `superseded_by:` in the frontmatter.
 
 ---
 
-- [`docmend` — Specification (Full)](#docmend--specification-full)
-  - [Revision History](#revision-history)
-  - [1. Purpose \& Background](#1-purpose--background)
-  - [2. Scope](#2-scope)
-    - [2.1 In Scope](#21-in-scope)
-    - [2.2 Out of Scope (Non-Goals — never)](#22-out-of-scope-non-goals--never)
-    - [2.3 Won't Have in v1 (deferred — not never)](#23-wont-have-in-v1-deferred--not-never)
-    - [2.4 Boundaries](#24-boundaries)
-  - [3. Context](#3-context)
-    - [3.1 Current State](#31-current-state)
-    - [3.2 Target State](#32-target-state)
-    - [3.3 Assumptions](#33-assumptions)
-    - [3.4 Constraints](#34-constraints)
-  - [4. Goals](#4-goals)
-  - [5. Stakeholders and Users](#5-stakeholders-and-users)
-  - [6. Glossary](#6-glossary)
-  - [7. Requirements](#7-requirements)
-    - [7.1 Functional Requirements](#71-functional-requirements)
-    - [7.2 Non-Functional Requirements](#72-non-functional-requirements)
-    - [7.3 Interface Requirements](#73-interface-requirements)
-    - [7.4 Data Requirements](#74-data-requirements)
-  - [8. Architecture and Design](#8-architecture-and-design)
-    - [8.1 Architecture Summary](#81-architecture-summary)
-    - [8.2 Architecture Views](#82-architecture-views)
-      - [8.2.1 Context View](#821-context-view)
-      - [8.2.2 Container / Deployment View](#822-container--deployment-view)
-      - [8.2.3 Component View](#823-component-view)
-    - [8.3 Design Decisions](#83-design-decisions)
-    - [8.4 Solution Alternatives Considered](#84-solution-alternatives-considered)
-    - [8.5 Design Constraints](#85-design-constraints)
-    - [8.6 Dependency Policy](#86-dependency-policy)
-  - [9. Data Model](#9-data-model)
-  - [10. Behavior and Workflows](#10-behavior-and-workflows)
-    - [10.1 Primary Workflow](#101-primary-workflow)
-    - [10.2 Alternate Workflows](#102-alternate-workflows)
-    - [10.3 Edge Cases](#103-edge-cases)
-    - [10.4 State Transitions](#104-state-transitions)
-  - [11. UI Pages / API Endpoints](#11-ui-pages--api-endpoints)
-  - [12. Error Handling and Recovery](#12-error-handling-and-recovery)
-    - [12.1 Expected Failures](#121-expected-failures)
-    - [12.2 Retry and Idempotency](#122-retry-and-idempotency)
-    - [12.3 Rollback / Recovery](#123-rollback--recovery)
-  - [13. Security and Privacy](#13-security-and-privacy)
-    - [13.1 Authentication](#131-authentication)
-    - [13.2 Authorization](#132-authorization)
-    - [13.3 Secrets](#133-secrets)
-    - [13.4 Sensitive Data](#134-sensitive-data)
-    - [13.5 Threats and Mitigations](#135-threats-and-mitigations)
-    - [13.6 Hardening Checklist](#136-hardening-checklist)
-  - [14. Capacity and Scale Assumptions](#14-capacity-and-scale-assumptions)
-  - [15. Risks](#15-risks)
-  - [16. Compliance, Licensing, and Data Rights](#16-compliance-licensing-and-data-rights)
-  - [17. Testing and Acceptance](#17-testing-and-acceptance)
-    - [17.1 Definition of Done](#171-definition-of-done)
-    - [17.2 Test Strategy](#172-test-strategy)
-    - [17.3 Requirement-to-Test Traceability](#173-requirement-to-test-traceability)
-  - [18. Deployment and Operations](#18-deployment-and-operations)
-    - [18.1 Runtime Environment](#181-runtime-environment)
-    - [18.2 Configuration](#182-configuration)
-    - [18.3 Deployment Flow](#183-deployment-flow)
-    - [18.4 Rollout Controls](#184-rollout-controls)
-    - [18.5 Observability](#185-observability)
-    - [18.6 Backup and Disaster Recovery](#186-backup-and-disaster-recovery)
-    - [18.7 Documentation Deliverables](#187-documentation-deliverables)
-  - [19. Implementation Plan](#19-implementation-plan)
-    - [Waves](#waves)
-    - [MS-0 — Foundation](#ms-0--foundation)
-    - [MS-1 — Core workflow](#ms-1--core-workflow)
-    - [MS-2 — Domain logic](#ms-2--domain-logic)
-    - [MS-3 — User and admin experience](#ms-3--user-and-admin-experience)
-    - [MS-4 — Automation / notifications / external actions](#ms-4--automation--notifications--external-actions)
-    - [MS-5 — Hardening and production readiness](#ms-5--hardening-and-production-readiness)
-    - [Milestone Summary](#milestone-summary)
-  - [20. Success Evaluation](#20-success-evaluation)
-  - [21. Open Questions and Decisions](#21-open-questions-and-decisions)
-  - [Deviations Log](#deviations-log)
-  - [References](#references)
-    - [Standards](#standards)
-    - [Project References](#project-references)
-  - [Appendix A: ID Conventions](#appendix-a-id-conventions)
-  - [Appendix B: Agent Implementation Contract](#appendix-b-agent-implementation-contract)
-    - [B.1 Implementation Rules](#b1-implementation-rules)
-    - [B.2 Prohibited Behaviors](#b2-prohibited-behaviors)
-    - [B.3 Required Completion Report (verification gate)](#b3-required-completion-report-verification-gate)
-    - [B.4 Session Handoff](#b4-session-handoff)
-  - [Appendix C: Optional Modules](#appendix-c-optional-modules)
-    - [C.1 External Data Integration](#c1-external-data-integration)
-    - [C.2 Scheduled Work, Throttling, and Circuit Breaker](#c2-scheduled-work-throttling-and-circuit-breaker)
-    - [C.3 Identity / Entity Resolution](#c3-identity--entity-resolution)
-    - [C.4 Scoring / Ranking / Decision Logic](#c4-scoring--ranking--decision-logic)
-    - [C.5 Relational Schema Examples](#c5-relational-schema-examples)
-  - [Appendix D: Tailoring Guide](#appendix-d-tailoring-guide)
+- [Revision History](#revision-history)
+- [1. Purpose \& Background](#1-purpose--background)
+- [2. Scope](#2-scope)
+  - [2.1 In Scope](#21-in-scope)
+  - [2.2 Out of Scope (Non-Goals — never)](#22-out-of-scope-non-goals--never)
+  - [2.3 Won't Have in v1 (deferred — not never)](#23-wont-have-in-v1-deferred--not-never)
+  - [2.4 Boundaries](#24-boundaries)
+- [3. Context](#3-context)
+  - [3.1 Current State](#31-current-state)
+  - [3.2 Target State](#32-target-state)
+  - [3.3 Assumptions](#33-assumptions)
+  - [3.4 Constraints](#34-constraints)
+- [4. Goals](#4-goals)
+- [5. Stakeholders and Users](#5-stakeholders-and-users)
+- [6. Glossary](#6-glossary)
+- [7. Requirements](#7-requirements)
+  - [7.1 Functional Requirements](#71-functional-requirements)
+  - [7.2 Non-Functional Requirements](#72-non-functional-requirements)
+  - [7.3 Interface Requirements](#73-interface-requirements)
+  - [7.4 Data Requirements](#74-data-requirements)
+- [8. Architecture and Design](#8-architecture-and-design)
+  - [8.1 Architecture Summary](#81-architecture-summary)
+  - [8.2 Architecture Views](#82-architecture-views)
+    - [8.2.1 Context View](#821-context-view)
+    - [8.2.2 Container / Deployment View](#822-container--deployment-view)
+    - [8.2.3 Component View](#823-component-view)
+  - [8.3 Design Decisions](#83-design-decisions)
+  - [8.4 Solution Alternatives Considered](#84-solution-alternatives-considered)
+  - [8.5 Design Constraints](#85-design-constraints)
+  - [8.6 Dependency Policy](#86-dependency-policy)
+- [9. Data Model](#9-data-model)
+- [10. Behavior and Workflows](#10-behavior-and-workflows)
+  - [10.1 Primary Workflow](#101-primary-workflow)
+  - [10.2 Alternate Workflows](#102-alternate-workflows)
+  - [10.3 Edge Cases](#103-edge-cases)
+  - [10.4 State Transitions](#104-state-transitions)
+- [11. UI Pages / API Endpoints](#11-ui-pages--api-endpoints)
+- [12. Error Handling and Recovery](#12-error-handling-and-recovery)
+  - [12.1 Expected Failures](#121-expected-failures)
+  - [12.2 Retry and Idempotency](#122-retry-and-idempotency)
+  - [12.3 Rollback / Recovery](#123-rollback--recovery)
+- [13. Security and Privacy](#13-security-and-privacy)
+  - [13.1 Authentication](#131-authentication)
+  - [13.2 Authorization](#132-authorization)
+  - [13.3 Secrets](#133-secrets)
+  - [13.4 Sensitive Data](#134-sensitive-data)
+  - [13.5 Threats and Mitigations](#135-threats-and-mitigations)
+  - [13.6 Hardening Checklist](#136-hardening-checklist)
+- [14. Capacity and Scale Assumptions](#14-capacity-and-scale-assumptions)
+- [15. Risks](#15-risks)
+- [16. Compliance, Licensing, and Data Rights](#16-compliance-licensing-and-data-rights)
+- [17. Testing and Acceptance](#17-testing-and-acceptance)
+  - [17.1 Definition of Done](#171-definition-of-done)
+  - [17.2 Test Strategy](#172-test-strategy)
+  - [17.3 Requirement-to-Test Traceability](#173-requirement-to-test-traceability)
+- [18. Deployment and Operations](#18-deployment-and-operations)
+  - [18.1 Runtime Environment](#181-runtime-environment)
+  - [18.2 Configuration](#182-configuration)
+  - [18.3 Deployment Flow](#183-deployment-flow)
+  - [18.4 Rollout Controls](#184-rollout-controls)
+  - [18.5 Observability](#185-observability)
+  - [18.6 Backup and Disaster Recovery](#186-backup-and-disaster-recovery)
+  - [18.7 Documentation Deliverables](#187-documentation-deliverables)
+- [19. Implementation Plan](#19-implementation-plan)
+  - [Waves](#waves)
+  - [MS-0 — Foundation](#ms-0--foundation)
+  - [MS-1 — Core workflow](#ms-1--core-workflow)
+  - [MS-2 — Domain logic](#ms-2--domain-logic)
+  - [MS-3 — User and admin experience](#ms-3--user-and-admin-experience)
+  - [MS-4 — Automation / notifications / external actions](#ms-4--automation--notifications--external-actions)
+  - [MS-5 — Hardening and production readiness](#ms-5--hardening-and-production-readiness)
+  - [Milestone Summary](#milestone-summary)
+- [20. Success Evaluation](#20-success-evaluation)
+- [21. Open Questions and Decisions](#21-open-questions-and-decisions)
+- [Deviations Log](#deviations-log)
+- [References](#references)
+  - [Standards](#standards)
+  - [Project References](#project-references)
+- [Appendix A: ID Conventions](#appendix-a-id-conventions)
+- [Appendix B: Agent Implementation Contract](#appendix-b-agent-implementation-contract)
+  - [B.1 Implementation Rules](#b1-implementation-rules)
+  - [B.2 Prohibited Behaviors](#b2-prohibited-behaviors)
+  - [B.3 Required Completion Report (verification gate)](#b3-required-completion-report-verification-gate)
+  - [B.4 Session Handoff](#b4-session-handoff)
+- [Appendix C: Optional Modules](#appendix-c-optional-modules)
+  - [C.1 External Data Integration](#c1-external-data-integration)
+  - [C.2 Scheduled Work, Throttling, and Circuit Breaker](#c2-scheduled-work-throttling-and-circuit-breaker)
+  - [C.3 Identity / Entity Resolution](#c3-identity--entity-resolution)
+  - [C.4 Scoring / Ranking / Decision Logic](#c4-scoring--ranking--decision-logic)
+  - [C.5 Relational Schema Examples](#c5-relational-schema-examples)
+- [Appendix D: Tailoring Guide](#appendix-d-tailoring-guide)
 
 ---
 
@@ -266,7 +266,7 @@ Goals are outcomes; requirements (§7) are behaviors. A goal should be traceable
 | ID | Goal | Success Signal | Achieved By |
 | --- | --- | --- | --- |
 | G-001 | Convert the legacy library into normalized UTF-8/LF Pandoc Markdown. | Every in-scope file is either converted or explicitly skipped with a recorded reason. | FR-001, FR-002, FR-003, FR-007, FR-008, FR-009, FR-010 |
-| G-002 | Zero irreversible loss of original content. | Every mutation is preceded by a satisfied preservation strategy and recorded in a reversible manifest. | FR-005, FR-006, NFR-002, DR-004 |
+| G-002 | Zero irreversible loss of original content, except where the operator explicitly opts a low-risk single-file run out of preservation (FR-005). | Every mutation is preceded by a satisfied preservation strategy — or an explicit low-risk no-backup opt-in — and recorded in a reversible manifest. | FR-005, FR-006, NFR-002, DR-004 |
 | G-003 | Unattended batch operation at library scale. | A full-library run survives interruption and resumes without redoing or corrupting completed work. | FR-013, NFR-001, NFR-002, NFR-003 |
 | G-004 | Machine-validated document metadata. | Generated frontmatter validates against the canonical schema during plan, apply, and verify. | FR-016, DR-005 |
 | G-005 | Trustworthy automation: the tool never silently guesses on ambiguous input. | Risky files (low-confidence encoding, apparent binary, collisions) are skipped and reported, never rewritten. | FR-011, FR-015, NFR-004, ERR-002 |
@@ -318,7 +318,7 @@ Define every domain term an implementer could misread. Ambiguous terminology is 
 | FR-006 | The system shall, when backups are enabled, copy each original to the configured backup location and verify that backup (fsync, re-read, re-hash, and compare to the plan's recorded source hash) before mutating the original, and shall always record a reversible manifest entry (DR-004) for every mutation. | Rename/write operations are painful to undo without a manifest; verifying the backup before touching the original closes the window where a silently corrupted or short backup would leave no recoverable copy (OQ-005). | After an apply run, every changed file has a manifest entry with before/after hashes and a verified backup reference; a backup whose re-hash does not match the plan's source hash aborts the mutation (ERR-004) before the original is touched; restoring from manifest+backups reproduces the original corpus. | Must |
 | FR-007 | The system shall detect source encodings with `charset-normalizer` as the sole detector, resolving each file in fixed order — BOM sniff (authoritative for UTF-8, UTF-16, and UTF-32 BOMs, evaluated before any NUL-byte risky classification; BOM'd UTF-16/32 files decode per their BOM — OQ-026), then strict full-file UTF-8 validity, then ASCII-only content treated as ASCII/UTF-8 (never detected as legacy) — convert content to UTF-8 without BOM, and skip a file that fails either of two independent gates: decode confidence (computed as 1.0 minus `CharsetMatch.chaos`; charset-normalizer 3.x exposes no `.confidence`) below the configured threshold (default 0.80), or, for a non-BOM, non-valid-UTF-8 file, fewer non-ASCII bytes than the configured floor (default 20). | Encoding detection is imperfect (UTF-8/Windows-1252/ISO-8859-1 ambiguity); low-confidence files must never be silently "fixed." A single confidence scalar cannot catch a short low-entropy false-accept — e.g. a 38-byte mostly-ASCII string mis-detected as Big5 at `chaos=0.0` (maximum confidence, wrong) — so a non-ASCII byte-count floor gates the legacy guess independently; skip-and-report is the safe failure for this `.txt`-heavy English corpus. | Fixtures in UTF-8, UTF-8-BOM, Windows-1252, and ISO-8859-1 convert correctly; an ambiguous fixture below the confidence threshold is skipped with reason; a short non-ASCII fixture below the non-ASCII floor is skipped with reason. | Must |
 | FR-008 | The system shall normalize all line endings (CRLF, CR, mixed) to LF. | Target corpus is LF-only (D-002). | Fixtures with CRLF, CR, and mixed endings all produce LF-only output. | Must |
-| FR-009 | The system shall support the mechanical whitespace transformations: trim trailing whitespace, ensure exactly one final newline, and collapse runs of blank lines beyond a configured maximum (default 3), plus the optional, off-by-default leading-tab-to-space conversion (`whitespace.normalize_tabs`, additional to the OQ-001 six default transforms; OQ-031). | Core mechanical cleanup that is safe without interpretation. | Property/fixture tests per transformation; each is individually configurable (§18.2). | Must |
+| FR-009 | The system shall support the mechanical whitespace transformations: trim trailing whitespace, ensure exactly one final newline, and collapse runs of blank lines beyond the configured `whitespace.collapse_blank_lines` maximum (§18.2), plus the optional, off-by-default leading-tab-to-space conversion (`whitespace.normalize_tabs`, additional to the OQ-001 six default transforms; OQ-031). | Core mechanical cleanup that is safe without interpretation. | Property/fixture tests per transformation; each is individually configurable (§18.2). | Must |
 | FR-010 | The system shall treat extension rename (`.txt` → `.md`) and structural conversion to Markdown as distinct operations, and shall never claim structural conversion when only renaming. | Renaming a file to `.md` does not make it Markdown; conflating the two misrepresents the corpus. | Rename actions are typed distinctly from conversion actions in plan and report artifacts. | Must |
 | FR-011 | The system shall detect target-path collisions and resolve them per the configured policy: `skip` (default), `fail`, or `overwrite`. | `foo.txt` → `foo.md` where `foo.md` exists must be an explicit decision, not an accident. | Collision fixture under each policy yields skip-with-reason, non-zero abort, or manifest-recorded overwrite respectively. | Must |
 | FR-012 | The system shall support include/exclude filters over paths (glob patterns) applied consistently at scan, plan, and apply. | Processing must be scopeable (subsets, excluding `.git/`, archives, binaries by pattern). | Filter fixtures confirm identical selection behavior across all three commands. | Must |
@@ -350,7 +350,7 @@ APIs, CLIs, UIs, files, databases, queues, protocols, external systems, hardware
 | ID | Interface | Requirement | Contract / Format | Acceptance Criteria |
 | --- | --- | --- | --- | --- |
 | IR-001 | CLI | The system shall expose `docmend scan PATH` producing an inventory. | `docmend scan PATH [--report FILE]` | Command exists, exits 0 on success, writes DR-001 artifact. |
-| IR-002 | CLI | The system shall expose `docmend plan` consuming an inventory artifact and config, producing a plan file — `plan` reads the inventory (OQ-004); a raw `PATH` argument is shorthand that performs the scan first and records the produced inventory reference in the plan. | `docmend plan [PATH \| --inventory FILE] --config cleaner.toml --out plan.json` | Command produces DR-002 artifact referencing its inventory; exits non-zero on config errors. |
+| IR-002 | CLI | The system shall expose `docmend plan` consuming an inventory artifact and config, producing a plan file — `plan` reads the inventory (OQ-004); a raw `PATH` argument is shorthand that performs the scan first and records the produced inventory reference in the plan. | `docmend plan [PATH \| --inventory FILE] --config docmend.toml --out plan.json` | Command produces DR-002 artifact referencing its inventory; exits non-zero on config errors. |
 | IR-003 | CLI | The system shall expose `docmend apply` consuming a plan file, honoring an explicit real-write opt-in, dry-run, and backup options. | `docmend apply plan.json [--write \| --dry-run] [--backup-dir PATH]` (`--write` opts into real mutation per OQ-014; `--write` and `--dry-run` are mutually exclusive; apply dry-runs by default when neither is given) | Behaviors per FR-003–FR-006; exits non-zero when the safety gate refuses. |
 | IR-004 | CLI | The system shall expose `docmend verify PATH` running the FR-014 checks, read-only, locating its input artifacts via explicit flags or the run-ID-keyed sidecar-discovery convention (OQ-006). | `docmend verify PATH [--manifest FILE] [--report FILE] [--plan FILE]` | Exit 0 iff all checks pass; findings enumerated in output/report; proven read-only by test (no mutation, no manifest write). |
 | IR-005 | CLI | The system shall support the global flags `--help`/`-h`, `--version`/`-V`, `--dry-run`/`-n`, `--verbose`/`-v`, and `--quiet`/`-q`. | Standard CLI conventions. `--version` prints the package version and exits 0. `--verbose` raises console detail and `--quiet` limits the console to errors and critical messages; the two are mutually exclusive, and neither affects the DEBUG-floored file log sink (OQ-017). | Each flag's behavior asserted by CLI tests, including the `--verbose`/`--quiet` exclusivity error. |
@@ -358,7 +358,7 @@ APIs, CLIs, UIs, files, databases, queues, protocols, external systems, hardware
 | IR-007 | Artifacts | The system shall read and write its durable artifacts as JSON: a single JSON document for inventory, plan, and report; JSON Lines (NDJSON) for the append-only manifest (a single JSON document cannot be appended crash-safely; OQ-004). | JSON; shapes per §9 (exact schemas tracked in OQ-004). | Inventory/plan/report round-trip (write → read → identical model); manifest round-trips per record (each NDJSON line parses to an identical record model) in tests. |
 | IR-008 | CLI | The system shall expose `docmend restore`, replaying manifest records per `docmend.id` in LIFO order to return mutated files to their pre-apply state (canonical decision: `adr-0004-apply-safety-gate-and-preservation`, OQ-005). | `docmend restore [--manifest FILE \| --run-id ID] [--id DOCMEND_ID ...] [--write \| --dry-run]` (reads the DR-004 manifest; restores each record's original from its backup/preservation ref; dry-run previews by default, mirroring `apply`'s opt-in). | Restored bytes match the manifest's pre-apply `source.hash`; the tool-wide exit-code taxonomy (§18.5) applies (0 clean, 1 findings, 2 input error, 3 safety refusal); drilled in §18.6. |
 
-Selection and transformation options (e.g. `--include`/`--exclude` patterns, `--rename-txt-to-md`, `--detect-encoding`, `--normalize-newlines lf`, `--trim-trailing-whitespace`, `--ensure-final-newline`, `--collapse-blank-lines 3`, `--fail-on-low-confidence-encoding`, `--backup-dir PATH`, `--report FILE`) mirror the configuration surface in §18.2; the config file is authoritative and flags override it.
+Selection and transformation options (e.g. `--include`/`--exclude` patterns, `--rename-txt-to-md`, `--detect-encoding`, `--normalize-newlines lf`, `--trim-trailing-whitespace`, `--ensure-final-newline`, `--collapse-blank-lines N`, `--fail-on-low-confidence-encoding`, `--backup-dir PATH`, `--report FILE`) mirror the configuration surface in §18.2; the config file is authoritative and flags override it.
 
 In every command, `PATH` may be a single file or a directory tree; single-file invocation is a first-class flow (NFR-006, G-006), not a degenerate case of library processing.
 
@@ -366,7 +366,7 @@ In every command, `PATH` may be a single file or a directory tree; single-file i
 
 | ID | Data Entity | Requirement | Validation Rules | Ownership |
 | --- | --- | --- | --- | --- |
-| DR-001 | Inventory | The system shall persist scan results: source root, scan configuration, timestamp, per-file records (path, size, suffix, newline style, detected encoding, UTF-8 status), skipped files with reasons, aggregate counts. | JSON schema (OQ-004); counts must reconcile with per-file records. | docmend |
+| DR-001 | Inventory | The system shall persist scan results: source root, scan configuration, timestamp, per-file records (path, size, suffix, newline style, detected encoding, UTF-8 status, and — where `st_nlink > 1` — the shared-inode hard-link alias group, EC-011), skipped files with reasons, aggregate counts. | JSON schema (OQ-004); counts must reconcile with per-file records. | docmend |
 | DR-002 | Plan | The system shall persist plans: inventory reference, config snapshot, planned actions, skip decisions, risk/conflict decisions, and source hashes validating that inputs have not changed. | JSON schema (OQ-004); every planned action carries the source hash it was decided on and a stable per-action ID (correlated with the run-ID) for resume and manifest correlation. | docmend |
 | DR-003 | Apply report | The system shall persist apply results: plan reference, dry-run flag, start/completion timestamps, per-file outcomes, before/after hashes, errors, skips, summary counts. | JSON schema (OQ-004); summary counts must equal per-file outcome totals. | docmend |
 | DR-004 | Backup/rename manifest | The system shall persist a reversible operation record per mutation: original path, target path, backup path (if any), before/after hashes, operation type, result status, error details. | JSON schema (OQ-004); sufficient to mechanically restore the pre-apply state. | docmend |
@@ -593,7 +593,7 @@ sequenceDiagram
     Owner->>CLI: docmend scan PATH
     CLI->>FS: walk + classify (read-only)
     CLI-->>Owner: inventory.json
-    Owner->>CLI: docmend plan PATH --config cleaner.toml --out plan.json
+    Owner->>CLI: docmend plan PATH --config docmend.toml --out plan.json
     CLI-->>Owner: plan.json (actions, skips, hashes)
     Owner->>CLI: docmend apply plan.json --dry-run
     CLI-->>Owner: report.json (would-be outcomes)
@@ -640,6 +640,7 @@ Expected result:
 | EC-008 | Symbolic links inside the source tree. | Not followed for mutation by default; recorded in the inventory (exact policy folded into OQ-004 artifact design). |
 | EC-009 | Zero-byte source file. | Handled mechanically (rename and final-newline enforcement per config); never triggers the EC-005 shrink heuristic — there is no content to lose; recorded normally in plan and report. |
 | EC-010 | UTF-16/UTF-32 file. | With BOM: decoded per the BOM (evaluated before the NUL-byte check) and converted to UTF-8 (FR-007, OQ-026). Without BOM but matching the interleaved-NUL pattern: skipped with the specific `utf16-suspect` reason, never as generic binary. |
+| EC-011 | Hard link — multiple directory entries share one inode (`st_nlink > 1`). | Detected at scan and recorded as a shared-inode alias group in the inventory (DR-001); planned once and skipped-and-reported at apply rather than mutated, because `os.replace()` on one path breaks the link and leaves the other names pointing at the stale original (skip-and-report, FR-015; OQ-004). |
 
 ### 10.4 State Transitions
 
@@ -650,9 +651,9 @@ stateDiagram-v2
     [*] --> Discovered
     Discovered --> Planned : action decided
     Discovered --> Skipped : excluded, binary, or risky
-    Planned --> Skipped : stale hash or collision at apply
+    Planned --> Skipped : stale hash, collision, or unreadable at apply
     Planned --> Applied : write + manifest recorded
-    Planned --> Failed : write error
+    Planned --> Failed : write error, backup abort, or timeout
     Applied --> Verified : verify checks pass
     Failed --> Planned : retry after re-plan
     Skipped --> [*]
@@ -663,9 +664,9 @@ stateDiagram-v2
 | --- | --- | --- | --- |
 | Discovered | File recorded in the inventory. | Matched include filters during scan. | Plan decision made. |
 | Planned | An action (or explicit skip) is recorded in the plan. | Planning layer decision. | Apply executes, skips, or fails it. |
-| Skipped | File deliberately left untouched, with a recorded reason. | Exclusion, risk classification, collision, stale hash. | Terminal for the run; may re-enter via a new plan. |
+| Skipped | File deliberately left untouched, with a recorded reason. | Exclusion, risk classification, collision, stale hash, or apply-time unreadable/deleted (ERR-005). | Terminal for the run; may re-enter via a new plan. |
 | Applied | Mutation completed; manifest entry written. | Successful atomic write. | Verification. |
-| Failed | Write attempted and failed; original intact. | Writer error (ERR-003). | Retried under a subsequent plan/apply. |
+| Failed | Write failed, pre-write backup failure, or watchdog timeout; original intact in all cases. | Writer error (ERR-003), pre-write backup failure (ERR-004), or per-file timeout (ERR-009). | Retried under a subsequent plan/apply. |
 | Verified | Output confirmed against artifacts. | Verify checks pass (FR-014). | Terminal. |
 
 ---
@@ -762,7 +763,7 @@ The numbers that drive design choices. If a choice in §9 depends on volume, the
 | --- | --- | --- | --- |
 | Data volume | More than 100,000 files; multiple GiB of text. | Low — the library is a mostly static backlog. | Streaming per-file processing; bounded memory (NFR-001); no whole-corpus in-memory model. |
 | Request rate | Manually invoked batch runs; full-library runs are the peak. | Occasional incremental runs after initial pass. | Resumability (FR-013) matters more than throughput; idempotent re-runs (FR-017). |
-| Concurrency | Single user; optional parallel workers within one process. | None. | Parallelism is an internal optimization; no cross-process locking needed. |
+| Concurrency | Single user; optional parallel workers as separate processes in a `ProcessPoolExecutor` coordinated by a single-writer parent (OQ-016). | None. | No inter-worker locking is needed (the parent is the sole writer of shared artifacts), but a run-level lock file (OQ-027) refuses a second concurrent invocation against the same target with exit 3. |
 | Lower bound | Single files and small batches are first-class inputs (NFR-006). | — | No mandatory config file, parallelism, or preservation infrastructure for small jobs; ceremony scales down, never up-front (G-006, OQ-024). |
 
 ---
@@ -810,7 +811,7 @@ General project risks — schedule, technical, dependency, provider. Security th
 | Layer | Scope | Required Coverage | Required? |
 | --- | --- | --- | --- |
 | Unit / domain | Pure transforms (encoding, newlines, whitespace), planning decisions, risk classification. | Critical branches and edge cases; property-based tests where cheap. | Yes |
-| Integration / adapter | Encoding detection, filesystem discovery, writer atomicity, backup/manifest recording. | Success, failure (ERR-001–ERR-006), and interruption paths. | Yes |
+| Integration / adapter | Encoding detection, filesystem discovery, writer atomicity, backup/manifest recording. | Success, failure (ERR-001–ERR-008), and interruption paths. | Yes |
 | Snapshot / contract | Artifact shapes (DR-001–DR-004), frontmatter schema validation, converted-output fixtures. | Diffs reviewed intentionally; schema round-trips. | Yes |
 | Database | N/A — no database; artifact round-trip covered under snapshot/contract. | — | No |
 | End-to-end | Full CLI journey: scan → plan → apply --dry-run → apply → verify on a synthetic corpus, and the same journey over a single file (NFR-006). | Happy path plus at least one failure path (gate refusal, hash mismatch) and one interruption/resume path; the single-file journey with default configuration and the low-risk opt-in. | Yes |
@@ -895,7 +896,7 @@ Configuration is a TOML file (D-005, IR-006). Precedence is CLI flags > config f
 | `encoding.target` | No | `"utf-8"` | Output encoding (always written without BOM). |
 | `encoding.detect` | No | `true` | Enable source-encoding detection. |
 | `encoding.fail_below_confidence` | No | `0.80` | Confidence threshold below which files are skipped; confidence is computed as 1.0 minus `CharsetMatch.chaos` from charset-normalizer (FR-007, OQ-015). |
-| `encoding.non_ascii_floor` | No | `20` | Second, independent skip gate: minimum non-ASCII byte count before a non-BOM, non-valid-UTF-8 file's legacy guess is trusted; below it the file is skipped and reported (FR-007). Family-aware overrides (Western ≥ 20, CJK ≥ 12, Big5 relaxable to 10) and a sparse-long-file ratio signal are deferred behind this key via the OQ-020 seam, not built in v1 (OQ-020, OQ-015). |
+| `encoding.non_ascii_floor` | No | `20` | Second, independent skip gate: minimum non-ASCII byte count before a non-BOM, non-valid-UTF-8 file's legacy guess is trusted; below it the file is skipped and reported (FR-007). The deferred family-aware overrides and sparse-long-file ratio signal that sit behind this key via the OQ-020 seam (not built in v1) are recorded canonically in `adr-0009-encoding-detection-dual-skip-gate` (OQ-020, OQ-015). |
 | `newlines.target` | No | `"lf"` | Output newline style. |
 | `whitespace.trim_trailing` | No | `true` | Trim trailing whitespace per line. |
 | `whitespace.ensure_final_newline` | No | `true` | Ensure exactly one final newline. |
@@ -942,7 +943,7 @@ For a batch CLI the observability surface is logs, reports, and exit codes rathe
 
 - Structured per-file logs with a per-run correlation (run ID recorded in artifacts).
 - Every run — scan, plan, apply, verify — emits a machine-readable artifact recording start/finish, per-file outcomes and reasons, and summary counts (FR-018); these are the "job records."
-- Exit codes distinguish success, findings (e.g. verify failures, skipped-with-errors), and refusals (safety gate).
+- Exit codes follow the tool-wide taxonomy (canonical record: `adr-0012-verify-semantics-exit-code-taxonomy`): `0` clean, `1` findings (e.g. verify failures, skipped-with-errors), `2` input error (invalid/unreadable inventory or plan, ERR-006/ERR-008), `3` safety refusal (the apply gate or the run-level lock).
 - The Rich console summary mirrors the machine-readable report's counts (OQ-017); the report artifact remains the authoritative record.
 - Health endpoints, metrics services, and alerting are not applicable — there is no resident process; the alert equivalent is a non-zero exit and its report, reviewed by the operator (the owner).
 
@@ -1045,7 +1046,7 @@ Post-launch evaluation targets, defined **before** implementation. Measured afte
 | Area | Target | Measurement |
 | --- | --- | --- |
 | Functional correctness | All Must requirements satisfied on the real library, not just fixtures. | §17.3 matrix complete and passing; verify exits 0 over converted portions of the library. |
-| Reliability | Zero unexplained content loss: every changed file has a manifest entry and a recoverable original. | Manifest/report reconciliation; restore drill results. |
+| Reliability | Zero unexplained content loss: every changed file has a manifest entry and a recoverable original, except where a low-risk single-file run was explicitly opted out of preservation (FR-005, G-002). | Manifest/report reconciliation; restore drill results. |
 | Performance | A full-library batch is practical: completes across sessions via resume without operator babysitting. | Run records from the real-library rollout; concrete numeric throughput targets deferred (OQ-010). |
 | Cost control | Not applicable in v1 — no paid services (§8.6). | — |
 | Operational usability | Skips and failures are reviewable from reports alone — no per-file manual inspection needed. | Owner triages the real-library skip pile using reports only; gaps become new requirements. |
@@ -1062,7 +1063,7 @@ Questions may proceed on a recorded **current assumption** unless marked blockin
 | OQ-001 | What is the exact first-version boundary and the complete explicit non-goals list? (Draft's Phase-1 and non-goals sections were placeholders.) | v1 = the §2.1 capability set with the six mechanical transformations; NG-001–NG-003 stand; anything semantic is §2.3. | Yes | owner | MS-1 | Resolved |
 | OQ-002 | Naming policy: when is a filename changed mechanically vs. meaningfully; how are collisions resolved; how are stable IDs and old→new mappings preserved across renames? | v1 renames extensions only (FR-010); collisions per FR-011; `docmend.id` + manifest carry identity and path history. | No | owner | MS-2 | Resolved |
 | OQ-003 | Resume model: plan-file-based, apply-journal, per-file result records, or a combination? How are partial writes detected and failed files retried, and how does resume interact with backups/manifests? | Apply journal + per-file manifest records; atomic writes make partial writes impossible (NFR-002); failed files retried by re-plan. | No | implementer | MS-4 | Resolved |
-| OQ-004 | Exact JSON Schemas for inventory, plan, apply report, and manifest (including symlink policy, EC-008). | Shapes as outlined in DR-001–DR-004; schemas pinned in-repo before MS-1 code freezes them. | Yes | implementer | MS-1 | Resolved; canonical ADR `adr-0005-durable-artifact-schema-contract` |
+| OQ-004 | Exact JSON Schemas for inventory, plan, apply report, and manifest (including symlink and hard-link policy, EC-008/EC-011). | Shapes as outlined in DR-001–DR-004 (the inventory records a shared-inode alias group where `st_nlink > 1`, EC-011); schemas pinned in-repo before MS-1 code freezes them. | Yes | implementer | MS-1 | Resolved; canonical ADR `adr-0005-durable-artifact-schema-contract` |
 | OQ-005 | Exact apply safety-gate check list. | The candidate set: valid plan; compatible tool version; source hashes match; preservation strategy satisfied; explicit collision/overwrite policy; low-confidence files skipped or explicitly allowed; dry-run default; output-path containment. | Yes | owner | MS-3 | Resolved; canonical ADR `adr-0004-apply-safety-gate-and-preservation` |
 | OQ-006 | Exact `verify` semantics — which checks are in scope for v1? | The FR-014 set: UTF-8 decodability, LF endings, frontmatter validity where present, manifest/hash consistency, skipped-file accounting, artifact internal consistency. | No | owner | MS-4 | Resolved |
 | OQ-007 | Controlled vocabulary definitions for `genre`, `status`, `story_type`, `rating`, `lang`. | Vocabularies are user-defined, per-corpus, and supplied externally (not hardcoded in this public repo — the vocabulary itself leaks clues about confidential content); the schema validates against an injected set. Open sub-decision: config surface + whether v1 ships any default set. | No | owner | Frontmatter emission (OQ-009) | Resolved |
@@ -1082,16 +1083,16 @@ Questions may proceed on a recorded **current assumption** unless marked blockin
 | OQ-021 | Internal data-model library: adopt `pydantic` v2 for config/inventory/plan/report/manifest models, or use stdlib dataclasses/typed dicts? (Appendix B.2 requires an OQ before adoption; §8.6.) | Adopt `pydantic` v2 (>= 2.12 for 3.14) with strict models (`extra='forbid'`); keep the hand-authored JSON Schemas (OQ-004) as the durable external contract (`docs/research/python-library-research.md`). | No | owner | MS-1 | Resolved |
 | OQ-022 | Frontmatter YAML codec: `ruamel.yaml` vs `PyYAML` for parsing/emitting product frontmatter (§8.6, §9). | `ruamel.yaml` behind a `FrontmatterCodec` (duplicate-key rejection, controlled emission), `PyYAML` + custom loader as fallback; override the timestamp constructor so date scalars stay strings (`docs/research/safe-yaml-loading.md`); timing gated by OQ-009. | No | owner | Frontmatter validation (gated by OQ-009) | Resolved |
 | OQ-023 | Content-exposure boundary and default posture for deferred WH-002 (semantic-correction) / WH-005 (fuzzy-duplicate) review artifacts, given NG-001's no-reading-UI non-goal and §13.4 confidential content. | The confidentiality boundary is the public-repo/official-tool surface, not the operator's screen — showing text to the operator during a run is fine, but nothing hinting at contents (e.g. vocab dictionaries) is baked into the repo (OQ-007, C-002); durable review artifacts stay metadata-only and external tools render text (WH-005 metadata-only cluster report; WH-002 metadata ledger with no embedded body text); exception-only default posture. | No | owner | WH-002 / WH-005 design (deferred) | Resolved |
-| OQ-024 | §1's tool-first reframing (owner, 2026-07-06): is scale-flexibility — "fully functional from single files to entire libraries; users without substantial software/hardware resources are not locked out" — a binding requirement or an architectural principle, amending OQ-020's principle-only resolution? | Binding: G-006 + NFR-006 added; the v1 surface stays the scan→plan→apply→verify pipeline with single-file `PATH`s first-class (§7.3) and the FR-005 low-risk opt-in covering preservation; a one-shot convenience command is deferred as WH-008; §1's broader verb list remains product vision bounded by §2.3, with "total loss" mapping to skip-and-report (FR-015) — no new triage FR. ADR-0010's seam design reviewed and stands (the requirement binds the pipeline's floor, not new policy machinery). | No | owner | MS-1 | Resolved; canonical ADR `adr-0014-tool-first-product-scope`; amends OQ-020 / `adr-0010-pluggable-policy-seams` (amendment note) |
-| OQ-025 | v1 posture for HTML/markup files — the default include globs silently excluded ~half the corpus (gap-analysis GAP-07). | Include `**/*.html`/`**/*.htm` in the §18.2 defaults; mechanical scope for markup is encoding + EOL normalization only — no whitespace transforms, no renames; structural conversion stays WH-004. | No | owner | MS-2 | Resolved; canonical ADR `adr-0016-mechanical-transform-boundary` |
-| OQ-026 | UTF-16/32 policy vs the NUL-byte risky heuristic — unordered, the two checks silently decide whether UTF-16 files are convertible (GAP-44). | BOM sniff covers UTF-8/16/32 and runs before the NUL check; BOM'd files decode per BOM and convert to UTF-8; a BOM-less interleaved-NUL pattern skips with the specific `utf16-suspect` reason, never as generic binary. Amends the ADR-0009 gate-ordering note. | No | owner | MS-2 | Resolved |
-| OQ-027 | Who writes shared artifacts under parallelism, and what prevents two concurrent runs racing on one target (GAP-23)? | Parent-process single-writer for manifest/report (workers return results over pool IPC); a run-level lock file makes a second concurrent plan/apply refuse with exit 3 (AW-005). ADR-0007 amendment note. | No | owner | MS-3 | Resolved |
-| OQ-028 | Per-file timeout/watchdog and input-size limits for unattended runs (GAP-63). | FR-019: process-level watchdog scoped to discovery/detection/transform (never the writer) + plan-time `limits.max_file_size_mib` guard + regex-safety-by-construction in FR-009 (§8.5); ERR-009/R-007 recorded; `limits.*` keys in §18.2. | No | owner | MS-5 | Resolved |
-| OQ-029 | Config precedence, list-merge semantics, and default-config discovery (GAP-16). | Flags > file > built-in defaults; scalar flags override; list flags replace, never append; `./docmend.toml` auto-discovered when `--config` omitted; config alone can never enable writes (reaffirms OQ-014). | No | owner | MS-0 | Resolved |
-| OQ-030 | Numeric definition of EC-005 "empty or drastically smaller output" (GAP-46). | Two-part: hard invariant — v1 mechanical transforms must never reduce non-whitespace character count (exact, no tuning; whitespace-only shrinkage legitimate); plus forward-looking `safety.shrink_ratio` (default 0.50) for future content-touching transforms. | No | owner | MS-2 | Resolved; canonical ADR `adr-0016-mechanical-transform-boundary` |
-| OQ-031 | `whitespace.normalize_tabs` transformation semantics (GAP-47). | Leading (indentation) tabs → spaces at `whitespace.tab_width` (default 4); interior tabs untouched (protects aligned tables/ASCII art); off by default; additional to the OQ-001 six default transforms. | No | owner | MS-2 | Resolved; canonical ADR `adr-0016-mechanical-transform-boundary` |
-| OQ-032 | Synthetic-corpus generation strategy and real-anomaly anonymization path (GAP-49). | Two corpora, one pure seedable generator: 100k scale corpus generated at test time (seeded, never committed, slow-marked) + small committed weird-document corpus with sidecar metadata; real anomalies enter only via the 6-step re-synthesis anonymization procedure with reviewer gate (§17.2, C-002); `faker` added to §8.6 dev table. | No | owner | MS-1 | Resolved; canonical ADR `adr-0015-test-corpus-and-anonymization` |
-| OQ-033 | Mechanical enforcement of NFR-005 transform purity (GAP-52). | Layered: `import-linter` forbidden contract in CI (dev dep, §8.6) + hand-rolled autouse fixture blocking `open`/`os.open`/`io.FileIO` in `tests/unit/transform/`; both land at MS-0 before transform code exists. | No | owner | MS-0 | Resolved |
+| OQ-024 | §1's tool-first reframing (owner, 2026-07-06): is scale-flexibility — "fully functional from single files to entire libraries; users without substantial software/hardware resources are not locked out" — a binding requirement or an architectural principle, amending OQ-020's principle-only resolution? | Binding: G-006 + NFR-006 added; the v1 surface stays the scan→plan→apply→verify pipeline with single-file `PATH`s first-class (§7.3) and the FR-005 low-risk opt-in covering preservation; a one-shot convenience command is deferred as WH-008; §1's broader verb list remains product vision bounded by §2.3, with "total loss" mapping to skip-and-report (FR-015) — no new triage FR. the `adr-0010-pluggable-policy-seams` seam design was reviewed and stands (the requirement binds the pipeline's floor, not new policy machinery). | No | owner | MS-1 | Resolved; canonical ADR `adr-0014-tool-first-product-scope`; amends OQ-020 / `adr-0010-pluggable-policy-seams` (amendment note) |
+| OQ-025 | v1 posture for HTML/markup files — the default include globs silently excluded ~half the corpus (gap-analysis gap-07). | Include `**/*.html`/`**/*.htm` in the §18.2 defaults; mechanical scope for markup is encoding + EOL normalization only — no whitespace transforms, no renames; structural conversion stays WH-004. | No | owner | MS-2 | Resolved; canonical ADR `adr-0016-mechanical-transform-boundary` |
+| OQ-026 | UTF-16/32 policy vs the NUL-byte risky heuristic — unordered, the two checks silently decide whether UTF-16 files are convertible (gap-44). | BOM sniff covers UTF-8/16/32 and runs before the NUL check; BOM'd files decode per BOM and convert to UTF-8; a BOM-less interleaved-NUL pattern skips with the specific `utf16-suspect` reason, never as generic binary. Amends the `adr-0009-encoding-detection-dual-skip-gate` gate-ordering note. | No | owner | MS-2 | Resolved |
+| OQ-027 | Who writes shared artifacts under parallelism, and what prevents two concurrent runs racing on one target (gap-23)? | Parent-process single-writer for manifest/report (workers return results over pool IPC); a run-level lock file makes a second concurrent plan/apply refuse with exit 3 (AW-005). `adr-0007-concurrency-primitive-process-pool` amendment note. | No | owner | MS-3 | Resolved |
+| OQ-028 | Per-file timeout/watchdog and input-size limits for unattended runs (gap-63). | FR-019: process-level watchdog scoped to discovery/detection/transform (never the writer) + plan-time `limits.max_file_size_mib` guard + regex-safety-by-construction in FR-009 (§8.5); ERR-009/R-007 recorded; `limits.*` keys in §18.2. | No | owner | MS-5 | Resolved |
+| OQ-029 | Config precedence, list-merge semantics, and default-config discovery (gap-16). | Flags > file > built-in defaults; scalar flags override; list flags replace, never append; `./docmend.toml` auto-discovered when `--config` omitted; config alone can never enable writes (reaffirms OQ-014). | No | owner | MS-0 | Resolved |
+| OQ-030 | Numeric definition of EC-005 "empty or drastically smaller output" (gap-46). | Two-part: hard invariant — v1 mechanical transforms must never reduce non-whitespace character count (exact, no tuning; whitespace-only shrinkage legitimate); plus forward-looking `safety.shrink_ratio` (default 0.50) for future content-touching transforms. | No | owner | MS-2 | Resolved; canonical ADR `adr-0016-mechanical-transform-boundary` |
+| OQ-031 | `whitespace.normalize_tabs` transformation semantics (gap-47). | Leading (indentation) tabs → spaces at `whitespace.tab_width` (default 4); interior tabs untouched (protects aligned tables/ASCII art); off by default; additional to the OQ-001 six default transforms. | No | owner | MS-2 | Resolved; canonical ADR `adr-0016-mechanical-transform-boundary` |
+| OQ-032 | Synthetic-corpus generation strategy and real-anomaly anonymization path (gap-49). | Two corpora, one pure seedable generator: 100k scale corpus generated at test time (seeded, never committed, slow-marked) + small committed weird-document corpus with sidecar metadata; real anomalies enter only via the 6-step re-synthesis anonymization procedure with reviewer gate (§17.2, C-002); `faker` added to §8.6 dev table. | No | owner | MS-1 | Resolved; canonical ADR `adr-0015-test-corpus-and-anonymization` |
+| OQ-033 | Mechanical enforcement of NFR-005 transform purity (gap-52). | Layered: `import-linter` forbidden contract in CI (dev dep, §8.6) + hand-rolled autouse fixture blocking `open`/`os.open`/`io.FileIO` in `tests/unit/transform/`; both land at MS-0 before transform code exists. | No | owner | MS-0 | Resolved |
 
 ---
 

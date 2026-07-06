@@ -139,11 +139,11 @@ uv run python scripts/fix_spec_toc.py
 
 **Applies when:** writing or editing `docs/specs/docmend.md` text that cites a settled decision.
 
-**Rule:** the spec cites decisions by `OQ-###` (its own §21 register), `D-###`, or ADR stem (`adr-00NN-…`) — never `RQ-###`. `RQ-` is not a canonical project-spec prefix and `validate-specs@v4` fails on it; `RQ-###` lives only in `docs/resolved-questions.md` and the ADRs. `OQ-N` and `RQ-N` share the number `N` by convention.
+**Rule:** the spec cites decisions by `OQ-###` (its own §21 register), `D-###`, or ADR stem (`adr-00NN-…`) — never `RQ-###`. More generally, `validate-specs@v4` reads **any** uppercase `PREFIX-<digits>` token in the spec body as a spec-ID reference and fails it (`SV-ID-UNDECLARED`, plus `SV-ID-FMT` on a non-3-digit width) unless the prefix is declared in Appendix A. So three classes must stay out of the spec body: `RQ-###` (use its shared-number `OQ-###`); a bare uppercase `ADR-0010` (use the lowercase `adr-00NN-…` stem, which is not tokenised); and a `GAP-07` cross-reference to `gap-analysis.md` (lowercase it to `gap-07`, or reword). `RQ-###` lives only in `docs/resolved-questions.md` and the ADRs; `OQ-N` and `RQ-N` share the number `N` by convention.
 
-**Why:** the 2026-07-05 consistency audit had to remap 76 `RQ-` references after `validate-specs` failed on them; `scripts/check_traceability.py` (CI, `traceability.yml`) now cross-checks the §21 OQ register against the RQ/open-question records, so the pairing is machine-enforced.
+**Why:** the 2026-07-05 consistency audit had to remap 76 `RQ-` references after `validate-specs` failed on them; the 2026-07-06 audit additionally found bare `ADR-NNNN` and `GAP-NN` tokens tripping the same `SV-ID-*` checks (and the recurring `SV-ANCHOR` ToC-root dead anchor, fixed by [`scripts/fix_spec_toc.py`](../../scripts/fix_spec_toc.py) — see #4). `scripts/check_traceability.py` (CI, `traceability.yml`) cross-checks the §21 OQ register against the RQ/open-question records, so the OQ/RQ pairing is machine-enforced; `validate-specs.yml` gates the ID-token rules. Run `project-standards spec validate` locally after editing the spec — the lowercase-`adr-`/`gap-` forms are the only cross-doc-reference styles it accepts.
 
-**Sources:** `validate-specs@v4`; 2026-07-05 consistency-audit session; `scripts/check_traceability.py`.
+**Sources:** `validate-specs@v4`; 2026-07-05 and 2026-07-06 consistency-audit sessions; `scripts/check_traceability.py`; `scripts/fix_spec_toc.py`.
 
 **Related:** #3, #5.
 

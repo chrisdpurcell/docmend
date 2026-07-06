@@ -58,9 +58,9 @@ Chosen option: **"Layered pipeline with an explicit plan-file workflow."** Disco
 
 ### Consequences
 
-- Good, because the writer is the only fault-prone surface, matching the fault-isolation the concurrency model also relies on (process workers, ADR-0007 candidate).
+- Good, because the writer is the only fault-prone surface, matching the fault-isolation the concurrency model also relies on (process workers, ADR-0007).
 - Good, because transforms are pure and testable in isolation, satisfying NFR-005 and enabling property-based tests over the weird-document corpus.
-- Good, because the plan artifact is both the review surface (nothing mutates without a reviewable intent record) and the stale-input guard (FR-003), and it is the anchor for resume (ADR-0006 candidate) and the safety gate (ADR-0004).
+- Good, because the plan artifact is both the review surface (nothing mutates without a reviewable intent record) and the stale-input guard (FR-003), and it is the anchor for resume (ADR-0006) and the safety gate (ADR-0004).
 - Bad, because there are more moving parts and durable artifacts to manage, and the workflow is two-step (`plan` then `apply`) rather than one command — an accepted cost, since the review point and stale-input guard are the whole point.
 
 ### Confirmation

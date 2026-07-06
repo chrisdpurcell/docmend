@@ -6,7 +6,7 @@ description: "docmend's inventory, plan, report, and manifest are governed by fo
 doc_type: 'adr'
 status: 'accepted'
 created: '2026-07-05'
-updated: '2026-07-05'
+updated: '2026-07-06'
 reviewed: null
 owner: 'chrisdpurcell'
 consumer: 'agent'
@@ -56,7 +56,7 @@ The inventory, plan, apply report, and manifest are the contract between every d
 
 ## Decision Outcome
 
-Chosen option: **"Four hand-authored, versioned JSON Schemas, NDJSON manifest."** `inventory.schema.json`, `plan.schema.json`, `report.schema.json`, and `manifest.schema.json` are pinned in-repo (Draft 2020-12, strict `additionalProperties: false`, explicit schema/version fields) before MS-1 code freezes them. Representation is a **single JSON document** for inventory/plan/report and **JSON Lines (NDJSON)** for the append-only manifest, because a single JSON document cannot be appended crash-safely — plus a small regenerable "latest state per path" index. Required identity fields: run-ID, per-action ID, and UUIDv7 `docmend.id`. Symlink/hardlink record shapes are defined (scan records them; plan/apply refuse symlink mutation by default, EC-008). Versioning is MAJOR.MINOR with a backward-only compatibility policy and a `frontmatter_migrate` planned-action for corpus migration. `pydantic` (ADR-0013 / RQ-020) guards _internal_ construction and its JSON-Schema emission **cross-checks** the hand-authored schemas in tests — but the checked-in schemas are the durable contract; they are not generated.
+Chosen option: **"Four hand-authored, versioned JSON Schemas, NDJSON manifest."** `inventory.schema.json`, `plan.schema.json`, `report.schema.json`, and `manifest.schema.json` are pinned in-repo (Draft 2020-12, strict `additionalProperties: false`, explicit schema/version fields) before MS-1 code freezes them. Representation is a **single JSON document** for inventory/plan/report and **JSON Lines (NDJSON)** for the append-only manifest, because a single JSON document cannot be appended crash-safely — plus a small regenerable "latest state per path" index. Required identity fields: run-ID, per-action ID, and UUIDv7 `docmend.id`. Symlink and hard-link record shapes are both defined: scan records a symlink (recorded, not followed for mutation by default, EC-008) and, where `st_nlink > 1`, the shared-inode hard-link alias group (EC-011); plan/apply refuse symlink mutation by default and process a hard-linked file once, skipping-and-reporting the alias set rather than mutating it — `os.replace()` on one path would break the link and leave the other names pointing at the stale original (FR-015). Versioning is MAJOR.MINOR with a backward-only compatibility policy and a `frontmatter_migrate` planned-action for corpus migration. `pydantic` (ADR-0013 / RQ-020) guards _internal_ construction and its JSON-Schema emission **cross-checks** the hand-authored schemas in tests — but the checked-in schemas are the durable contract; they are not generated.
 
 ### Consequences
 
@@ -71,7 +71,8 @@ Confirmed by: fixture artifacts that round-trip (inventory/plan/report write→r
 
 ## More Information
 
-- Spec: §7.4 DR-001–DR-004, §9, IR-007, §21 OQ-004 (Resolved RQ-004).
+- **Amendment (2026-07-06, OQ-004 / gap-32):** the hard-link record shape is now genuinely specified, not merely asserted. Owner adopted the gap-32 policy — detect `st_nlink > 1` at scan, record the shared-inode alias group in the inventory, and skip-and-report at apply rather than mutate (because `os.replace()` on one path breaks the link). Spec: §10.3 EC-011, DR-001, §21 OQ-004. Prior to this the Decision Outcome claimed hard-link shapes were defined while no artifact defined them (consistency-audit finding).
+- Spec: §7.4 DR-001–DR-004, §9, §10.3 EC-008/EC-011, IR-007, §21 OQ-004 (Resolved RQ-004).
 - Research: `append-safe-manifest-format`, `json-schema-versioning-migration`, `json-schema-validator-library`.
 - The validator library is ADR-0013 (RQ-018); the internal model library is ADR-0013 (RQ-020); the resume model that consumes the manifest is ADR-0006 (RQ-003); the identity field shape is ADR-0008 (RQ-002). verify's checks over these artifacts + the exit-code taxonomy are ADR-0012 (RQ-006).
 - Revisit on the first MAJOR schema bump, or if a fifth durable artifact is introduced.

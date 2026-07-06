@@ -2,7 +2,7 @@
 
 Python tool to normalize, fix, convert, manage, and maintain large libraries of text and markdown documents.
 
-> **Status:** pre-implementation. The design is complete (see [`docs/specs/docmend.md`](docs/specs/docmend.md)); the CLI is not built yet. The sections below establish the development workflow ahead of the first implementation milestone.
+> **Status:** foundation (MS-0) implemented. The design is complete (see [`docs/specs/docmend.md`](docs/specs/docmend.md)); the `docmend` CLI entry point, strict TOML configuration, and structured logging framework exist, but the pipeline commands (`scan`/`plan`/`apply`/`verify`) land in later milestones — the tool cannot process documents yet.
 
 ## Contributing / workflow
 

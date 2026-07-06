@@ -15,6 +15,7 @@ Read [`docs/specs/docmend.md`](docs/specs/docmend.md) (SPEC-VHHB, `full` profile
 ## Task Tracking
 
 - [`TODO.md`](TODO.md) — user tasks above agent tasks; don't complete a user task unless asked.
+- [`repo-hygiene.md`](repo-hygiene.md) — periodic repository hygiene checklist for cleanup and maintenance passes.
 - [`docs/open-questions.md`](docs/open-questions.md) / [`docs/resolved-questions.md`](docs/resolved-questions.md) — the spec's `OQ-`/`RQ-` decision backlog.
 
 ## Non-Negotiables

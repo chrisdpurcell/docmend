@@ -1,0 +1,255 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://raw.githubusercontent.com/chrisdpurcell/docmend/main/src/docmend/schemas/inventory.schema.json",
+	"title": "docmend inventory (DR-001)",
+	"description": "Output of `docmend scan` (FR-001, IR-001): a single JSON document recording the source root, the scan configuration in force, per-file classification records, symlink records (EC-008), skipped entries with reasons (ERR-007), shared-inode hard-link alias groups (EC-011), and aggregate counts that must reconcile with the per-file records. Hand-authored durable contract per adr-0005; the internal pydantic models conform to this file, never the reverse. Paths are POSIX-style and relative to source_root; the artifact stays on the operator's machine and is never committed (spec 13.4).",
+	"type": "object",
+	"additionalProperties": false,
+	"required": [
+		"schema",
+		"schema_version",
+		"run_id",
+		"generated_at",
+		"generated_by",
+		"requested_path",
+		"source_root",
+		"scan_config",
+		"files",
+		"symlinks",
+		"skipped",
+		"hard_link_groups",
+		"totals"
+	],
+	"properties": {
+		"schema": { "const": "docmend/inventory" },
+		"schema_version": {
+			"description": "MAJOR.MINOR, backward-only compatibility policy (adr-0005). MINOR adds optional fields or enum values; MAJOR changes meaning or removes fields.",
+			"type": "string",
+			"pattern": "^1\\.[0-9]+$"
+		},
+		"run_id": { "$ref": "#/$defs/run_id" },
+		"generated_at": { "type": "string", "format": "date-time" },
+		"generated_by": {
+			"description": "Tool identity and version, e.g. 'docmend 0.1.0' (mirrors the frontmatter output.generated_by convention, spec section 9).",
+			"type": "string",
+			"minLength": 1
+		},
+		"requested_path": {
+			"description": "The PATH argument exactly as the user gave it — provenance for the single-file first-class flow (NFR-006).",
+			"type": "string",
+			"minLength": 1
+		},
+		"source_root": {
+			"description": "Absolute path of the directory scanned. When requested_path is a single file this is its parent directory.",
+			"type": "string",
+			"minLength": 1
+		},
+		"scan_config": {
+			"description": "The filter configuration the scan actually used, after CLI-flag overlay (OQ-029 replace semantics) — DR-001's 'scan configuration'. The full config snapshot belongs to the plan (DR-002), not the inventory.",
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["include", "exclude"],
+			"properties": {
+				"include": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+				"exclude": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+			}
+		},
+		"files": {
+			"description": "One record per regular candidate file (matched include, not excluded, readable). Symlinks are never listed here.",
+			"type": "array",
+			"items": { "$ref": "#/$defs/file_record" }
+		},
+		"symlinks": {
+			"description": "Symbolic links encountered inside the tree and not excluded (EC-008): recorded, never followed, never candidates for mutation in v1.",
+			"type": "array",
+			"items": { "$ref": "#/$defs/symlink_record" }
+		},
+		"skipped": {
+			"description": "Files (or directories, for walk errors) deliberately not classified, with the reason (ERR-007). Files that simply do not match an include pattern are not candidates and are not recorded here.",
+			"type": "array",
+			"items": { "$ref": "#/$defs/skip_record" }
+		},
+		"hard_link_groups": {
+			"description": "Shared-inode alias groups for candidate files with st_nlink > 1 (EC-011). Plan processes each group once; apply skips-and-reports the alias set rather than mutating it.",
+			"type": "array",
+			"items": { "$ref": "#/$defs/hard_link_group" }
+		},
+		"totals": { "$ref": "#/$defs/totals" }
+	},
+	"$defs": {
+		"run_id": { "type": "string", "pattern": "^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{6}$" },
+		"relative_path": {
+			"description": "POSIX-style path relative to source_root; never absolute, never containing '..'.",
+			"type": "string",
+			"minLength": 1
+		},
+		"sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+		"file_record": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": [
+				"path",
+				"size_bytes",
+				"suffix",
+				"mtime_ns",
+				"nlink",
+				"sha256",
+				"newline_style",
+				"nul_bytes",
+				"non_ascii_bytes",
+				"encoding"
+			],
+			"properties": {
+				"path": { "$ref": "#/$defs/relative_path" },
+				"size_bytes": { "type": "integer", "minimum": 0 },
+				"suffix": {
+					"description": "Final extension including the dot, recorded verbatim as stored on disk ('.txt', '.TXT', ''); never normalized here, because rename decisions (FR-010) belong to the plan.",
+					"type": "string"
+				},
+				"mtime_ns": {
+					"description": "st_mtime_ns at classification time — provenance for staleness reasoning; hashes, not mtimes, are the binding stale-input guard (FR-003).",
+					"type": "integer",
+					"minimum": 0
+				},
+				"nlink": { "type": "integer", "minimum": 1 },
+				"sha256": { "$ref": "#/$defs/sha256" },
+				"newline_style": {
+					"description": "Line-ending census (EC-006): 'none' means the file contains no line terminators (including the zero-byte file, EC-009).",
+					"enum": ["lf", "crlf", "cr", "mixed", "none"]
+				},
+				"nul_bytes": {
+					"description": "True when any 0x00 byte is present — planning-layer input for the FR-015 risky classification and the OQ-026 utf16-suspect check.",
+					"type": "boolean"
+				},
+				"non_ascii_bytes": {
+					"description": "Count of bytes >= 0x80 — the FR-007 non-ASCII floor gate's input fact (OQ-015), recorded for decision provenance (C.4).",
+					"type": "integer",
+					"minimum": 0
+				},
+				"encoding": { "$ref": "#/$defs/encoding_facts" }
+			}
+		},
+		"encoding_facts": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["bom", "utf8_valid", "ascii_only", "detected"],
+			"properties": {
+				"bom": {
+					"description": "Byte-order mark sniffed from the first bytes; authoritative per FR-007 and evaluated before any NUL-byte classification (OQ-026).",
+					"enum": ["utf-8", "utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be", null]
+				},
+				"utf8_valid": {
+					"description": "Whole file decodes as strict UTF-8 (FR-007 second rung).",
+					"type": "boolean"
+				},
+				"ascii_only": {
+					"description": "non_ascii_bytes == 0 (FR-007 third rung: ASCII content is never detected as a legacy encoding).",
+					"type": "boolean"
+				},
+				"detected": {
+					"description": "Detection verdict where one of the FR-007 rungs resolved it; null when only the charset-normalizer legacy rung (MS-2, FR-007) could decide.",
+					"oneOf": [{ "type": "null" }, { "$ref": "#/$defs/detected_encoding" }]
+				}
+			}
+		},
+		"detected_encoding": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["name", "confidence", "method"],
+			"properties": {
+				"name": { "type": "string", "minLength": 1 },
+				"confidence": {
+					"description": "1.0 for the deterministic rungs; 1.0 minus CharsetMatch.chaos for charset-normalizer (OQ-015).",
+					"type": "number",
+					"minimum": 0,
+					"maximum": 1
+				},
+				"method": { "enum": ["bom", "utf8-strict", "ascii", "charset-normalizer"] }
+			}
+		},
+		"symlink_record": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["path", "target", "kind"],
+			"properties": {
+				"path": { "$ref": "#/$defs/relative_path" },
+				"target": {
+					"description": "os.readlink result, verbatim (may be relative or point outside source_root — recorded, never resolved for mutation).",
+					"type": "string"
+				},
+				"kind": {
+					"description": "What the link resolves to at scan time; 'broken' when the target does not exist.",
+					"enum": ["file", "directory", "broken", "other"]
+				}
+			}
+		},
+		"skip_record": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["path", "reason", "detail"],
+			"properties": {
+				"path": { "$ref": "#/$defs/relative_path" },
+				"reason": {
+					"description": "'excluded': matched an include pattern but also an exclude pattern. 'unreadable': stat/open/read failed (ERR-007) — these count as findings for the section-18.5 exit-code taxonomy.",
+					"enum": ["excluded", "unreadable"]
+				},
+				"detail": {
+					"description": "Human-readable cause (e.g. the OS error); null for reasons that need none.",
+					"type": ["string", "null"]
+				}
+			}
+		},
+		"hard_link_group": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["device", "inode", "nlink", "paths"],
+			"properties": {
+				"device": { "type": "integer", "minimum": 0 },
+				"inode": { "type": "integer", "minimum": 0 },
+				"nlink": {
+					"description": "st_nlink of the inode; may exceed len(paths) when some aliases live outside the scanned tree.",
+					"type": "integer",
+					"minimum": 2
+				},
+				"paths": {
+					"description": "The in-scan member paths of the alias group, sorted.",
+					"type": "array",
+					"minItems": 1,
+					"items": { "$ref": "#/$defs/relative_path" }
+				}
+			}
+		},
+		"totals": {
+			"description": "Aggregate counts; DR-001 requires each to reconcile exactly with the record arrays.",
+			"type": "object",
+			"additionalProperties": false,
+			"required": [
+				"files",
+				"symlinks",
+				"skipped",
+				"skipped_by_reason",
+				"hard_link_groups",
+				"total_size_bytes"
+			],
+			"properties": {
+				"files": { "type": "integer", "minimum": 0 },
+				"symlinks": { "type": "integer", "minimum": 0 },
+				"skipped": { "type": "integer", "minimum": 0 },
+				"skipped_by_reason": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {
+						"excluded": { "type": "integer", "minimum": 0 },
+						"unreadable": { "type": "integer", "minimum": 0 }
+					}
+				},
+				"hard_link_groups": { "type": "integer", "minimum": 0 },
+				"total_size_bytes": {
+					"description": "Sum of size_bytes over files[].",
+					"type": "integer",
+					"minimum": 0
+				}
+			}
+		}
+	}
+}

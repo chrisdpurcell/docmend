@@ -7,7 +7,7 @@
   - _open question_ (`OQ-###`) is a decision still to be made — the primary unit of this document.
   - _resolved question_ (`RQ-###`, already settled) lives in the companion file [`resolved-questions.md`](resolved-questions.md).
 - **Priority scale:** open questions carry a `P0 blocker` / `P1 near-blocker` / `P2 decision` label; the gap-analysis-sourced ones also carry a High / Medium / Low gap-analysis priority. The full ranked register with downstream-impact analysis lives in [`gap-analysis.md`](gap-analysis.md).
-- **Status:** all open questions (OQ-001..033) are now settled — see [`resolved-questions.md`](resolved-questions.md), RQ-001..033. **No open questions remain.**
+- **Status:** OQ-001..033 are settled — see [`resolved-questions.md`](resolved-questions.md), RQ-001..033. **One open question:** OQ-034 (non-blocking; implementation proceeding on its recorded assumption per the spec's Appendix B rules).
 
 ## Table of Contents
 
@@ -19,9 +19,24 @@
 
 ## Open questions
 
-<!-- All questions are settled — see resolved-questions.md (RQ-001..033). New decisions get added here as OQ-### per the rules below. -->
+<!-- OQ-001..033 are settled — see resolved-questions.md (RQ-001..033). New decisions get added here as OQ-### per the rules below. -->
 
-_None. Every decision raised so far is settled in [`resolved-questions.md`](resolved-questions.md) (RQ-001..033). Latest: OQ-024 → RQ-024 (2026-07-06, tool-first reframing — scale-flexibility made binding, amending RQ-010/ADR-0010) and OQ-025..033 → RQ-025..033 (2026-07-06, gap-register Batch B: HTML scope, UTF-16/32 policy, single-writer rule, watchdog, config precedence, shrink check, tab semantics, synthetic-corpus strategy, purity enforcement)._
+### OQ-034 — default artifact/log output location (`P2 decision`, non-blocking)
+
+**Raised:** 2026-07-06 (MS-1 implementation) **Owner:** owner **Needed by:** MS-3 (before apply multiplies the artifact set) **Spec:** §21 OQ-034; touches IR-001, §18.2 (`paths.exclude` default), §18.5, OQ-006 (sidecar discovery)
+
+**The unresolved decision:** where do run artifacts and the per-run log go when the operator passes no flags? IR-001's `--report` is optional, §18.5 requires an artifact for every run, and no spec section names a default path.
+
+**Current assumption (implementation proceeds on this per Appendix B):** a `.docmend/` directory created in the **invoking directory** (not inside the scanned tree, unless the operator runs from there) holds the per-run log (`docmend-{run-id}.jsonl` — the MS-0 convention unchanged) and run artifacts (`docmend-{run-id}-inventory.json`; later `-plan.json`, `-report.json`, `-manifest.ndjson`). Explicit flags (`--report`, and the future `--out`-family) override per artifact. `.docmend/` is added to the §18.2 default excludes so the tool's own output can never become a scan candidate. The run-ID-keyed sibling naming is deliberately the input `verify`'s OQ-006 sidecar-discovery convention will consume at MS-4.
+
+#### Agent notes
+
+- Alternatives considered: bare files in the CWD (clutters, and a second run doubles it); alongside the scanned root (pollutes the library being processed — worst option given FR-001's read-only posture, though only the _tool's_ directory, never library files, would be written); XDG state dir (`~/.local/state/docmend/` — survives anywhere but hides the artifacts the operator is supposed to review; the plan file is a review surface, D-006).
+- A future `artifacts.dir` config key could make this configurable; deliberately **not** added now — §18.2 is spec-governed and the flag override suffices for v1.
+
+#### My Comments
+
+(none yet — owner block, agent does not edit)
 
 ## How to maintain this document
 

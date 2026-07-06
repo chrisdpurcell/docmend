@@ -1,0 +1,377 @@
+"""Discovery-layer tests (spec: FR-001, FR-012, DR-001, NFR-006; ERR-007, EC-006/008/009/011).
+
+Covers the MS-1 exit criteria: a valid inventory from a synthetic corpus,
+provably read-only scanning, and working include/exclude filters.
+
+The seeded recipe→bytes corpus generator below follows adr-0015's architecture
+in miniature (pure recipe rendering, disk materialization isolated in a thin
+adapter). It lives here while discovery is its only consumer; when MS-2's
+weird-document fixtures need it too, promote it to a shared location.
+"""
+
+import hashlib
+import os
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Literal
+
+import pytest
+from faker import Faker
+from hypothesis import given
+from hypothesis import strategies as st
+
+from docmend.config import DocmendConfig, PathsConfig
+from docmend.discovery import NewlineCensus, classify_file, scan
+from docmend.inventory import Inventory, NewlineStyle
+
+RUN_ID = "run_20260706T000000Z_abc123"
+GENERATED_AT = datetime(2026, 7, 6, tzinfo=UTC).isoformat()
+
+type RecipeEncoding = Literal["utf-8", "utf-8-sig", "windows-1252", "utf-16-le-bom", "binaryish"]
+
+
+@dataclass(frozen=True)
+class FileRecipe:
+    """Pure description of one synthetic corpus file (adr-0015: recipe -> bytes)."""
+
+    path: str
+    encoding: RecipeEncoding
+    newline: NewlineStyle
+    sentences: int = 3
+
+    @property
+    def expected_bom(self) -> str | None:
+        return {"utf-8-sig": "utf-8", "utf-16-le-bom": "utf-16-le"}.get(self.encoding)
+
+    @property
+    def expected_utf8_valid(self) -> bool:
+        # NUL bytes are perfectly valid UTF-8 — that is exactly why FR-015 keys
+        # binary suspicion on the nul_bytes fact, not on decode failure.
+        return self.encoding in ("utf-8", "utf-8-sig", "binaryish")
+
+
+_EOL: dict[NewlineStyle, str] = {"lf": "\n", "crlf": "\r\n", "cr": "\r", "none": "", "mixed": ""}
+
+
+def render(recipe: FileRecipe, faker: Faker) -> bytes:
+    """Pure recipe -> bytes. Faker filler is provably synthetic (adr-0015, C-002)."""
+    lines = [faker.sentence() for _ in range(recipe.sentences)]
+    if recipe.encoding == "windows-1252":
+        lines = [f"café naïve — {line}" for line in lines]
+    if recipe.newline == "mixed":
+        text = "".join(line + ("\n" if i % 2 else "\r\n") for i, line in enumerate(lines))
+    elif recipe.newline == "none":
+        text = " ".join(lines)
+    else:
+        eol = _EOL[recipe.newline]
+        text = eol.join(lines) + eol
+    match recipe.encoding:
+        case "utf-8" | "utf-8-sig":
+            return text.encode(recipe.encoding)
+        case "windows-1252":
+            return text.replace("—", "-").encode("cp1252")
+        case "utf-16-le-bom":
+            return b"\xff\xfe" + text.encode("utf-16-le")
+        case "binaryish":
+            return b"\x00\x01" + text.encode("utf-8") + b"\x00"
+
+
+def materialize(root: Path, recipes: list[FileRecipe], faker: Faker) -> None:
+    """Thin disk adapter — the only place generator output touches the filesystem."""
+    for recipe in recipes:
+        target = root / recipe.path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(render(recipe, faker))
+
+
+def seeded_faker() -> Faker:
+    faker = Faker()
+    faker.seed_instance(20260706)
+    return faker
+
+
+CORPUS_RECIPES = [
+    FileRecipe("plain.txt", "utf-8", "lf"),
+    FileRecipe("dos.txt", "utf-8", "crlf"),
+    FileRecipe("mac.txt", "utf-8", "cr"),
+    FileRecipe("mixed.txt", "utf-8", "mixed"),
+    FileRecipe("one-line.txt", "utf-8", "none"),
+    FileRecipe("bom.txt", "utf-8-sig", "lf"),
+    FileRecipe("legacy.txt", "windows-1252", "crlf"),
+    FileRecipe("utf16.txt", "utf-16-le-bom", "lf"),
+    FileRecipe("sub/nested.txt", "utf-8", "lf"),
+    FileRecipe("notes.md", "utf-8", "lf"),
+    FileRecipe("page.html", "utf-8", "crlf"),
+    FileRecipe("nulls.txt", "binaryish", "lf"),
+]
+
+
+@pytest.fixture
+def corpus(tmp_path: Path) -> Path:
+    root = tmp_path / "corpus"
+    root.mkdir()
+    materialize(root, CORPUS_RECIPES, seeded_faker())
+    return root
+
+
+def run_scan(root: Path, config: DocmendConfig | None = None) -> Inventory:
+    return scan(root, config or DocmendConfig(), run_id=RUN_ID, generated_at=GENERATED_AT)
+
+
+def snapshot(root: Path) -> dict[str, tuple[int, str]]:
+    """(mtime_ns, sha256) per file — the FR-001 'nothing changed' witness."""
+    result: dict[str, tuple[int, str]] = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_file() and not path.is_symlink():
+            stat = path.stat()
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            result[str(path.relative_to(root))] = (stat.st_mtime_ns, digest)
+    return result
+
+
+class TestScanReadOnly:
+    def test_scan__modifies_no_file_and_creates_none(self, corpus: Path) -> None:
+        """spec: FR-001 — scan is provably read-only: mtimes, hashes, and the
+        file set are identical before and after."""
+        before = snapshot(corpus)
+        run_scan(corpus)
+        assert snapshot(corpus) == before
+
+
+class TestClassification:
+    def test_newline_styles__match_recipes(self, corpus: Path) -> None:
+        """spec: DR-001 / EC-006 — per-file newline census, 'mixed' recorded as such."""
+        inventory = run_scan(corpus)
+        styles = {record.path: record.newline_style for record in inventory.files}
+        for recipe in CORPUS_RECIPES:
+            if recipe.encoding == "utf-16-le-bom":
+                continue  # newline bytes are interleaved with NULs; census is byte-level
+            assert styles[recipe.path] == recipe.newline, recipe.path
+
+    def test_encoding_facts__match_recipes(self, corpus: Path) -> None:
+        """spec: DR-001 / FR-007 deterministic rungs — BOM and strict-UTF-8 facts."""
+        records = {record.path: record for record in run_scan(corpus).files}
+        for recipe in CORPUS_RECIPES:
+            facts = records[recipe.path].encoding
+            assert facts.bom == recipe.expected_bom, recipe.path
+            assert facts.utf8_valid is recipe.expected_utf8_valid, recipe.path
+            if recipe.expected_bom:
+                assert facts.detected is not None and facts.detected.method == "bom"
+            elif recipe.encoding == "windows-1252":
+                # Legacy detection is the MS-2 charset-normalizer rung; the
+                # deterministic rungs must leave it undecided, never guess.
+                assert facts.detected is None
+                assert records[recipe.path].non_ascii_bytes > 0
+
+    def test_nul_bytes_flagged(self, corpus: Path) -> None:
+        records = {record.path: record for record in run_scan(corpus).files}
+        assert records["nulls.txt"].nul_bytes is True
+        assert records["plain.txt"].nul_bytes is False
+
+    def test_sha256_and_size__match_disk(self, corpus: Path) -> None:
+        records = {record.path: record for record in run_scan(corpus).files}
+        raw = (corpus / "plain.txt").read_bytes()
+        assert records["plain.txt"].sha256 == f"sha256:{hashlib.sha256(raw).hexdigest()}"
+        assert records["plain.txt"].size_bytes == len(raw)
+
+    def test_zero_byte_file__recorded_normally(self, tmp_path: Path) -> None:
+        """spec: DR-001 / EC-009 — the zero-byte file is a normal record."""
+        (tmp_path / "empty.txt").touch()
+        record = run_scan(tmp_path).files[0]
+        assert record.size_bytes == 0
+        assert record.newline_style == "none"
+        assert record.encoding.utf8_valid is True
+        assert record.encoding.ascii_only is True
+
+    def test_suffix_recorded_verbatim(self, tmp_path: Path) -> None:
+        (tmp_path / "SHOUT.TXT").write_text("x\n")
+        inventory = run_scan(
+            tmp_path,
+            DocmendConfig(paths=PathsConfig(include=["**/*.TXT"])),
+        )
+        assert inventory.files[0].suffix == ".TXT"
+
+
+class TestFilters:
+    def test_include_selects_only_matching_files(self, corpus: Path) -> None:
+        """spec: FR-012 — include globs select candidates; misses are not candidates."""
+        inventory = run_scan(corpus, DocmendConfig(paths=PathsConfig(include=["**/*.md"])))
+        assert [record.path for record in inventory.files] == ["notes.md"]
+        assert inventory.totals.skipped == 0
+
+    def test_exclude_records_skip_with_reason(self, corpus: Path) -> None:
+        """spec: FR-012 / DR-001 — an include match that is excluded is a recorded skip."""
+        config = DocmendConfig(
+            paths=PathsConfig(include=["**/*.txt"], exclude=["**/sub/**"]),
+        )
+        inventory = run_scan(corpus, config)
+        skipped = {record.path: record.reason for record in inventory.skipped}
+        assert skipped == {"sub/nested.txt": "excluded"}
+        assert all(not record.path.startswith("sub/") for record in inventory.files)
+
+    def test_default_excludes__hide_tool_and_vcs_dirs(self, corpus: Path) -> None:
+        (corpus / ".git").mkdir()
+        (corpus / ".git" / "notes.txt").write_text("x\n")
+        (corpus / ".docmend").mkdir()
+        (corpus / ".docmend" / "old-inventory.json").write_text("{}\n")
+        inventory = run_scan(corpus)
+        assert {record.path for record in inventory.skipped} == {".git/notes.txt"}
+
+    def test_filters_apply_to_single_file_path(self, corpus: Path) -> None:
+        """spec: FR-012 / NFR-006 — the same filters govern a single-file PATH."""
+        included = run_scan(corpus / "plain.txt")
+        assert [record.path for record in included.files] == ["plain.txt"]
+        excluded = run_scan(
+            corpus / "plain.txt",
+            DocmendConfig(paths=PathsConfig(include=["**/*.txt"], exclude=["plain.txt"])),
+        )
+        assert excluded.totals.files == 0
+        assert [record.reason for record in excluded.skipped] == ["excluded"]
+
+
+class TestSingleFile:
+    def test_single_file_scan__first_class(self, corpus: Path) -> None:
+        """spec: NFR-006 / FR-001 — a single-file PATH yields a one-record inventory
+        with default configuration and no extra setup."""
+        inventory = run_scan(corpus / "dos.txt")
+        assert inventory.requested_path.endswith("dos.txt")
+        assert inventory.source_root == str(corpus)
+        assert [record.path for record in inventory.files] == ["dos.txt"]
+        assert inventory.files[0].newline_style == "crlf"
+
+    def test_single_file_not_matching_include__empty_inventory(self, tmp_path: Path) -> None:
+        (tmp_path / "data.bin").write_bytes(b"x")
+        inventory = run_scan(tmp_path / "data.bin")
+        assert inventory.totals.files == 0
+        assert inventory.totals.skipped == 0
+
+
+class TestLinks:
+    def test_symlinks__recorded_never_classified(self, corpus: Path) -> None:
+        """spec: DR-001 / EC-008 — symlinks are recorded (file, dir, broken), not followed."""
+        (corpus / "alias-link.txt").symlink_to("plain.txt")
+        (corpus / "dir-link").symlink_to("sub")
+        (corpus / "dangling.txt").symlink_to("gone.txt")
+        inventory = run_scan(corpus)
+        kinds = {record.path: record.kind for record in inventory.symlinks}
+        assert kinds == {
+            "alias-link.txt": "file",
+            "dir-link": "directory",
+            "dangling.txt": "broken",
+        }
+        assert all(not record.path.endswith("-link.txt") for record in inventory.files)
+        # The symlinked directory's contents appear once (via sub/), not twice.
+        nested = [record.path for record in inventory.files if "nested" in record.path]
+        assert nested == ["sub/nested.txt"]
+
+    def test_hard_links__grouped_by_inode(self, corpus: Path) -> None:
+        """spec: DR-001 / EC-011 — st_nlink > 1 files form a shared-inode alias group."""
+        os.link(corpus / "plain.txt", corpus / "alias.txt")
+        inventory = run_scan(corpus)
+        assert len(inventory.hard_link_groups) == 1
+        group = inventory.hard_link_groups[0]
+        assert group.paths == ["alias.txt", "plain.txt"]
+        assert group.nlink == 2
+        by_path = {record.path: record.nlink for record in inventory.files}
+        assert by_path["plain.txt"] == 2
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="permission bits do not bind root")
+class TestUnreadable:
+    def test_unreadable_file__skipped_with_reason_scan_completes(self, corpus: Path) -> None:
+        """spec: DR-001 (ERR-007) — unreadable file is recorded, scan completes."""
+        target = corpus / "locked.txt"
+        target.write_text("secret\n")
+        target.chmod(0)
+        try:
+            inventory = run_scan(corpus)
+        finally:
+            target.chmod(0o644)
+        skipped = {record.path: record for record in inventory.skipped}
+        assert skipped["locked.txt"].reason == "unreadable"
+        assert skipped["locked.txt"].detail
+        assert inventory.totals.skipped_by_reason.unreadable == 1
+
+    def test_unreadable_directory__skipped_scan_completes(self, corpus: Path) -> None:
+        blocked = corpus / "vault"
+        blocked.mkdir()
+        (blocked / "inside.txt").write_text("x\n")
+        blocked.chmod(0)
+        try:
+            inventory = run_scan(corpus)
+        finally:
+            blocked.chmod(0o755)
+        assert any(
+            record.path == "vault" and record.reason == "unreadable" for record in inventory.skipped
+        )
+        assert inventory.totals.files == len(CORPUS_RECIPES)
+
+
+class TestDeterminism:
+    def test_two_scans__identical_but_for_nothing(self, corpus: Path) -> None:
+        """Sorted walk => byte-identical inventories for identical inputs."""
+        first = run_scan(corpus)
+        second = run_scan(corpus)
+        assert first == second
+        paths = [record.path for record in first.files]
+        assert paths == sorted(paths)
+
+
+def _census_reference(data: bytes) -> tuple[int, int, int]:
+    pairs = data.count(b"\r\n")
+    return (pairs, data.count(b"\n") - pairs, data.count(b"\r") - pairs)
+
+
+newline_soup = st.binary(max_size=64).flatmap(
+    lambda filler: st.lists(
+        st.sampled_from([b"\n", b"\r", b"\r\n", filler or b"a"]), max_size=32
+    ).map(b"".join)
+)
+
+
+class TestNewlineCensusProperties:
+    @given(data=newline_soup, cut_points=st.lists(st.integers(0, 96), max_size=8))
+    def test_census__independent_of_chunk_boundaries(
+        self, data: bytes, cut_points: list[int]
+    ) -> None:
+        """The CRLF-split-across-chunks case (spec FR-008's future input facts):
+        any chunking of the same bytes yields the same census."""
+        whole = NewlineCensus()
+        whole.update(data)
+        whole.finish()
+
+        chunked = NewlineCensus()
+        previous = 0
+        for cut in sorted(point for point in cut_points if point <= len(data)):
+            chunked.update(data[previous:cut])
+            previous = cut
+        chunked.update(data[previous:])
+        chunked.finish()
+
+        assert (whole.crlf, whole.bare_lf, whole.bare_cr) == (
+            chunked.crlf,
+            chunked.bare_lf,
+            chunked.bare_cr,
+        )
+
+    @given(data=newline_soup)
+    def test_census__matches_whole_buffer_reference(self, data: bytes) -> None:
+        census = NewlineCensus()
+        census.update(data)
+        census.finish()
+        assert (census.crlf, census.bare_lf, census.bare_cr) == _census_reference(data)
+
+
+class TestClassifierChunking:
+    @pytest.mark.parametrize("chunk_size", [1, 2, 3, 7, 1 << 20])
+    def test_classifier__independent_of_chunk_size(self, tmp_path: Path, chunk_size: int) -> None:
+        """BOM window and CRLF handling must not depend on read granularity."""
+        target = tmp_path / "boundary.txt"
+        target.write_bytes(b"\xef\xbb\xbfline one\r\nline two\rrest\ncaf\xc3\xa9\r\n")
+        stat = target.lstat()
+        record = classify_file(target, "boundary.txt", stat, chunk_size=chunk_size)
+        assert record.encoding.bom == "utf-8"
+        assert record.newline_style == "mixed"
+        assert record.encoding.utf8_valid is True
+        assert record.non_ascii_bytes == 5  # 3 BOM bytes + 2-byte é

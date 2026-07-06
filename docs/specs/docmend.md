@@ -46,6 +46,7 @@ related:
 | 0.7 | `2026-07-05` | `coding-agent` | **Spec/ADR consistency audit** (multi-agent: dimensional finders → adversarial verify → classify). Reconciled 8 distinct stale-prose defects to already-settled decisions — zero RQ downgrades: §21 OQ-001 "seven"→"six" mechanical transforms; added the `--write` opt-in to §10.1 and IR-003 (OQ-014); reworded IR-007 to JSON + NDJSON manifest (OQ-004); removed stray "output root" language from §8.5/§13.2 for in-place mutation (OQ-012); fixed the §9 `docmend.id` example to UUIDv7 (OQ-002); refreshed the §9 "once OQ-013 settles" note (OQ-013); added the `parallel.*` config surface to §18.2 with sequential-until-profiled defaults + IR-006 domain list (OQ-016). ADR 0001 found internally consistent and consistent with the spec. |
 | 0.6 | `2026-07-05` | `coding-agent` | Owner settled the last two open questions → **OQ-015/OQ-023** (`docs/resolved-questions.md`); §21 OQ-015/OQ-023 set Resolved. **OQ-015** (encoding): reworded FR-007 to `charset-normalizer`-sole + `1.0 − chaos` confidence (no `.confidence` API) + dual skip gate with a non-ASCII byte-count floor (default 20, family-aware/ratio deferred behind the OQ-020 seam) and gate ordering; added `encoding.non_ascii_floor` to §18.2; broadened A-003/FR-015/AW-003/R-001; fixed the §8.6 charset-normalizer RQ mislink; added the floor fixture recipe to §17.2/§17.3. **OQ-023** (review-artifact exposure): NG-001 boundary reframed to public-repo/tool surface vs operator screen in §2.2/§11, with metadata-only-artifact + external-render rows added to §13.4/§13.5. **Blocking OQs now 0; backlog fully settled (OQ-001..023).** |
 | 0.8 | `2026-07-06` | owner + `coding-agent` | **Tool-first reframing.** Owner rewrote §1: the product is the scale-flexible tool; the >100k-file library pipeline is the impetus use case, not the product. Downstream (OQ-024, amending OQ-020's principle-only resolution): mission statement rewritten tool-first; added G-006 (scale flexibility), NFR-006 (small-scale floor), WH-008 (one-shot command, deferred); single-file `PATH` semantics stated in §7.3; §3.2/§5/§14 corpus-vs-tool clarifications; §17.2/§17.3 and §20 coverage rows; §1 "total loss" mapped to skip-and-report (FR-015), no new triage FR; ADR-0010 seam design reviewed, stands. TOC re-nested (editor regen), tabs converted to spaces. |
+| 0.9 | `2026-07-06` | `coding-agent` | **Gap-register sweep, Batch A** — synced spec prose to already-settled ADR decisions and closed mechanical gaps from `docs/gap-analysis.md`, no new decisions: IR-002 plan-consumes-inventory (GAP-13, OQ-004); IR-004 verify artifact flags + read-only (GAP-12, OQ-006); IR-005 `--version` + verbosity contract (GAP-14/17, OQ-017); IR-006 strict config validation (GAP-15, OQ-021); DR-002 per-action ID + §9 identity fields (GAP-27/28, OQ-004); §8.5 backup-outside-target + disk preflight (GAP-36/38, OQ-005); §8.6 `allpairspy` + §17.2 pairwise gate tests (GAP-39, OQ-005); ERR-007/ERR-008 (GAP-18); scan/plan re-run posture (GAP-25, OQ-003); EC-009 zero-byte (GAP-48); §17.1 coverage gate (GAP-51); §17.3 IR-/DR- rows (GAP-53); §18.5 console-summary note (GAP-21, OQ-017); `docs/handoff/` pointers (GAP-66). |
 
 **Spec lifecycle:** This document is **living until `approved`**, then **change-controlled**: post-approval edits require a new revision row and, for scope-affecting changes, re-approval by the owner. Implementation deviations are recorded in the [Deviations Log](#deviations-log), not silently patched into requirements. When replaced, set `status: superseded` and `superseded_by:` in the frontmatter.
 
@@ -343,11 +344,11 @@ APIs, CLIs, UIs, files, databases, queues, protocols, external systems, hardware
 | ID | Interface | Requirement | Contract / Format | Acceptance Criteria |
 | --- | --- | --- | --- | --- |
 | IR-001 | CLI | The system shall expose `docmend scan PATH` producing an inventory. | `docmend scan PATH [--report FILE]` | Command exists, exits 0 on success, writes DR-001 artifact. |
-| IR-002 | CLI | The system shall expose `docmend plan` consuming a path/inventory and config, producing a plan file. | `docmend plan PATH --config cleaner.toml --out plan.json` | Command produces DR-002 artifact; exits non-zero on config errors. |
+| IR-002 | CLI | The system shall expose `docmend plan` consuming an inventory artifact and config, producing a plan file — `plan` reads the inventory (OQ-004); a raw `PATH` argument is shorthand that performs the scan first and records the produced inventory reference in the plan. | `docmend plan [PATH \| --inventory FILE] --config cleaner.toml --out plan.json` | Command produces DR-002 artifact referencing its inventory; exits non-zero on config errors. |
 | IR-003 | CLI | The system shall expose `docmend apply` consuming a plan file, honoring an explicit real-write opt-in, dry-run, and backup options. | `docmend apply plan.json [--write \| --dry-run] [--backup-dir PATH]` (`--write` opts into real mutation per OQ-014; `--write` and `--dry-run` are mutually exclusive; apply dry-runs by default when neither is given) | Behaviors per FR-003–FR-006; exits non-zero when the safety gate refuses. |
-| IR-004 | CLI | The system shall expose `docmend verify PATH` running the FR-014 checks. | `docmend verify PATH` | Exit 0 iff all checks pass; findings enumerated in output/report. |
-| IR-005 | CLI | The system shall support the global flags `--help`/`-h`, `--dry-run`/`-n`, `--verbose`/`-v`, and `--quiet`/`-q`. | Standard CLI conventions; `--quiet` limits output to errors and critical messages. | Flag behavior covered by CLI tests. |
-| IR-006 | Config file | The system shall read configuration from a TOML file covering paths, rename, encoding, newline, whitespace, write, and parallelism settings. | TOML; reference table in §18.2; parsed with stdlib `tomllib`. | Unknown keys rejected with a clear error; defaults per §18.2 when file omitted. |
+| IR-004 | CLI | The system shall expose `docmend verify PATH` running the FR-014 checks, read-only, locating its input artifacts via explicit flags or the run-ID-keyed sidecar-discovery convention (OQ-006). | `docmend verify PATH [--manifest FILE] [--report FILE] [--plan FILE]` | Exit 0 iff all checks pass; findings enumerated in output/report; proven read-only by test (no mutation, no manifest write). |
+| IR-005 | CLI | The system shall support the global flags `--help`/`-h`, `--version`/`-V`, `--dry-run`/`-n`, `--verbose`/`-v`, and `--quiet`/`-q`. | Standard CLI conventions. `--version` prints the package version and exits 0. `--verbose` raises console detail and `--quiet` limits the console to errors and critical messages; the two are mutually exclusive, and neither affects the DEBUG-floored file log sink (OQ-017). | Each flag's behavior asserted by CLI tests, including the `--verbose`/`--quiet` exclusivity error. |
+| IR-006 | Config file | The system shall read configuration from a TOML file covering paths, rename, encoding, newline, whitespace, write, and parallelism settings. | TOML; reference table in §18.2; parsed with stdlib `tomllib` into strict internal models (`extra='forbid'`, OQ-021). | Unknown keys, wrong types, out-of-range values, and invalid enum values are each rejected with a clear error; defaults per §18.2 when file omitted. |
 | IR-007 | Artifacts | The system shall read and write its durable artifacts as JSON: a single JSON document for inventory, plan, and report; JSON Lines (NDJSON) for the append-only manifest (a single JSON document cannot be appended crash-safely; OQ-004). | JSON; shapes per §9 (exact schemas tracked in OQ-004). | Inventory/plan/report round-trip (write → read → identical model); manifest round-trips per record (each NDJSON line parses to an identical record model) in tests. |
 | IR-008 | CLI | The system shall expose `docmend restore`, replaying manifest records per `docmend.id` in LIFO order to return mutated files to their pre-apply state (canonical decision: `adr-0004-apply-safety-gate-and-preservation`, OQ-005). | `docmend restore [--manifest FILE \| --run-id ID] [--id DOCMEND_ID ...] [--write \| --dry-run]` (reads the DR-004 manifest; restores each record's original from its backup/preservation ref; dry-run previews by default, mirroring `apply`'s opt-in). | Restored bytes match the manifest's pre-apply `source.hash`; the tool-wide exit-code taxonomy (§18.5) applies (0 clean, 1 findings, 2 input error, 3 safety refusal); drilled in §18.6. |
 
@@ -360,7 +361,7 @@ In every command, `PATH` may be a single file or a directory tree; single-file i
 | ID | Data Entity | Requirement | Validation Rules | Ownership |
 | --- | --- | --- | --- | --- |
 | DR-001 | Inventory | The system shall persist scan results: source root, scan configuration, timestamp, per-file records (path, size, suffix, newline style, detected encoding, UTF-8 status), skipped files with reasons, aggregate counts. | JSON schema (OQ-004); counts must reconcile with per-file records. | docmend |
-| DR-002 | Plan | The system shall persist plans: inventory reference, config snapshot, planned actions, skip decisions, risk/conflict decisions, and source hashes validating that inputs have not changed. | JSON schema (OQ-004); every planned action carries the source hash it was decided on. | docmend |
+| DR-002 | Plan | The system shall persist plans: inventory reference, config snapshot, planned actions, skip decisions, risk/conflict decisions, and source hashes validating that inputs have not changed. | JSON schema (OQ-004); every planned action carries the source hash it was decided on and a stable per-action ID (correlated with the run-ID) for resume and manifest correlation. | docmend |
 | DR-003 | Apply report | The system shall persist apply results: plan reference, dry-run flag, start/completion timestamps, per-file outcomes, before/after hashes, errors, skips, summary counts. | JSON schema (OQ-004); summary counts must equal per-file outcome totals. | docmend |
 | DR-004 | Backup/rename manifest | The system shall persist a reversible operation record per mutation: original path, target path, backup path (if any), before/after hashes, operation type, result status, error details. | JSON schema (OQ-004); sufficient to mechanically restore the pre-apply state. | docmend |
 | DR-005 | Frontmatter schema | The system shall maintain a canonical, versioned frontmatter schema in the repository (e.g. `schemas/frontmatter.schema.json`) and validate generated frontmatter against it (FR-016). | JSON Schema; required fields, generated fields, and structure per §9; schema version in `docmend.schema_version`; duplicate YAML keys rejected at the parser (not left to schema validation, which only sees already-collapsed input); JSON Schema `format` assertions (e.g. `date`, `date-time`) explicitly enabled in the validator rather than left as Draft 2020-12's annotation-only default. | docmend |
@@ -459,6 +460,7 @@ Constraints the implementer must not violate:
 - The writer refuses to overwrite unless explicitly allowed and writes UTF-8/LF only.
 - Low-confidence or risky files are never silently "fixed" — skip and report (FR-015).
 - Written paths must stay inside the source root (§13.5) — v1 mutates in place; there is no separate output root (OQ-012).
+- The backup destination must lie outside the mutation target and be writable, and a per-mount disk-space preflight runs before any writing apply (OQ-005).
 - Dry-run is the default; every destructive capability is opt-in (NFR-004).
 - Artifacts (DR-001–DR-004) are written for every run; a run that leaves no audit trail is a defect.
 
@@ -488,6 +490,7 @@ Constraints the implementer must not violate:
 | `hypothesis` | Yes | Property-based tests (§17.2, NFR-005); dev-only, CI settings profile loosening `deadline`; MPL 2.0 never distributed in the MIT package (OQ-019). |
 | `pyfakefs` | Yes | Fast in-memory filesystem for scan/plan/filter tests — **not** for atomic-write/fsync/crash/permission/symlink tests, which need a real filesystem (OQ-019). |
 | `pytest-xdist` | Yes | Parallelize the growing weird-document corpus (OQ-019). |
+| `allpairspy` | Yes | Pairwise combinatorial coverage over the safety-gate predicates, t=3 for the preservation/manifest/backup trio (OQ-005, §17.2). |
 | `check-jsonschema` | Yes (hook only) | Pre-commit hook linting `schemas/*.schema.json`; **not** a runtime dependency (OQ-018). |
 | `puremagic` | Deferred | Candidate for content-type sniffing; not adopted in v1 (`docs/research/python-library-research.md`). |
 
@@ -497,7 +500,7 @@ Constraints the implementer must not violate:
 
 ## 9. Data Model
 
-docmend has no database; its persistent data model is (a) the four JSON artifacts and (b) the frontmatter embedded in converted documents. Exact JSON Schemas are pinned before implementation (OQ-004); the binding shapes are outlined in DR-001–DR-004. For each artifact: the natural key is the run (timestamp + source root) plus per-file source path; provenance requirements are the recorded source hashes and config snapshots that let any historical result be reproduced and explained; retention is indefinite until user purge (§18.6).
+docmend has no database; its persistent data model is (a) the four JSON artifacts and (b) the frontmatter embedded in converted documents. Exact JSON Schemas are pinned before implementation (OQ-004); the binding shapes are outlined in DR-001–DR-004. For each artifact: identity is carried by the OQ-004 identity fields — run-ID, per-action ID, and `docmend.id` — with the run (timestamp + source root) plus per-file source path as the natural key; provenance requirements are the recorded source hashes and config snapshots that let any historical result be reproduced and explained; retention is indefinite until user purge (§18.6).
 
 The frontmatter contract is the durable heart of the data model. Generated frontmatter is valid YAML, bounded by `---` at top and `---` at the end of the block (Pandoc also accepts `...`; docmend prefers `---`), and required to be the first content in the file (C-004). YAML scalars are quoted where needed — especially titles or descriptions containing colons, backslashes, blank lines, or block-level formatting — using literal block scalars for multi-paragraph values.
 
@@ -624,6 +627,7 @@ Expected result:
 | EC-006 | Mixed newline styles within a single file. | All variants normalized to LF (FR-008); original style recorded as `mixed` in `source.newline_style`. |
 | EC-007 | UTF-8 with BOM. | Decoded correctly; BOM stripped on write (FR-007). |
 | EC-008 | Symbolic links inside the source tree. | Not followed for mutation by default; recorded in the inventory (exact policy folded into OQ-004 artifact design). |
+| EC-009 | Zero-byte source file. | Handled mechanically (rename and final-newline enforcement per config); never triggers the EC-005 shrink heuristic — there is no content to lose; recorded normally in plan and report. |
 
 ### 10.4 State Transitions
 
@@ -672,12 +676,15 @@ Not applicable — docmend is a headless CLI with no UI pages and no HTTP API; t
 | ERR-004 | Backup copy fails while backups are enabled. | The mutation is aborted **before** touching the original; file marked Failed. | Backup failure logged with cause. | Fix backup destination; retry. |
 | ERR-005 | File unreadable at apply time (deleted, permission change). | File skipped with reason; batch continues. | Logged with path and OS error. | Re-plan once the file is accessible again. |
 | ERR-006 | Plan file invalid, corrupted, or produced by an incompatible version. | Apply refuses to start (part of the safety gate, FR-005 family). | Validation findings printed; non-zero exit. | Regenerate the plan with the current tool version. |
+| ERR-007 | File or directory unreadable during scan (permissions, transient I/O). | Recorded in the inventory as skipped with reason; scan completes. | Logged with path and OS error; counted in inventory aggregates. | Fix access; re-scan (scan is read-only and cheap to repeat). |
+| ERR-008 | Inventory artifact invalid, corrupted, or produced by an incompatible version at plan time. | Plan refuses to start. | Validation findings printed; exit 2 (input error, §18.5 taxonomy). | Re-scan to regenerate the inventory. |
 
 ### 12.2 Retry and Idempotency
 
 - Retried operations: none automatically in v1 — failed files are surfaced in the report and retried by re-running plan/apply, keeping behavior predictable in bulk runs. Failures are still classified **transient** (I/O, permissions — retry by re-run) vs. **permanent/content** (binary, NUL bytes, low confidence — will skip again by design).
 - Non-retried operations: risky-file skips (FR-015) are deliberate outcomes, not failures; they recur until the input or configuration changes.
 - Idempotency key / deduplication strategy: per-file source hash. Re-applying over converted output produces zero changes (FR-017); resume uses recorded per-file completion to avoid redoing work (FR-013).
+- Interrupted `scan` or `plan`: no resume machinery — both are read-only and write their artifact atomically on completion, so an interrupted run is simply re-run; resume applies to `apply` only (OQ-003).
 
 ### 12.3 Rollback / Recovery
 
@@ -777,7 +784,7 @@ General project risks — schedule, technical, dependency, provider. Security th
 ### 17.1 Definition of Done
 
 - [ ] All **Must** requirements implemented; acceptance criteria pass.
-- [ ] Automated tests cover required behavior, error cases, and edge cases.
+- [ ] Automated tests cover required behavior, error cases, and edge cases; coverage meets the repository gate (`fail_under = 85`, python-tooling standard).
 - [ ] Traceability matrix (§17.3) complete — every Must/Should requirement maps to a passing verification.
 - [ ] Documentation deliverables (§18.7) produced.
 - [ ] Security-sensitive behavior reviewed; hardening checklist (§13.6) resolved.
@@ -794,7 +801,7 @@ General project risks — schedule, technical, dependency, provider. Security th
 | Database | N/A — no database; artifact round-trip covered under snapshot/contract. | — | No |
 | End-to-end | Full CLI journey: scan → plan → apply --dry-run → apply → verify on a synthetic corpus, and the same journey over a single file (NFR-006). | Happy path plus at least one failure path (gate refusal, hash mismatch) and one interruption/resume path; the single-file journey with default configuration and the low-risk opt-in. | Yes |
 | Security | Path containment, symlink handling, log content (no document bodies at default verbosity). | Critical misuse cases from §13.5. | Yes |
-| Operations | Backup-and-restore drill from manifest; resume after kill; report/manifest consistency. | The §18.6 restore test, automated. | Yes |
+| Operations | Backup-and-restore drill from manifest; resume after kill; report/manifest consistency; pairwise combinatorial tests over the safety-gate predicates (t=3 for the preservation/manifest/backup trio, OQ-005). | The §18.6 restore test, automated; every gate-predicate failure refuses with exit 3. | Yes |
 | Regression | The **weird-document corpus**: every anomaly class encountered (§10.3 plus real-world finds). | Each prior bug or anomaly class pinned by a fixture; corpus grows for the life of the project (extensive testing against weird documents is a headline requirement). The encoding-floor fixtures (OQ-015) vary three axes — total length × non-ASCII count × placement — with explicit false-accept and false-skip boundary sets and family-equivalent decode outcomes (e.g. cp932 vs Shift_JIS, GBK vs GB18030). | Yes |
 
 ### 17.3 Requirement-to-Test Traceability
@@ -827,6 +834,19 @@ The implementer fills this in as the completion evidence ([Appendix B.3](#b3-req
 | NFR-004 | Config-default audit test (no mutation out of the box). | Not Started |
 | NFR-005 | Transform purity check (no filesystem access in transform tests). | Not Started |
 | NFR-006 | Single-file end-to-end test with default configuration and the FR-005 low-risk opt-in. | Not Started |
+| IR-001 | `scan` CLI test: command exists, exit codes, DR-001 artifact written. | Not Started |
+| IR-002 | `plan` CLI test: inventory reference asserted in the plan; config-error exit. | Not Started |
+| IR-003 | `apply` flag tests: `--write`/`--dry-run` exclusivity, dry-run default, gate refusal exit. | Not Started |
+| IR-004 | `verify` flag/sidecar-discovery tests; proven read-only. | Not Started |
+| IR-005 | Global-flag tests incl. `--version` and `--verbose`/`--quiet` exclusivity. | Not Started |
+| IR-006 | Config strict-validation tests (unknown key, type, enum, range). | Not Started |
+| IR-007 | Artifact round-trip tests (JSON documents; NDJSON manifest per record). | Not Started |
+| IR-008 | `restore` drill test: manifest replay restores pre-apply hashes. | Not Started |
+| DR-001 | Inventory schema validation + count-reconciliation tests. | Not Started |
+| DR-002 | Plan schema validation; per-action ID and source-hash presence tests. | Not Started |
+| DR-003 | Report schema validation; summary-vs-outcome reconciliation tests. | Not Started |
+| DR-004 | Manifest schema validation; mechanical-restorability test. | Not Started |
+| DR-005 | Frontmatter schema validation tests (duplicate keys, format assertion). | Not Started |
 
 ---
 
@@ -902,6 +922,7 @@ For a batch CLI the observability surface is logs, reports, and exit codes rathe
 - Structured per-file logs with a per-run correlation (run ID recorded in artifacts).
 - Every run — scan, plan, apply, verify — emits a machine-readable artifact recording start/finish, per-file outcomes and reasons, and summary counts (FR-018); these are the "job records."
 - Exit codes distinguish success, findings (e.g. verify failures, skipped-with-errors), and refusals (safety gate).
+- The Rich console summary mirrors the machine-readable report's counts (OQ-017); the report artifact remains the authoritative record.
 - Health endpoints, metrics services, and alerting are not applicable — there is no resident process; the alert equivalent is a non-zero exit and its report, reviewed by the operator (the owner).
 
 ### 18.6 Backup and Disaster Recovery
@@ -924,7 +945,7 @@ Checklist tied to the DoD:
 - [ ] README / user-facing usage docs updated (commands, config reference, safety model).
 - [ ] Runbooks: restore-from-manifest procedure; resume-after-interruption procedure.
 - [ ] Configuration reference (§18.2) matches shipped defaults.
-- [ ] Handoff/state docs updated per repo convention (`docs/handoff.md`).
+- [ ] Handoff/state docs updated per repo convention (`docs/handoff/`).
 
 ---
 
@@ -1149,7 +1170,7 @@ At completion, provide:
 
 ### B.4 Session Handoff
 
-For multi-session implementations: record current milestone, in-progress requirement IDs, and unresolved `OQ-`/`DEV-` items in the repository's session-state/handoff documents at the end of each session, per the repo's documentation convention (`docs/handoff.md`). The spec records _what and why_; handoff docs record _where work stands_.
+For multi-session implementations: record current milestone, in-progress requirement IDs, and unresolved `OQ-`/`DEV-` items in the repository's session-state/handoff documents at the end of each session, per the repo's documentation convention (`docs/handoff/`). The spec records _what and why_; handoff docs record _where work stands_.
 
 ---
 

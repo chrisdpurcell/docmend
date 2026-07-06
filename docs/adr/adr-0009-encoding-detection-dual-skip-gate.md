@@ -6,7 +6,7 @@ description: 'charset-normalizer is the sole detector; a file is skipped if it f
 doc_type: 'adr'
 status: 'accepted'
 created: '2026-07-05'
-updated: '2026-07-05'
+updated: '2026-07-06'
 reviewed: null
 owner: 'chrisdpurcell'
 consumer: 'agent'
@@ -69,6 +69,7 @@ Confirmed by: fixtures converting correctly in UTF-8, UTF-8-BOM, Windows-1252, a
 
 ## More Information
 
+- **Amendment (2026-07-06, RQ-026 / spec OQ-026):** the authoritative BOM sniff explicitly covers UTF-16/UTF-32 BOMs and is evaluated **before** the FR-015 NUL-byte risky classification — otherwise UTF-16 ASCII text (~50% NUL bytes) would be permanently skipped as binary. BOM'd UTF-16/32 files decode per their BOM and convert to UTF-8; a BOM-less file matching the interleaved-NUL pattern skips with the specific `utf16-suspect` reason, never as generic binary (spec FR-007, FR-015, EC-010; gap-analysis GAP-44).
 - Spec: §7.1 FR-007, §18.2 (`encoding.fail_below_confidence`, `encoding.non_ascii_floor`), A-003, D-002, G-005.
 - Research: `encoding-detection-benchmark`, `charset-detection-floors-for-legacy-text-ingestion`.
 - Decision owner: owner (RQ-022). Relates to ADR-0002 (encoding decode is a pure transform), RQ-010 (the family-aware seam), and RQ-009 (the calibration deferral).

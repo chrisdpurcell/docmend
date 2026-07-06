@@ -33,6 +33,7 @@
     - [RQ-022 — encoding detector and non-ASCII skip floor](#rq-022--encoding-detector-and-non-ascii-skip-floor)
     - [RQ-023 — deferred-review-artifact content-exposure policy (WH-002/WH-005)](#rq-023--deferred-review-artifact-content-exposure-policy-wh-002wh-005)
     - [RQ-024 — scale-flexibility is binding: tool-first reframing (amends RQ-010)](#rq-024--scale-flexibility-is-binding-tool-first-reframing-amends-rq-010)
+    - [RQ-025..033 — gap-register Batch B decisions (2026-07-06)](#rq-025033--gap-register-batch-b-decisions-2026-07-06)
   - [How to use this document](#how-to-use-this-document)
 
 ## Resolved questions
@@ -398,6 +399,34 @@ The product is the **tool**, not the pipeline: the >100k-file library migration 
 #### My Comments
 
 _Owner decision (from the OQ-024 AskUserQuestion, 2026-07-06): binding requirements (G-006 + NFR-006, OQ-024 amending OQ-020); pipeline-on-one-file for v1 with the one-shot command deferred as WH-008; keep the §1 verb list and map "total loss" to skip-and-report._
+
+### RQ-025..033 — gap-register Batch B decisions (2026-07-06)
+
+**Resolved:** 2026-07-06
+**Source questions:** OQ-025..033 (minted from `docs/gap-analysis.md` Batch B triage — the nine decision-bearing gaps that survived the 2026-07-06 status audit)
+**Decision owner:** owner (two AskUserQuestion rounds plus an individual walkthrough of the GAP-49/GAP-52 research reports, 2026-07-06)
+**Canonical references:** spec §21 OQ-025..033 rows carry each decision's assumption; the spec body sections listed per item below are the binding text. Recorded together because all nine were settled in one sitting from one triage; split any item out if it is later amended individually.
+
+| RQ | Gap | Decision (canonical spec home) |
+| --- | --- | --- |
+| RQ-025 | GAP-07 | HTML/markup included in default globs, **mechanical-only** (encoding + EOL; no whitespace transforms, no renames; conversion stays WH-004) — §2.1, §18.2 `paths.include`. |
+| RQ-026 | GAP-44 | UTF-16/32: BOM sniff precedes the NUL-byte check; BOM'd files decode → UTF-8; BOM-less interleaved-NUL pattern skips as `utf16-suspect`, never generic binary — FR-007, FR-015, EC-010; **ADR-0009 amendment note**. |
+| RQ-027 | GAP-23 | Parent-process **single-writer** for shared manifest/report; run-level lock file; concurrent run refuses exit 3 — §8.5, AW-005; **ADR-0007 amendment note**. |
+| RQ-028 | GAP-63 | Per-file process watchdog (never the writer) + plan-time size guard + regex-safety-by-construction — FR-019, ERR-009, R-007, §18.2 `limits.*`, §8.5. |
+| RQ-029 | GAP-16 | Config precedence flags > file > defaults; list flags **replace**, never append; `./docmend.toml` auto-discovery; config alone never enables writes — §18.2 intro (reaffirms RQ-015). |
+| RQ-030 | GAP-46 | EC-005 two-part: non-whitespace character-count **invariant** for v1 mechanical transforms + forward-looking `safety.shrink_ratio` (0.50) — EC-005, §18.2. |
+| RQ-031 | GAP-47 | `normalize_tabs`: **leading tabs only** → spaces at `tab_width` (4); interior tabs untouched; off by default; additional to the RQ-001 six defaults — FR-009, §18.2. |
+| RQ-032 | GAP-49 | **Two-corpus** strategy (generated-never-committed seeded 100k scale corpus, slow-marked; small committed weird-document corpus with sidecars) from one pure generator + 6-step re-synthesis **anonymization procedure** with reviewer gate — §17.2, §19 MS-5, `faker` dev dep, conventions #6 fixture review gate. |
+| RQ-033 | GAP-52 | Layered NFR-005 enforcement: `import-linter` forbidden contract (CI, dev dep) + hand-rolled runtime blocking fixture in `tests/unit/transform/`; lands MS-0 — NFR-005, §19 MS-0, §8.6. |
+
+#### Rationale
+
+- All nine follow the research recommendations (`synthetic-corpus-generation.md`, `architecture-and-traceability-enforcement.md`, `python-314-concurrency-model.md`, `per-file-watchdog-timeout.md`) or the gap register's own analysis; none contradicts an existing ADR — RQ-026/RQ-027 extend ADR-0009/ADR-0007 via amendment notes rather than new ADRs.
+- RQ-030's invariant works because v1's mechanical transforms touch only whitespace and encoding: non-whitespace content loss is _always_ a defect, so the check needs no tunable threshold to be exact.
+
+#### My Comments
+
+_Owner decisions (from the two OQ-025..033 AskUserQuestion rounds, 2026-07-06): all recommended options adopted; GAP-49 and GAP-52 confirmed individually after a detailed walkthrough of their research reports (adopt in full / both layers)._
 
 ## How to use this document
 

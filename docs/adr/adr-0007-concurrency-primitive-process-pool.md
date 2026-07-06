@@ -6,7 +6,7 @@ description: 'v1 parallelizes CPU-bound work with concurrent.futures.ProcessPool
 doc_type: 'adr'
 status: 'accepted'
 created: '2026-07-05'
-updated: '2026-07-05'
+updated: '2026-07-06'
 reviewed: null
 owner: 'chrisdpurcell'
 consumer: 'agent'
@@ -70,6 +70,7 @@ Confirmed by: the transform-purity suite (NFR-005) passing in both `sequential` 
 
 ## More Information
 
+- **Amendment (2026-07-06, RQ-027 / spec OQ-027):** shared-artifact writes under parallelism are now specified — workers transform and return results over pool IPC; **only the parent process appends the shared NDJSON manifest and report** (single-writer; no cross-process file locking exists to get wrong), and a run-level lock file makes a second concurrent plan/apply against the same target refuse with exit 3 (spec §8.5, AW-005). Closes the gap that NFR-002's atomicity is per-document, not per shared artifact (gap-analysis GAP-23).
 - Spec: NFR-001, §14, §18.2 (`parallel.*`).
 - Research: `python-314-concurrency-model`, `docmend-and-the-free-threaded-cpython-switch-decision`.
 - Decision owner: owner, implementer-proposed (RQ-016). Relates to ADR-0002 (process workers mirror writer fault-isolation) and RQ-009 (numeric perf targets deferred).

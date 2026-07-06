@@ -126,9 +126,11 @@ uv run python scripts/fix_spec_toc.py
 
 **Rule:** Never commit real documents from the user's actual library, real local file paths from that library, or any sample corpus containing real personal/identifying content — test fixtures must be synthetic or public-domain. Don't reference the user's private infrastructure (hostnames, credential-store paths, network addresses) anywhere in the repo. External service credentials (if integrated later) come from environment variables only, documented in `.env.example`, never hardcoded.
 
+**Fixture review gate (RQ-032):** a fixture derived from a real-library anomaly may only enter the repo via the anonymization procedure (spec §17.2: capture facts, re-synthesize the causal mechanism through unrelated synthetic filler, verify the identical code path fires) — and the committing reviewer must explicitly confirm: _"zero bytes of this fixture are traceable to the original file."_ Never scrub/mask real bytes; always re-synthesize.
+
 **Why:** this repo is public and its entire purpose is operating on a large _personal_ document library.
 
-**Sources:** repo sensitive-data policy.
+**Sources:** repo sensitive-data policy; spec OQ-032 / `docs/research/synthetic-corpus-generation.md`.
 
 **Related:** none.
 

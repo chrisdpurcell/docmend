@@ -7,7 +7,7 @@
   - _open question_ (`OQ-###`) is a decision still to be made — the primary unit of this document.
   - _resolved question_ (`RQ-###`, already settled) lives in the companion file [`resolved-questions.md`](resolved-questions.md).
 - **Priority scale:** open questions carry a `P0 blocker` / `P1 near-blocker` / `P2 decision` label; the gap-analysis-sourced ones also carry a High / Medium / Low gap-analysis priority. The full ranked register with downstream-impact analysis lives in [`gap-analysis.md`](gap-analysis.md).
-- **Status:** all open questions (OQ-001..024) are now settled — see [`resolved-questions.md`](resolved-questions.md), RQ-001..024. **No open questions remain.**
+- **Status:** all open questions (OQ-001..033) are now settled — see [`resolved-questions.md`](resolved-questions.md), RQ-001..033. **No open questions remain.**
 
 ## Table of Contents
 
@@ -19,9 +19,9 @@
 
 ## Open questions
 
-<!-- All questions are settled — see resolved-questions.md (RQ-001..024). New decisions get added here as OQ-### per the rules below. -->
+<!-- All questions are settled — see resolved-questions.md (RQ-001..033). New decisions get added here as OQ-### per the rules below. -->
 
-_None. Every decision raised so far is settled in [`resolved-questions.md`](resolved-questions.md) (RQ-001..024). Latest: OQ-024 → RQ-024 (2026-07-06, tool-first reframing of spec §1 — scale-flexibility made binding, amending RQ-010/ADR-0010)._
+_None. Every decision raised so far is settled in [`resolved-questions.md`](resolved-questions.md) (RQ-001..033). Latest: OQ-024 → RQ-024 (2026-07-06, tool-first reframing — scale-flexibility made binding, amending RQ-010/ADR-0010) and OQ-025..033 → RQ-025..033 (2026-07-06, gap-register Batch B: HTML scope, UTF-16/32 policy, single-writer rule, watchdog, config precedence, shrink check, tab semantics, synthetic-corpus strategy, purity enforcement)._
 
 ## How to maintain this document
 

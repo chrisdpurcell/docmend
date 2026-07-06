@@ -1,0 +1,114 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://raw.githubusercontent.com/chrisdpurcell/docmend/main/schemas/report.schema.json",
+	"title": "docmend apply report (DR-003)",
+	"description": "Output of `docmend apply` (FR-018, IR-003), dry-run or writing: a single JSON document recording the plan it executed, the dry-run flag, start/completion timestamps, per-file outcomes with before/after hashes and classified errors/skips, and summary counts that must equal the per-outcome totals (DR-003). Pinned at MS-1 per adr-0005; implemented by the MS-3 writer/apply layer, which may extend it with MINOR bumps.",
+	"type": "object",
+	"additionalProperties": false,
+	"required": [
+		"schema",
+		"schema_version",
+		"run_id",
+		"generated_by",
+		"plan_ref",
+		"dry_run",
+		"started_at",
+		"completed_at",
+		"outcomes",
+		"totals"
+	],
+	"properties": {
+		"schema": { "const": "docmend/report" },
+		"schema_version": { "type": "string", "pattern": "^1\\.[0-9]+$" },
+		"run_id": { "$ref": "#/$defs/run_id" },
+		"generated_by": { "type": "string", "minLength": 1 },
+		"plan_ref": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["path", "run_id", "sha256"],
+			"properties": {
+				"path": { "type": "string", "minLength": 1 },
+				"run_id": { "$ref": "#/$defs/run_id" },
+				"sha256": { "$ref": "#/$defs/sha256" }
+			}
+		},
+		"dry_run": {
+			"description": "True unless the run carried the explicit --write opt-in (FR-004, OQ-014).",
+			"type": "boolean"
+		},
+		"started_at": { "type": "string", "format": "date-time" },
+		"completed_at": { "type": "string", "format": "date-time" },
+		"outcomes": { "type": "array", "items": { "$ref": "#/$defs/outcome" } },
+		"totals": {
+			"description": "Summary counts; DR-003 requires each to equal the corresponding per-outcome total.",
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["applied", "would_apply", "skipped", "failed"],
+			"properties": {
+				"applied": { "type": "integer", "minimum": 0 },
+				"would_apply": { "type": "integer", "minimum": 0 },
+				"skipped": { "type": "integer", "minimum": 0 },
+				"failed": { "type": "integer", "minimum": 0 }
+			}
+		}
+	},
+	"$defs": {
+		"run_id": { "type": "string", "pattern": "^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{6}$" },
+		"action_id": {
+			"type": "string",
+			"pattern": "^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{6}/a[0-9]+$"
+		},
+		"sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+		"outcome": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": [
+				"action_id",
+				"path",
+				"status",
+				"before_sha256",
+				"after_sha256",
+				"skip_reason",
+				"error"
+			],
+			"properties": {
+				"action_id": { "$ref": "#/$defs/action_id" },
+				"path": { "type": "string", "minLength": 1 },
+				"status": {
+					"description": "Per-file lifecycle outcome (spec section 10.4): 'would_apply' is the dry-run counterpart of 'applied'; 'skipped' covers stale hash (ERR-002/AW-004), collision (AW-002), and apply-time unreadable (ERR-005); 'failed' covers write error (ERR-003), backup abort (ERR-004), and watchdog timeout (ERR-009).",
+					"enum": ["applied", "would_apply", "skipped", "failed"]
+				},
+				"before_sha256": {
+					"oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
+				},
+				"after_sha256": {
+					"description": "Null for dry-run, skipped, and failed outcomes — no mutation happened.",
+					"oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
+				},
+				"skip_reason": {
+					"description": "Set only when status is 'skipped'.",
+					"type": ["string", "null"]
+				},
+				"error": {
+					"description": "Set only when status is 'failed'.",
+					"oneOf": [
+						{ "type": "null" },
+						{
+							"type": "object",
+							"additionalProperties": false,
+							"required": ["class", "message"],
+							"properties": {
+								"class": {
+									"description": "The spec section 12.1 error class, e.g. 'ERR-003'.",
+									"type": "string",
+									"pattern": "^ERR-[0-9]{3}$"
+								},
+								"message": { "type": "string" }
+							}
+						}
+					]
+				}
+			}
+		}
+	}
+}

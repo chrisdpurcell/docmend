@@ -1,9 +1,8 @@
 """CLI shell — argument parsing, global flags, dispatch (spec §8.2.3 "CLI shell", IR-005).
 
 Architectural role: this layer is deliberately thin — no domain logic lives here
-(§8.2.3). The pipeline subcommands (scan/plan/apply/verify/restore, IR-001..IR-004,
-IR-008) land milestone by milestone (MS-1+); at MS-0 the surface is the entry point
-plus the IR-005 global flags.
+(§8.2.3). The pipeline subcommands land milestone by milestone: ``scan`` (IR-001)
+arrived at MS-1; plan/apply/verify/restore (IR-002..IR-004, IR-008) follow per §19.
 
 Cross-file contracts:
 - ``--verbose``/``--quiet`` are mutually exclusive by IR-005 (a hard usage error,
@@ -11,17 +10,31 @@ Cross-file contracts:
   binding). Their level mapping lives in :mod:`docmend.observability`.
 - ``--dry-run``/``-n`` is accepted globally per IR-005 and threaded through
   :class:`GlobalOptions`; it gains effect when write-capable commands land (MS-3).
-  It can only ever make a run more conservative (NFR-004).
-- Exit codes follow the §18.5 taxonomy; Click's usage-error exit code (2) already
-  matches "input error", which is why BadParameter is used for flag conflicts.
+  It can only ever make a run more conservative (NFR-004). ``scan`` is read-only
+  by construction (FR-001), so the flag is a no-op there.
+- Exit codes follow the §18.5 taxonomy: 0 clean, 1 findings (a scan with
+  unreadable-file skips, ERR-007), 2 input error (Click usage errors already exit
+  2, which is why BadParameter is used for flag conflicts), 3 safety refusal.
+- Run artifacts and the per-run log default into ``./.docmend/`` in the invoking
+  directory, keyed by run-ID (proposed OQ-034 convention; ``--report`` overrides
+  the artifact path). The default excludes make ``.docmend/`` invisible to scans.
 """
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated
 
 import typer
 
-from docmend import __version__
+from docmend import __version__, artifacts, discovery
+from docmend.config import ConfigError, DocmendConfig, PathsConfig, load_config
+from docmend.observability import configure_logging, get_logger, new_run_id
+
+#: Default per-run artifact/log directory, created in the invoking directory
+#: (proposed OQ-034; the run-ID-keyed names inside it are the OQ-006 sidecar
+#: discovery convention's future input).
+ARTIFACT_DIR_NAME = ".docmend"
 
 app = typer.Typer(
     name="docmend",
@@ -78,6 +91,101 @@ def main(
         raise typer.BadParameter("--verbose and --quiet are mutually exclusive")
     ctx.obj = GlobalOptions(verbose=verbose, quiet=quiet, dry_run=dry_run)
     if ctx.invoked_subcommand is None:
-        # No subcommands exist yet (MS-1+); a bare invocation shows help, exit 0.
+        # Bare invocation shows help and exits 0 (a request for usage, not an error).
         typer.echo(ctx.get_help())
         raise typer.Exit(0)
+
+
+def _global_options(ctx: typer.Context) -> GlobalOptions:
+    obj: object = ctx.obj
+    return obj if isinstance(obj, GlobalOptions) else GlobalOptions(0, False, False)
+
+
+def _load_effective_config(
+    config_path: Path | None, include: list[str] | None, exclude: list[str] | None
+) -> DocmendConfig:
+    """Config per OQ-029 precedence: flags > file > defaults; list flags REPLACE."""
+    try:
+        config = load_config(config_path)
+    except ConfigError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+    if include is not None or exclude is not None:
+        paths = PathsConfig(
+            include=include if include is not None else config.paths.include,
+            exclude=exclude if exclude is not None else config.paths.exclude,
+        )
+        config = config.model_copy(update={"paths": paths})
+    return config
+
+
+@app.command()
+def scan(
+    ctx: typer.Context,
+    path: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            help="File or directory tree to inventory; a single file is first-class (NFR-006).",
+        ),
+    ],
+    report: Annotated[
+        Path | None,
+        typer.Option(
+            "--report",
+            help="Write the inventory to FILE (default: .docmend/docmend-<run-id>-inventory.json).",
+        ),
+    ] = None,
+    config_path: Annotated[
+        Path | None,
+        typer.Option("--config", help="TOML config file (default: ./docmend.toml when present)."),
+    ] = None,
+    include: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--include", help="Replace paths.include (repeatable; replaces, never appends)."
+        ),
+    ] = None,
+    exclude: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--exclude", help="Replace paths.exclude (repeatable; replaces, never appends)."
+        ),
+    ] = None,
+) -> None:
+    """Scan PATH read-only into a structured inventory artifact (FR-001, IR-001).
+
+    Exit codes (§18.5): 0 clean; 1 when any file or directory was skipped as
+    unreadable (ERR-007 findings); 2 on input errors (bad PATH, invalid config).
+    """
+    opts = _global_options(ctx)
+    config = _load_effective_config(config_path, include, exclude)
+
+    now = datetime.now(UTC)
+    run_id = new_run_id(now)
+    artifact_dir = Path(ARTIFACT_DIR_NAME)
+    configure_logging(
+        run_id=run_id,
+        command="scan",
+        log_dir=artifact_dir,
+        verbose=opts.verbose,
+        quiet=opts.quiet,
+    )
+    log = get_logger(__name__)
+    log.info("scan starting", path=str(path))
+
+    inventory = discovery.scan(path, config, run_id=run_id, generated_at=now.isoformat())
+    out_path = report if report is not None else artifact_dir / f"docmend-{run_id}-inventory.json"
+    artifacts.write_inventory(inventory, out_path)
+
+    totals = inventory.totals
+    reasons = totals.skipped_by_reason
+    typer.echo(f"inventory: {out_path}")
+    typer.echo(
+        f"files: {totals.files}  symlinks: {totals.symlinks}  "
+        f"skipped: {totals.skipped} (excluded {reasons.excluded}, unreadable {reasons.unreadable})  "
+        f"hard-link groups: {totals.hard_link_groups}"
+    )
+    if reasons.unreadable:
+        # Findings, not failure: the scan completed but not everything was readable.
+        raise typer.Exit(1)

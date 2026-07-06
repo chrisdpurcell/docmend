@@ -45,11 +45,14 @@ class PathsConfig(_StrictModel):
     # §18.2 names ".git/, .venv/, node_modules/, binary/media patterns" without
     # enumerating the media set; this concrete default realizes that intent.
     # Directory excludes use "**/name/**" so nested occurrences are caught too.
+    # ".docmend/" is the tool's own artifact/log directory (OQ-034): its contents
+    # must never become scan candidates when the operator runs from inside the tree.
     exclude: list[str] = Field(
         default=[
             "**/.git/**",
             "**/.venv/**",
             "**/node_modules/**",
+            "**/.docmend/**",
             # binary/media extension patterns — never candidate documents
             "**/*.png",
             "**/*.jpg",

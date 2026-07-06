@@ -8,6 +8,8 @@ license = "MIT"
 authors = [{ name = "Chris Purcell" }]
 keywords = ["markdown", "pandoc", "text-normalization", "document-conversion", "cli"]
 dependencies = [
+    "jsonschema[format-nongpl]>=4.26",
+    "pathspec>=1.1.1",
     "pydantic>=2.12",
     "rich>=15.0.0",
     "structlog>=26.1.0",
@@ -28,9 +30,12 @@ dev = [
     "basedpyright",
     "coverage[toml]",
     "faker>=40.28.1",
+    "hypothesis>=6.156.1",
     "import-linter>=2.13",
     "pip-audit",
+    "pyfakefs>=6.2.0",
     "pytest>=9.0",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.14",
 ]
 

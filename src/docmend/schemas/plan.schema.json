@@ -1,0 +1,303 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://raw.githubusercontent.com/chrisdpurcell/docmend/main/schemas/plan.schema.json",
+	"title": "docmend plan (DR-002)",
+	"description": "Output of `docmend plan` (FR-002, IR-002): a single JSON document recording the inventory it consumed, the full effective config snapshot, per-file planned actions with the source hashes they were decided on (the FR-003 stale-input guard), skip decisions with classified reasons (FR-015), and aggregate counts. Every planned action carries a per-action ID correlated with the run-ID (adr-0005 identity fields) plus the decision provenance required by spec C.4. Pinned at MS-1 per adr-0005 ('schemas before code'); implemented by the MS-2 planning layer, which may extend it with MINOR bumps.",
+	"type": "object",
+	"additionalProperties": false,
+	"required": [
+		"schema",
+		"schema_version",
+		"run_id",
+		"generated_at",
+		"generated_by",
+		"inventory_ref",
+		"config",
+		"actions",
+		"skips",
+		"totals"
+	],
+	"properties": {
+		"schema": { "const": "docmend/plan" },
+		"schema_version": { "type": "string", "pattern": "^1\\.[0-9]+$" },
+		"run_id": { "$ref": "#/$defs/run_id" },
+		"generated_at": { "type": "string", "format": "date-time" },
+		"generated_by": { "type": "string", "minLength": 1 },
+		"inventory_ref": {
+			"description": "The inventory this plan consumed (IR-002); when `plan PATH` shorthand scanned first, this references the inventory that scan produced.",
+			"$ref": "#/$defs/artifact_ref"
+		},
+		"config": { "$ref": "#/$defs/config_snapshot" },
+		"actions": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+		"skips": { "type": "array", "items": { "$ref": "#/$defs/skip_decision" } },
+		"totals": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["actions", "skips"],
+			"properties": {
+				"actions": { "type": "integer", "minimum": 0 },
+				"skips": { "type": "integer", "minimum": 0 }
+			}
+		}
+	},
+	"$defs": {
+		"run_id": { "type": "string", "pattern": "^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{6}$" },
+		"action_id": {
+			"description": "Per-action ID correlated with the minting run: '<run_id>/a<seq>' (DR-002; resume and manifest correlation, adr-0005/adr-0006).",
+			"type": "string",
+			"pattern": "^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{6}/a[0-9]+$"
+		},
+		"docmend_id": {
+			"description": "Stable document identity: UUIDv7 (adr-0008); minted at plan time for documents without a recoverable identity.",
+			"type": "string",
+			"format": "uuid"
+		},
+		"relative_path": { "type": "string", "minLength": 1 },
+		"sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+		"artifact_ref": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["path", "run_id", "sha256"],
+			"properties": {
+				"path": {
+					"description": "Location of the referenced artifact as written (absolute, or relative to the invoking directory).",
+					"type": "string",
+					"minLength": 1
+				},
+				"run_id": { "$ref": "#/$defs/run_id" },
+				"sha256": { "$ref": "#/$defs/sha256" }
+			}
+		},
+		"operation": {
+			"description": "Typed mechanical operations (FR-010 keeps 'rename' distinct from content transforms; 'frontmatter_migrate' is the reserved cross-version migration action, adr-0005; 'normalize_tabs' is the optional OQ-031 transform).",
+			"enum": [
+				"rename",
+				"reencode",
+				"normalize_newlines",
+				"trim_trailing_whitespace",
+				"ensure_final_newline",
+				"collapse_blank_lines",
+				"normalize_tabs",
+				"frontmatter_migrate"
+			]
+		},
+		"action": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": [
+				"action_id",
+				"docmend_id",
+				"path",
+				"source_sha256",
+				"source_size_bytes",
+				"operations",
+				"target_path",
+				"provenance"
+			],
+			"properties": {
+				"action_id": { "$ref": "#/$defs/action_id" },
+				"docmend_id": { "$ref": "#/$defs/docmend_id" },
+				"path": { "$ref": "#/$defs/relative_path" },
+				"source_sha256": {
+					"description": "The hash this decision was made on; apply refuses when it no longer matches (FR-003).",
+					"$ref": "#/$defs/sha256"
+				},
+				"source_size_bytes": { "type": "integer", "minimum": 0 },
+				"operations": {
+					"description": "Ordered operations to perform on this file; one action per file, executed as one atomic mutation.",
+					"type": "array",
+					"minItems": 1,
+					"items": { "$ref": "#/$defs/operation" }
+				},
+				"target_path": {
+					"description": "Path after the action (differs from path only when 'rename' is among the operations); null means in-place.",
+					"oneOf": [{ "type": "null" }, { "$ref": "#/$defs/relative_path" }]
+				},
+				"provenance": { "$ref": "#/$defs/provenance" }
+			}
+		},
+		"provenance": {
+			"description": "The input facts and thresholds behind the decision (spec C.4): what was detected, and the config gates in force.",
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["detected_encoding", "newline_style"],
+			"properties": {
+				"detected_encoding": {
+					"oneOf": [
+						{ "type": "null" },
+						{
+							"type": "object",
+							"additionalProperties": false,
+							"required": ["name", "confidence", "method"],
+							"properties": {
+								"name": { "type": "string", "minLength": 1 },
+								"confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+								"method": {
+									"enum": ["bom", "utf8-strict", "ascii", "charset-normalizer"]
+								}
+							}
+						}
+					]
+				},
+				"newline_style": { "enum": ["lf", "crlf", "cr", "mixed", "none"] }
+			}
+		},
+		"skip_decision": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["path", "reason", "detail"],
+			"properties": {
+				"path": { "$ref": "#/$defs/relative_path" },
+				"reason": {
+					"description": "Classified skip reasons: the FR-015 risky classes, collision policy (FR-011/EC-001), hard-link alias groups (EC-011), symlinks (EC-008), the FR-019 size guard, the EC-005 shrink invariant, and filter exclusion (FR-012).",
+					"enum": [
+						"binary-suspect",
+						"nul-bytes",
+						"utf16-suspect",
+						"decode-replacement",
+						"low-confidence-encoding",
+						"below-non-ascii-floor",
+						"collision",
+						"hard-link-alias",
+						"symlink",
+						"oversize",
+						"shrink-invariant",
+						"excluded",
+						"unreadable"
+					]
+				},
+				"detail": { "type": ["string", "null"] }
+			}
+		},
+		"config_snapshot": {
+			"description": "Full effective configuration (section 18.2) after flag overlay — reproducibility provenance (DR-002, spec section 9). Mirrors the strict internal config models.",
+			"type": "object",
+			"additionalProperties": false,
+			"required": [
+				"paths",
+				"rename",
+				"encoding",
+				"newlines",
+				"whitespace",
+				"write",
+				"parallel",
+				"limits",
+				"safety"
+			],
+			"properties": {
+				"paths": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["include", "exclude"],
+					"properties": {
+						"include": {
+							"type": "array",
+							"items": { "type": "string", "minLength": 1 }
+						},
+						"exclude": {
+							"type": "array",
+							"items": { "type": "string", "minLength": 1 }
+						}
+					}
+				},
+				"rename": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["txt_to_md", "on_collision"],
+					"properties": {
+						"txt_to_md": { "type": "boolean" },
+						"on_collision": { "enum": ["skip", "fail", "overwrite"] }
+					}
+				},
+				"encoding": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["target", "detect", "fail_below_confidence", "non_ascii_floor"],
+					"properties": {
+						"target": { "const": "utf-8" },
+						"detect": { "type": "boolean" },
+						"fail_below_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+						"non_ascii_floor": { "type": "integer", "minimum": 0 }
+					}
+				},
+				"newlines": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["target"],
+					"properties": { "target": { "const": "lf" } }
+				},
+				"whitespace": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": [
+						"trim_trailing",
+						"ensure_final_newline",
+						"collapse_blank_lines",
+						"normalize_tabs",
+						"tab_width"
+					],
+					"properties": {
+						"trim_trailing": { "type": "boolean" },
+						"ensure_final_newline": { "type": "boolean" },
+						"collapse_blank_lines": { "type": "integer", "minimum": 0 },
+						"normalize_tabs": { "type": "boolean" },
+						"tab_width": { "type": "integer", "minimum": 1 }
+					}
+				},
+				"write": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["dry_run_default", "backup_dir", "atomic"],
+					"properties": {
+						"dry_run_default": { "type": "boolean" },
+						"backup_dir": { "type": ["string", "null"] },
+						"atomic": { "type": "boolean" }
+					}
+				},
+				"parallel": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": [
+						"enabled",
+						"model",
+						"workers",
+						"start_method",
+						"chunksize",
+						"maxtasksperchild"
+					],
+					"properties": {
+						"enabled": { "type": "boolean" },
+						"model": { "enum": ["process", "sequential"] },
+						"workers": {
+							"oneOf": [{ "const": "auto" }, { "type": "integer", "minimum": 1 }]
+						},
+						"start_method": { "enum": ["forkserver", "spawn"] },
+						"chunksize": {
+							"oneOf": [{ "const": "auto" }, { "type": "integer", "minimum": 1 }]
+						},
+						"maxtasksperchild": {
+							"oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 1 }]
+						}
+					}
+				},
+				"limits": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["per_file_timeout", "max_file_size_mib"],
+					"properties": {
+						"per_file_timeout": { "type": "number", "exclusiveMinimum": 0 },
+						"max_file_size_mib": { "type": "integer", "minimum": 1 }
+					}
+				},
+				"safety": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["shrink_ratio"],
+					"properties": {
+						"shrink_ratio": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+					}
+				}
+			}
+		}
+	}
+}

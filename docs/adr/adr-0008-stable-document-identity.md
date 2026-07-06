@@ -2,7 +2,7 @@
 schema_version: '1.1'
 id: 'adr-0008-docmend-stable-document-identity'
 title: 'ADR 0008: Stable document identity'
-description: "Document identity is a UUIDv7 (docmend.id) minted per document, never derived from the filename; the manifest is the path-history map, and a 3-tier algorithm recovers identity on re-scan across renames and rewrites."
+description: 'Document identity is a UUIDv7 (docmend.id) minted per document, never derived from the filename; the manifest is the path-history map, and a 3-tier algorithm recovers identity on re-scan across renames and rewrites.'
 doc_type: 'adr'
 status: 'accepted'
 created: '2026-07-05'

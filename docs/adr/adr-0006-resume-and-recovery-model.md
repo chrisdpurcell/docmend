@@ -2,7 +2,7 @@
 schema_version: '1.1'
 id: 'adr-0006-docmend-resume-and-recovery-model'
 title: 'ADR 0006: Resume and recovery model'
-description: "docmend resumes an interrupted run by reconciling the immutable plan against an append-only NDJSON manifest/journal and current filesystem hashes; atomic writes guarantee no partial-target state to reconcile, and manifest recovery follows a Redis-AOF-style torn-trailing-line rule."
+description: 'docmend resumes an interrupted run by reconciling the immutable plan against an append-only NDJSON manifest/journal and current filesystem hashes; atomic writes guarantee no partial-target state to reconcile, and manifest recovery follows a Redis-AOF-style torn-trailing-line rule.'
 doc_type: 'adr'
 status: 'accepted'
 created: '2026-07-05'

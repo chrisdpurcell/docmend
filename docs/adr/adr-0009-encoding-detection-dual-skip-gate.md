@@ -2,7 +2,7 @@
 schema_version: '1.1'
 id: 'adr-0009-docmend-encoding-detection-dual-skip-gate'
 title: 'ADR 0009: Encoding detection and dual skip-gate'
-description: "charset-normalizer is the sole detector; a file is skipped if it fails either of two independent gates — decode confidence (1.0 minus chaos) below 0.80, or too few non-ASCII bytes (default 20) to trust a legacy guess — because a single confidence scalar cannot catch short low-entropy false-accepts."
+description: 'charset-normalizer is the sole detector; a file is skipped if it fails either of two independent gates — decode confidence (1.0 minus chaos) below 0.80, or too few non-ASCII bytes (default 20) to trust a legacy guess — because a single confidence scalar cannot catch short low-entropy false-accepts.'
 doc_type: 'adr'
 status: 'accepted'
 created: '2026-07-05'

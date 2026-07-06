@@ -2,7 +2,7 @@
 schema_version: '1.1'
 id: 'adr-0007-docmend-concurrency-primitive-process-pool'
 title: 'ADR 0007: CPU-bound concurrency primitive'
-description: "v1 parallelizes CPU-bound work with concurrent.futures.ProcessPoolExecutor pinned to the forkserver start method — not the 3.14t free-threaded build, not asyncio — and runs sequentially by default until MS-5 profiling; free-threading is gated behind an explicit release checklist."
+description: 'v1 parallelizes CPU-bound work with concurrent.futures.ProcessPoolExecutor pinned to the forkserver start method — not the 3.14t free-threaded build, not asyncio — and runs sequentially by default until MS-5 profiling; free-threading is gated behind an explicit release checklist.'
 doc_type: 'adr'
 status: 'accepted'
 created: '2026-07-05'

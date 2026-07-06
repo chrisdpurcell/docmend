@@ -13,9 +13,11 @@ Sequential index of docmend's Architecture Decision Records. See [README.md](REA
 | [0007](adr-0007-concurrency-primitive-process-pool.md) | CPU-bound concurrency primitive | accepted | 2026-07-05 | RQ-016 |
 | [0008](adr-0008-stable-document-identity.md) | Stable document identity | accepted | 2026-07-05 | RQ-002 |
 | [0009](adr-0009-encoding-detection-dual-skip-gate.md) | Encoding detection and dual skip-gate | accepted | 2026-07-05 | RQ-022, D-002 |
+| [0010](adr-0010-pluggable-policy-seams.md) | Design-for-pluggable policy seams | accepted | 2026-07-05 | RQ-010, D-009 |
+| [0011](adr-0011-frontmatter-optional-minimal-split.md) | Frontmatter — optional, minimal, mechanical/semantic split | accepted | 2026-07-05 | RQ-008, RQ-014, D-001, D-007 |
+| [0012](adr-0012-verify-semantics-exit-code-taxonomy.md) | verify semantics and tool-wide exit-code taxonomy | accepted | 2026-07-05 | RQ-006 |
+| [0013](adr-0013-v1-dependency-selection.md) | v1 runtime and dev dependency selection | accepted | 2026-07-05 | RQ-017–021 |
 
 ## Candidates not yet written
 
-Tracked with scoring and rationale in [adr-backlog.md](adr-backlog.md):
-
-- **Tier 3:** 0010 pluggable policy seams · 0011 frontmatter scope/split · 0012 verify + exit-code taxonomy · 0013 dependency selection.
+Tracked with scoring and rationale in [adr-backlog.md](adr-backlog.md): all Tier-1, Tier-2, and Tier-3 candidates are now written up. The only remaining candidates are those **deliberately deferred until their downstream work is scheduled** — chiefly RQ-023's review-artifact exposure ADR (blocked on WH-002/WH-005) — plus the items in the backlog's "Deliberately not ADRs" table.

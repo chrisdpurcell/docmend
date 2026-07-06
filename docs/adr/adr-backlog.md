@@ -17,10 +17,10 @@
 | 0007 | Concurrency primitive: ProcessPool + forkserver | 🟡 2 | RQ-016 | ✍️ drafted 2026-07-05 |
 | 0008 | Stable document identity (UUIDv7 + manifest) | 🟡 2 | RQ-002 | ✍️ drafted 2026-07-05 |
 | 0009 | Encoding detection & dual skip-gate | 🟡 2 | RQ-022, D-002 | ✍️ drafted 2026-07-05 |
-| 0010 | Design-for-pluggable policy seams | 🟢 3 | RQ-010, D-009 | 🔲 candidate |
-| 0011 | Frontmatter: optional, minimal, mechanical/semantic split | 🟢 3 | RQ-008/014, D-001/007 | 🔲 candidate |
-| 0012 | verify semantics + tool-wide exit-code taxonomy | 🟢 3 | RQ-006 | 🔲 candidate |
-| 0013 | v1 runtime & dev dependency selection (consolidated) | 🟢 3 | RQ-017/018/019/020/021 | 🔲 candidate |
+| 0010 | Design-for-pluggable policy seams | 🟢 3 | RQ-010, D-009 | ✍️ drafted 2026-07-05 |
+| 0011 | Frontmatter: optional, minimal, mechanical/semantic split | 🟢 3 | RQ-008/014, D-001/007 | ✍️ drafted 2026-07-05 |
+| 0012 | verify semantics + tool-wide exit-code taxonomy | 🟢 3 | RQ-006 | ✍️ drafted 2026-07-05 |
+| 0013 | v1 runtime & dev dependency selection (consolidated) | 🟢 3 | RQ-017/018/019/020/021 | ✍️ drafted 2026-07-05 |
 
 ## Tier 1 — write now (foundational; hard to reverse)
 
@@ -38,10 +38,10 @@
 
 ## Tier 3 — worth recording (lighter, or bundle)
 
-- **ADR-0010 — Design-for-pluggable policy seams** (RQ-010, D-009). A philosophy ADR governing many decisions (build-minimal, seam-not-machinery). Absorbs RQ-011 (external vocab) as an instance.
-- **ADR-0011 — Frontmatter: optional, minimal, mechanical/semantic split** (RQ-008, RQ-014, D-001, D-007). Output-metadata contract + Pandoc target; sibling to ADR-0001.
-- **ADR-0012 — verify semantics + tool-wide exit-code taxonomy** (RQ-006). Exit codes 0/1/2/3 are a machine/agent API worth pinning. May fold into ADR-0005 as "the CLI contract."
-- **ADR-0013 — v1 runtime & dev dependency selection** (RQ-017/018/019/020/021). One consolidated ADR for structlog/jsonschema/Hypothesis/pydantic/ruamel.yaml + rejected alternatives — not five thin ones. Satisfies §8.6's "every dependency needs a recorded decision."
+- **ADR-0010 — Design-for-pluggable policy seams** (RQ-010, D-009). A philosophy ADR governing many decisions (build-minimal, seam-not-machinery). Absorbs RQ-011 (external vocab) as an instance. **Drafted 2026-07-05**, status accepted; RQ-011 recorded inside 0010 rather than as its own ADR (as planned).
+- **ADR-0011 — Frontmatter: optional, minimal, mechanical/semantic split** (RQ-008, RQ-014, D-001, D-007). Output-metadata contract + Pandoc target; sibling to ADR-0001. **Drafted 2026-07-05**, status accepted; carries an explicit scope note that it governs _product-output_ frontmatter, distinct from ADR-0001's _repo-doc_ frontmatter-standard non-adoption (conventions #7).
+- **ADR-0012 — verify semantics + tool-wide exit-code taxonomy** (RQ-006). Exit codes 0/1/2/3 are a machine/agent API worth pinning. **Drafted 2026-07-05**, status accepted. _Resolution of the "may fold into ADR-0005" question: kept **separate** — exit codes are a CLI-surface contract spanning commands that emit no artifact, so they are not subsumed by ADR-0005's artifact-schema contract._
+- **ADR-0013 — v1 runtime & dev dependency selection** (RQ-017/018/019/020/021). One consolidated ADR for structlog/jsonschema/Hypothesis/pydantic/ruamel.yaml + rejected alternatives — not five thin ones. Satisfies §8.6's "every dependency needs a recorded decision." **Drafted 2026-07-05**, status accepted.
 
 ## Deliberately not ADRs (recording _why not_ is part of the backlog)
 

@@ -9,18 +9,18 @@
 | ADR | Title | Tier | Sources | Status |
 | --- | --- | --- | --- | --- |
 | 0001 | Do not adopt the Markdown Frontmatter Standard | — | D-008 | ✅ accepted |
-| 0002 | Layered pipeline with an isolated writer | 🔴 1 | D-003, D-006 | ✍️ drafted 2026-07-05 |
-| 0003 | In-place mutation + atomic-replace output model | 🔴 1 | RQ-013 ⚑, D-004 | ✍️ drafted 2026-07-05 |
-| 0004 | Apply safety gate + preservation posture | 🔴 1 | RQ-005 ⚑, RQ-007 | ✍️ drafted 2026-07-05 |
-| 0005 | Durable artifact schema contract (JSON + NDJSON) | 🔴 1 | RQ-004 ⚑, DR-001–004 | ✍️ drafted 2026-07-05 |
-| 0006 | Resume & recovery model | 🟡 2 | RQ-003 | ✍️ drafted 2026-07-05 |
-| 0007 | Concurrency primitive: ProcessPool + forkserver | 🟡 2 | RQ-016 | ✍️ drafted 2026-07-05 |
-| 0008 | Stable document identity (UUIDv7 + manifest) | 🟡 2 | RQ-002 | ✍️ drafted 2026-07-05 |
-| 0009 | Encoding detection & dual skip-gate | 🟡 2 | RQ-022, D-002 | ✍️ drafted 2026-07-05 |
-| 0010 | Design-for-pluggable policy seams | 🟢 3 | RQ-010, D-009 | ✍️ drafted 2026-07-05 |
-| 0011 | Frontmatter: optional, minimal, mechanical/semantic split | 🟢 3 | RQ-008/014, D-001/007 | ✍️ drafted 2026-07-05 |
-| 0012 | verify semantics + tool-wide exit-code taxonomy | 🟢 3 | RQ-006 | ✍️ drafted 2026-07-05 |
-| 0013 | v1 runtime & dev dependency selection (consolidated) | 🟢 3 | RQ-017/018/019/020/021 | ✍️ drafted 2026-07-05 |
+| 0002 | Layered pipeline with an isolated writer | 🔴 1 | D-003, D-006 | ✅ accepted |
+| 0003 | In-place mutation + atomic-replace output model | 🔴 1 | RQ-013 ⚑, D-004 | ✅ accepted |
+| 0004 | Apply safety gate + preservation posture | 🔴 1 | RQ-005 ⚑, RQ-007 | ✅ accepted |
+| 0005 | Durable artifact schema contract (JSON + NDJSON) | 🔴 1 | RQ-004 ⚑, DR-001–004 | ✅ accepted |
+| 0006 | Resume & recovery model | 🟡 2 | RQ-003 | ✅ accepted |
+| 0007 | Concurrency primitive: ProcessPool + forkserver | 🟡 2 | RQ-016 | ✅ accepted |
+| 0008 | Stable document identity (UUIDv7 + manifest) | 🟡 2 | RQ-002 | ✅ accepted |
+| 0009 | Encoding detection & dual skip-gate | 🟡 2 | RQ-022, D-002 | ✅ accepted |
+| 0010 | Design-for-pluggable policy seams | 🟢 3 | RQ-010, D-009 | ✅ accepted |
+| 0011 | Frontmatter: optional, minimal, mechanical/semantic split | 🟢 3 | RQ-008/014, D-001/007 | ✅ accepted |
+| 0012 | verify semantics + tool-wide exit-code taxonomy | 🟢 3 | RQ-006 | ✅ accepted |
+| 0013 | v1 runtime & dev dependency selection (consolidated) | 🟢 3 | RQ-017/018/019/020/021 | ✅ accepted |
 
 ## Tier 1 — write now (foundational; hard to reverse)
 

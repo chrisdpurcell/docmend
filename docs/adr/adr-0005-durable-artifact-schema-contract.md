@@ -56,12 +56,12 @@ The inventory, plan, apply report, and manifest are the contract between every d
 
 ## Decision Outcome
 
-Chosen option: **"Four hand-authored, versioned JSON Schemas, NDJSON manifest."** `inventory.schema.json`, `plan.schema.json`, `report.schema.json`, and `manifest.schema.json` are pinned in-repo (Draft 2020-12, strict `additionalProperties: false`, explicit schema/version fields) before MS-1 code freezes them. Representation is a **single JSON document** for inventory/plan/report and **JSON Lines (NDJSON)** for the append-only manifest, because a single JSON document cannot be appended crash-safely — plus a small regenerable "latest state per path" index. Required identity fields: run-ID, per-action ID, and UUIDv7 `docmend.id`. Symlink/hardlink record shapes are defined (scan records them; plan/apply refuse symlink mutation by default, EC-008). Versioning is MAJOR.MINOR with a backward-only compatibility policy and a `frontmatter_migrate` planned-action for corpus migration. `pydantic` (ADR-0013 candidate / RQ-020) guards _internal_ construction and its JSON-Schema emission **cross-checks** the hand-authored schemas in tests — but the checked-in schemas are the durable contract; they are not generated.
+Chosen option: **"Four hand-authored, versioned JSON Schemas, NDJSON manifest."** `inventory.schema.json`, `plan.schema.json`, `report.schema.json`, and `manifest.schema.json` are pinned in-repo (Draft 2020-12, strict `additionalProperties: false`, explicit schema/version fields) before MS-1 code freezes them. Representation is a **single JSON document** for inventory/plan/report and **JSON Lines (NDJSON)** for the append-only manifest, because a single JSON document cannot be appended crash-safely — plus a small regenerable "latest state per path" index. Required identity fields: run-ID, per-action ID, and UUIDv7 `docmend.id`. Symlink/hardlink record shapes are defined (scan records them; plan/apply refuse symlink mutation by default, EC-008). Versioning is MAJOR.MINOR with a backward-only compatibility policy and a `frontmatter_migrate` planned-action for corpus migration. `pydantic` (ADR-0013 / RQ-020) guards _internal_ construction and its JSON-Schema emission **cross-checks** the hand-authored schemas in tests — but the checked-in schemas are the durable contract; they are not generated.
 
 ### Consequences
 
 - Good, because the contract is stable and library-independent: resume, verify, tests, and migrations all bind to durable files, not to a model class that can change.
-- Good, because NDJSON gives the manifest crash-safe, one-fsync'd-record-per-mutation appends (the basis for safe resume, ADR-0006 candidate) — which IR-007's original blanket "as JSON" could not.
+- Good, because NDJSON gives the manifest crash-safe, one-fsync'd-record-per-mutation appends (the basis for safe resume, ADR-0006) — which IR-007's original blanket "as JSON" could not.
 - Good, because reusing one compiled validator per schema caps validation CPU at tens of seconds against a multi-hour I/O-bound run.
 - Bad, because two representations (JSON doc + NDJSON) and a schema-vs-pydantic cross-check must both be maintained, and MAJOR.MINOR versioning is ongoing discipline.
 
@@ -73,5 +73,5 @@ Confirmed by: fixture artifacts that round-trip (inventory/plan/report write→r
 
 - Spec: §7.4 DR-001–DR-004, §9, IR-007, §21 OQ-004 (Resolved RQ-004).
 - Research: `append-safe-manifest-format`, `json-schema-versioning-migration`, `json-schema-validator-library`.
-- The validator library is RQ-018 (ADR-0013 candidate); the internal model library is RQ-020; the resume model that consumes the manifest is ADR-0006 (candidate, RQ-003); the identity field shape is ADR-0008 (candidate, RQ-002). verify's checks over these artifacts + the exit-code taxonomy are RQ-006 (ADR-0012 candidate).
+- The validator library is ADR-0013 (RQ-018); the internal model library is ADR-0013 (RQ-020); the resume model that consumes the manifest is ADR-0006 (RQ-003); the identity field shape is ADR-0008 (RQ-002). verify's checks over these artifacts + the exit-code taxonomy are ADR-0012 (RQ-006).
 - Revisit on the first MAJOR schema bump, or if a fifth durable artifact is introduced.

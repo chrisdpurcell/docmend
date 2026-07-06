@@ -85,6 +85,6 @@ Confirmed by: `pyproject.toml` listing exactly these runtime deps in `[project.d
 ## More Information
 
 - Spec: §8.6 (runtime and dev/test dependency tables), Appendix B.2 (unlisted-dependency prohibition), NFR-003, DR-005, §17.2.
-- Research: `structured-logging-library`, `json-schema-validator-library`, `property-based-testing-hypothesis`, `python-library-research`, `safe-yaml-loading`.
+- Research: `structured-logging-library`, `json-schema-validator-library`, `property-based-testing-hypothesis`, `python-library-research`, `safe-yaml-loading`, `python-314-wheel-readiness` (rpds-py / pydantic-core wheel status), `license-compliance-tooling` (the GAP-59 license scan).
 - Decision owner: owner (RQ-017–RQ-021, all 2026-07-05). Consumers: ADR-0005 (jsonschema/pydantic realize the schema contract), ADR-0011 (ruamel realizes the frontmatter codec, jsonschema validates it).
 - Revisit per-row: when a fallback/escalation trigger fires (ruamel risk → `PyYAML`; validation bottleneck → `jsonschema-rs`), when a dependency drops 3.14 support, or when a new dependency needs an OQ/RQ and owner approval before it is added to §8.6.

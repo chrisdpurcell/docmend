@@ -1,6 +1,6 @@
 {
 	"$schema": "https://json-schema.org/draft/2020-12/schema",
-	"$id": "https://raw.githubusercontent.com/chrisdpurcell/docmend/main/schemas/inventory.schema.json",
+	"$id": "https://raw.githubusercontent.com/chrisdpurcell/docmend/main/src/docmend/schemas/inventory.schema.json",
 	"title": "docmend inventory (DR-001)",
 	"description": "Output of `docmend scan` (FR-001, IR-001): a single JSON document recording the source root, the scan configuration in force, per-file classification records, symlink records (EC-008), skipped entries with reasons (ERR-007), shared-inode hard-link alias groups (EC-011), and aggregate counts that must reconcile with the per-file records. Hand-authored durable contract per adr-0005; the internal pydantic models conform to this file, never the reverse. Paths are POSIX-style and relative to source_root; the artifact stays on the operator's machine and is never committed (spec 13.4).",
 	"type": "object",

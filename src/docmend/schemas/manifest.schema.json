@@ -1,6 +1,6 @@
 {
 	"$schema": "https://json-schema.org/draft/2020-12/schema",
-	"$id": "https://raw.githubusercontent.com/chrisdpurcell/docmend/main/schemas/manifest.schema.json",
+	"$id": "https://raw.githubusercontent.com/chrisdpurcell/docmend/main/src/docmend/schemas/manifest.schema.json",
 	"title": "docmend manifest record (DR-004)",
 	"description": "One line of the append-only JSON Lines manifest written during apply (FR-006). This schema validates a SINGLE record — the manifest file is NDJSON because a single JSON document cannot be appended crash-safely (adr-0005/IR-007); each mutation appends (and fsyncs) exactly one record BEFORE the run can be considered to have recorded it, incrementally, never only at run end (spec 12.3). Records carry everything needed to mechanically restore the pre-apply state (IR-008, adr-0004). Pinned at MS-1 per adr-0005; implemented by the MS-3 writer, which may extend it with MINOR bumps.",
 	"type": "object",

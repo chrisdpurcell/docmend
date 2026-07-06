@@ -1,6 +1,6 @@
 {
 	"$schema": "https://json-schema.org/draft/2020-12/schema",
-	"$id": "https://raw.githubusercontent.com/chrisdpurcell/docmend/main/schemas/report.schema.json",
+	"$id": "https://raw.githubusercontent.com/chrisdpurcell/docmend/main/src/docmend/schemas/report.schema.json",
 	"title": "docmend apply report (DR-003)",
 	"description": "Output of `docmend apply` (FR-018, IR-003), dry-run or writing: a single JSON document recording the plan it executed, the dry-run flag, start/completion timestamps, per-file outcomes with before/after hashes and classified errors/skips, and summary counts that must equal the per-outcome totals (DR-003). Pinned at MS-1 per adr-0005; implemented by the MS-3 writer/apply layer, which may extend it with MINOR bumps.",
 	"type": "object",

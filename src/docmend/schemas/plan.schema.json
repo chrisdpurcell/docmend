@@ -1,6 +1,6 @@
 {
 	"$schema": "https://json-schema.org/draft/2020-12/schema",
-	"$id": "https://raw.githubusercontent.com/chrisdpurcell/docmend/main/schemas/plan.schema.json",
+	"$id": "https://raw.githubusercontent.com/chrisdpurcell/docmend/main/src/docmend/schemas/plan.schema.json",
 	"title": "docmend plan (DR-002)",
 	"description": "Output of `docmend plan` (FR-002, IR-002): a single JSON document recording the inventory it consumed, the full effective config snapshot, per-file planned actions with the source hashes they were decided on (the FR-003 stale-input guard), skip decisions with classified reasons (FR-015), and aggregate counts. Every planned action carries a per-action ID correlated with the run-ID (adr-0005 identity fields) plus the decision provenance required by spec C.4. Pinned at MS-1 per adr-0005 ('schemas before code'); implemented by the MS-2 planning layer, which may extend it with MINOR bumps.",
 	"type": "object",

@@ -14,6 +14,7 @@ Long-lived pattern library for docmend — "how we do things here." Check this b
 | 6 | Adding any file, fixture, comment, or doc | Never real library documents, paths, or personal content |
 | 7 | Touching frontmatter anywhere | Product frontmatter vs. repo-doc frontmatter are different systems — never conflate |
 | 8 | Considering an edit to a standard-owned file | Don't, without a documented ADR exception |
+| 9 | Citing a settled decision in the spec | Use `OQ-`/`D-`/ADR stems only — never `RQ-` |
 
 ## 1. Python Tooling SSOT
 
@@ -133,6 +134,18 @@ uv run python scripts/fix_spec_toc.py
 **Sources:** repo sensitive-data policy; spec OQ-032 / `docs/research/synthetic-corpus-generation.md`.
 
 **Related:** none.
+
+## 9. Decision References in the Spec
+
+**Applies when:** writing or editing `docs/specs/docmend.md` text that cites a settled decision.
+
+**Rule:** the spec cites decisions by `OQ-###` (its own §21 register), `D-###`, or ADR stem (`adr-00NN-…`) — never `RQ-###`. `RQ-` is not a canonical project-spec prefix and `validate-specs@v4` fails on it; `RQ-###` lives only in `docs/resolved-questions.md` and the ADRs. `OQ-N` and `RQ-N` share the number `N` by convention.
+
+**Why:** the 2026-07-05 consistency audit had to remap 76 `RQ-` references after `validate-specs` failed on them; `scripts/check_traceability.py` (CI, `traceability.yml`) now cross-checks the §21 OQ register against the RQ/open-question records, so the pairing is machine-enforced.
+
+**Sources:** `validate-specs@v4`; 2026-07-05 consistency-audit session; `scripts/check_traceability.py`.
+
+**Related:** #3, #5.
 
 ## 7. Product Frontmatter vs. Repo-Doc Frontmatter
 

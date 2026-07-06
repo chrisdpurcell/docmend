@@ -6,10 +6,10 @@ docmend is a single-process, layered pipeline (spec §8.1): Discovery -> Plannin
 
 ## Current Shape
 
-Pre-implementation: `pyproject.toml`, CI (`.github/workflows/check.yml`), a `src/docmend/` + `tests/` skeleton, and a version smoke test only. No scan/plan/apply/verify commands exist yet — don't assume a runnable `docmend` CLI is present.
+Pre-implementation: `pyproject.toml`, CI (`.github/workflows/check.yml` + the additive `traceability.yml` drift gate), a `src/docmend/` + `tests/` skeleton, a version smoke test, and `scripts/check_traceability.py` with its regression tests. No scan/plan/apply/verify commands exist yet — don't assume a runnable `docmend` CLI is present.
 
 ## Standing Backlog
 
 - Milestone order is binding (spec §19, Appendix B.1): MS-0 Foundation -> MS-1 Core workflow -> MS-2 Domain logic -> MS-3 CLI experience -> MS-4 Unattended operation -> MS-5 Production readiness. Do not build a later milestone on an unproven earlier one.
-- Blocking open questions gate milestone starts: OQ-001, OQ-004, OQ-018 before MS-1; OQ-015 before MS-2; OQ-005 and OQ-012 before the MS-3 write path (`docs/open-questions.md`; ranked in `docs/gap-analysis.md`).
-- Deferred capabilities (spec §2.3, WH-001-WH-007): semantic renaming, spelling/grammar repair, document reconstruction, HTML structural conversion, deduplication, frontmatter enrichment, search integration — none are v1 scope.
+- All spec open questions are settled (OQ-001..033, zero blocking; `docs/resolved-questions.md`, ADRs 0001–0016). The only decision checkpoint ahead is the non-blocking MS-2 encoding-floor calibration (RQ-022).
+- Deferred capabilities (spec §2.3, WH-001-WH-008): semantic renaming, spelling/grammar repair, document reconstruction, HTML structural conversion, deduplication, frontmatter enrichment, search integration, and the low-ceremony one-shot command — none are v1 scope.

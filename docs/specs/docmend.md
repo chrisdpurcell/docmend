@@ -52,6 +52,7 @@ related:
 | 0.9 | `2026-07-06` | `coding-agent` | **Gap-register sweep, Batch A** — synced spec prose to already-settled ADR decisions and closed mechanical gaps from `docs/gap-analysis.md`, no new decisions: IR-002 plan-consumes-inventory (gap-13, OQ-004); IR-004 verify artifact flags + read-only (gap-12, OQ-006); IR-005 `--version` + verbosity contract (gap-14/17, OQ-017); IR-006 strict config validation (gap-15, OQ-021); DR-002 per-action ID + §9 identity fields (gap-27/28, OQ-004); §8.5 backup-outside-target + disk preflight (gap-36/38, OQ-005); §8.6 `allpairspy` + §17.2 pairwise gate tests (gap-39, OQ-005); ERR-007/ERR-008 (gap-18); scan/plan re-run posture (gap-25, OQ-003); EC-009 zero-byte (gap-48); §17.1 coverage gate (gap-51); §17.3 IR-/DR- rows (gap-53); §18.5 console-summary note (gap-21, OQ-017); `docs/handoff/` pointers (gap-66). |
 | 0.10 | `2026-07-06` | owner + `coding-agent` | **Gap-register sweep, Batch B** — owner settled the nine decision-bearing gaps as **OQ-025..033** (all Resolved; recorded in `docs/resolved-questions.md` as OQ-025..033): HTML mechanical-only include (OQ-025: §2.1, §18.2 defaults); UTF-16/32 BOM-before-NUL policy + `utf16-suspect` skip reason (OQ-026: FR-007, FR-015, EC-010; `adr-0009-encoding-detection-dual-skip-gate` amendment); parent single-writer + run-level lock (OQ-027: §8.5, AW-005; `adr-0007-concurrency-primitive-process-pool` amendment); per-file watchdog + size guard (OQ-028: FR-019, ERR-009, R-007, `limits.*`); config precedence/replace-lists/auto-discovery (OQ-029: §18.2 intro); EC-005 non-whitespace invariant + `safety.shrink_ratio` (OQ-030); `normalize_tabs` leading-only semantics + `tab_width` (OQ-031: FR-009, §18.2); two-corpus synthetic strategy + anonymization procedure (OQ-032: §17.2, MS-5, `faker` dev dep); layered NFR-005 purity enforcement (OQ-033: NFR-005, MS-0, `import-linter` dev dep). |
 | 0.11 | `2026-07-06` | `coding-agent` | **Second ADR review pass** (over OQ-024..033): authored `adr-0014-tool-first-product-scope` (OQ-024), `adr-0015-test-corpus-and-anonymization` (OQ-032), `adr-0016-mechanical-transform-boundary` (consolidated OQ-025/030/031); amended `adr-0013-v1-dependency-selection` (three Batch-B dev deps), `adr-0002-layered-pipeline-isolated-writer` (OQ-033 enforcement), `adr-0007-concurrency-primitive-process-pool` (OQ-028 process-based watchdog constraint); recorded deliberate skips (OQ-028/029 and OQ-026/027/033-as-own-ADR) in `docs/adr/adr-backlog.md`. Spec changes: §21 status cells gain canonical-ADR stems for OQ-024/025/030/031/032; frontmatter `related.adrs` extended to 0014–0016. |
+| 0.13 | `2026-07-06` | `coding-agent` | **MS-0 Foundation implemented** (§19 items 1–6). Spec-side changes only: §16 license checkbox ticked (record: `docs/dependency-licenses.md`); §17.3 rows IR-005/IR-006/NFR-003/NFR-005 moved to Complete/Partial with named tests; §3.1 current-state sentence refreshed; §17.3 intro no longer claims implementation has not started. Code side (for context, not spec content): `docmend` CLI entry point + IR-005 global flags, §18.2 config loading (strict pydantic models), OQ-017 logging framework + run-ID convention, OQ-033 purity enforcement (import-linter contract + transform-test fixture), runtime deps typer/pydantic/structlog/rich and dev deps import-linter/allpairspy/faker added per §8.6. |
 | 0.12 | `2026-07-06` | `coding-agent` | **Third consistency/drift audit** (multi-agent detect → adversarial-verify → classify, ground-truthed against `validate-specs`). Brought `validate-specs`, `spec lint`, markdownlint, and `check_traceability` all green. Standard conformance: bare uppercase decision tokens in the spec body that tripped `SV-ID-*` are gone — `RQ-`→`OQ-`, bare `adr-00NN` uppercase → lowercase `adr-00NN-…` stems, `gap-NN` cross-refs lowercased; ToC dead anchor via `fix_spec_toc.py` + reindent. Owner decisions: qualified G-002 / §20 Reliability for the FR-005 low-risk no-backup opt-in (reconciling `adr-0014-tool-first-product-scope`); adopted the gap-32 hard-link policy — EC-011, DR-001 shared-inode alias group, §21 OQ-004, `adr-0005-durable-artifact-schema-contract` amendment. Mechanical syncs: §10.4 Failed/Skipped entry conditions widened to ERR-004/ERR-005/ERR-009; §14 concurrency, §18.5 four-code exit taxonomy, and §17.2 ERR-001–ERR-008 range aligned to settled OQ-016/OQ-027 decisions and `adr-0012-verify-semantics-exit-code-taxonomy`; encoding family-aware table single-homed in `adr-0009-encoding-detection-dual-skip-gate`; FR-009 / §18.2 blank-line default de-duplicated; `cleaner.toml`→`docmend.toml`. |
 
 **Spec lifecycle:** This document is **living until `approved`**, then **change-controlled**: post-approval edits require a new revision row and, for scope-affecting changes, re-approval by the owner. Implementation deviations are recorded in the [Deviations Log](#deviations-log), not silently patched into requirements. When replaced, set `status: superseded` and `superseded_by:` in the frontmatter.
@@ -231,7 +232,7 @@ Things that are goals eventually but **excluded from this release** to control s
 
 ### 3.1 Current State
 
-The library is a directory tree of more than 100,000 `.txt` and HTML files accumulated over decades, exhibiting every condition listed in §1: mixed encodings and newline styles, broken formatting, garbage text, corruption, non-descriptive names, and undetected near-duplicates. There is no inventory, no metadata, and no naming convention. Existing duplicate-detection tools fail because of noise and drift in the text. No conversion tooling exists yet: this repository currently contains only a build/tooling scaffold (`pyproject.toml`, CI, `src/docmend/` skeleton) and a version smoke test — no conversion logic and no CLI entry point.
+The library is a directory tree of more than 100,000 `.txt` and HTML files accumulated over decades, exhibiting every condition listed in §1: mixed encodings and newline styles, broken formatting, garbage text, corruption, non-descriptive names, and undetected near-duplicates. There is no inventory, no metadata, and no naming convention. Existing duplicate-detection tools fail because of noise and drift in the text. No conversion logic exists yet: as of MS-0 (2026-07-06) the repository holds the foundation only — build/tooling scaffold, CI, the `docmend` CLI entry point with global flags, strict TOML config loading, the logging framework, and the NFR-005 purity enforcement; the pipeline commands land per §19.
 
 ### 3.2 Target State
 
@@ -788,7 +789,7 @@ General project risks — schedule, technical, dependency, provider. Security th
 
 - [x] Third-party API terms of service — N/A in v1: fully offline, no external APIs.
 - [x] Ingested data rights — the library is the owner's personal document collection.
-- [ ] OSS license compatibility of dependencies checked — do at MS-0 when dependencies are added (§8.6).
+- [x] OSS license compatibility of dependencies checked — done at MS-0 when dependencies were added (§8.6); record in `docs/dependency-licenses.md`; kept current per-PR by the CI dependency-review gate.
 - [x] PII/regulatory regimes identified: none apply — personal data processed locally by its owner; handling defined in §13.4.
 - [x] Export/retention obligations — none external; retention policy recorded in §7.4 and §18.6.
 
@@ -823,7 +824,7 @@ Corpus strategy (OQ-032): two corpora, one pure seedable generator (recipe → b
 
 ### 17.3 Requirement-to-Test Traceability
 
-The implementer fills this in as the completion evidence ([Appendix B.3](#b3-required-completion-report-verification-gate)). Implementation has not started; all rows are Not Started.
+The implementer fills this in as the completion evidence ([Appendix B.3](#b3-required-completion-report-verification-gate)). Implementation began at MS-0 (2026-07-06); rows move off Not Started only with a named test (`scripts/check_traceability.py` enforces that the requirement ID appears under `tests/`).
 
 | Requirement ID | Test / Verification Method | Status |
 | --- | --- | --- |
@@ -848,16 +849,16 @@ The implementer fills this in as the completion evidence ([Appendix B.3](#b3-req
 | FR-019 | Watchdog-timeout termination test; oversize plan-time skip test. | Not Started |
 | NFR-001 | 100k-file synthetic corpus run; memory bound assertion. | Not Started |
 | NFR-002 | Kill-during-write atomicity test. | Not Started |
-| NFR-003 | Log content assertions in integration tests. | Not Started |
+| NFR-003 | Log content assertions in integration tests. Framework half at MS-0: per-run JSONL field schema, run-ID correlation, DEBUG-floored file sink asserted in `tests/test_observability.py`. | Partial (MS-0 framework) |
 | NFR-004 | Config-default audit test (no mutation out of the box). | Not Started |
-| NFR-005 | Transform purity check (no filesystem access in transform tests). | Not Started |
+| NFR-005 | Transform purity check (no filesystem access in transform tests). Enforcement wired at MS-0 before transform code exists (OQ-033): import-linter contract run by `tests/test_import_contracts.py`; autouse blocking fixture self-tested in `tests/unit/transform/test_purity_fixture.py`. | Partial (MS-0 enforcement live) |
 | NFR-006 | Single-file end-to-end test with default configuration and the FR-005 low-risk opt-in. | Not Started |
 | IR-001 | `scan` CLI test: command exists, exit codes, DR-001 artifact written. | Not Started |
 | IR-002 | `plan` CLI test: inventory reference asserted in the plan; config-error exit. | Not Started |
 | IR-003 | `apply` flag tests: `--write`/`--dry-run` exclusivity, dry-run default, gate refusal exit. | Not Started |
 | IR-004 | `verify` flag/sidecar-discovery tests; proven read-only. | Not Started |
-| IR-005 | Global-flag tests incl. `--version` and `--verbose`/`--quiet` exclusivity. | Not Started |
-| IR-006 | Config strict-validation tests (unknown key, type, enum, range). | Not Started |
+| IR-005 | Global-flag tests incl. `--version` and `--verbose`/`--quiet` exclusivity — `tests/test_cli.py` (flag surface, exclusivity exit 2, version output); level mapping in `tests/test_observability.py`. `--dry-run` gains effect with write-capable commands (MS-3). | Partial (MS-0 flag surface) |
+| IR-006 | Config strict-validation tests (unknown key, type, enum, range) — `tests/test_config.py`: §18.2 defaults, `./docmend.toml` auto-discovery, each rejection class, reserved `parallel.model` values, no write-enable key. | Complete (MS-0) |
 | IR-007 | Artifact round-trip tests (JSON documents; NDJSON manifest per record). | Not Started |
 | IR-008 | `restore` drill test: manifest replay restores pre-apply hashes. | Not Started |
 | DR-001 | Inventory schema validation + count-reconciliation tests. | Not Started |

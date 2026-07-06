@@ -1,8 +1,10 @@
 """docmend — normalize, repair, and convert legacy .txt/.html documents to Markdown.
 
-Pre-implementation package surface. Only the version marker exists so far; the
-conversion pipeline, CLI entry point, and public API described in
-docs/specs/docmend-spec-draft.md are not built yet.
+MS-0 foundation surface: CLI entry point (docmend.cli), strict TOML configuration
+(docmend.config), structured logging + run-ID conventions (docmend.observability),
+and the empty transform/writer layer packages that anchor the NFR-005 purity
+contract. The pipeline commands land per the spec's milestone ladder
+(docs/specs/docmend.md §19).
 """
 
 __version__ = "0.1.0"

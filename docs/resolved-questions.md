@@ -40,10 +40,7 @@
 
 ### RQ-001 — v1 boundary and explicit non-goals
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-001
-**Decision owner:** owner
-**Canonical references:** spec §2.1/§2.2/§2.3, §6, §19; spec §21 OQ-001 (Status: Resolved)
+**Resolved:** 2026-07-05 **Source question:** OQ-001 **Decision owner:** owner **Canonical references:** spec §2.1/§2.2/§2.3, §6, §19; spec §21 OQ-001 (Status: Resolved)
 
 v1 is the "safe migration substrate": read-only scan/inventory, reviewable plan artifacts, mechanical `.txt`→`.md` extension rename only, encoding normalization to UTF-8 without BOM, LF newline normalization, trailing-whitespace trim + final-newline enforcement + blank-line collapse, skip-and-report for risky files, and the safety machinery (dry-run default, preservation gate, backups/manifest, resume, verify). Frontmatter schema + validation machinery are in scope but bulk emission is not (see RQ-008). Explicitly **not** in v1: semantic cleanup, structural HTML→Markdown conversion, bulk frontmatter enrichment, search, publication export, and duplicate consolidation (NG-001–NG-003 stand; deferred work is §2.3 WH-###).
 
@@ -59,10 +56,7 @@ v1 is the "safe migration substrate": read-only scan/inventory, reviewable plan 
 
 ### RQ-002 — v1 naming policy and identity preservation
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-002
-**Decision owner:** owner
-**Canonical references:** spec §7.1 FR-010/FR-011, §9 (`docmend.id`), `docs/research/stable-document-id-scheme.md`; spec §21 OQ-002 (Status: Resolved). **Pluggability of the naming policy is tracked under [RQ-010](#rq-010--genericity-design-for-pluggable-build-minimal).**
+**Resolved:** 2026-07-05 **Source question:** OQ-002 **Decision owner:** owner **Canonical references:** spec §7.1 FR-010/FR-011, §9 (`docmend.id`), `docs/research/stable-document-id-scheme.md`; spec §21 OQ-002 (Status: Resolved). **Pluggability of the naming policy is tracked under [RQ-010](#rq-010--genericity-design-for-pluggable-build-minimal).**
 
 **Canonical record — now formalized in [ADR-0008](adr/adr-0008-stable-document-identity.md).** See the ADR for the full decision, drivers, considered alternatives, and consequences.
 
@@ -72,10 +66,7 @@ v1 is the "safe migration substrate": read-only scan/inventory, reviewable plan 
 
 ### RQ-003 — resume model
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-003
-**Decision owner:** implementer
-**Canonical references:** spec §7.1 FR-013, §12.2/§12.3, NFR-002/D-004, `docs/research/append-safe-manifest-format.md`; spec §21 OQ-003 (Status: Resolved)
+**Resolved:** 2026-07-05 **Source question:** OQ-003 **Decision owner:** implementer **Canonical references:** spec §7.1 FR-013, §12.2/§12.3, NFR-002/D-004, `docs/research/append-safe-manifest-format.md`; spec §21 OQ-003 (Status: Resolved)
 
 **Canonical record — now formalized in [ADR-0006](adr/adr-0006-resume-and-recovery-model.md).** See the ADR for the full decision, drivers, considered alternatives, and consequences.
 
@@ -85,10 +76,7 @@ v1 is the "safe migration substrate": read-only scan/inventory, reviewable plan 
 
 ### RQ-004 — artifact JSON Schemas
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-004
-**Decision owner:** implementer
-**Canonical references:** spec §7.4 DR-001–DR-004, §9, IR-007; `docs/research/{append-safe-manifest-format,json-schema-versioning-migration,json-schema-validator-library}.md`; spec §21 OQ-004 (Status: Resolved). **⚑ ADR candidate** (architectural artifact contract) — now formalized in [ADR-0005](adr/adr-0005-durable-artifact-schema-contract.md).
+**Resolved:** 2026-07-05 **Source question:** OQ-004 **Decision owner:** implementer **Canonical references:** spec §7.4 DR-001–DR-004, §9, IR-007; `docs/research/{append-safe-manifest-format,json-schema-versioning-migration,json-schema-validator-library}.md`; spec §21 OQ-004 (Status: Resolved). **⚑ ADR candidate** (architectural artifact contract) — now formalized in [ADR-0005](adr/adr-0005-durable-artifact-schema-contract.md).
 
 **Canonical record — now formalized in [ADR-0005](adr/adr-0005-durable-artifact-schema-contract.md).** See the ADR for the full decision, drivers, considered alternatives, and consequences.
 
@@ -98,10 +86,7 @@ v1 is the "safe migration substrate": read-only scan/inventory, reviewable plan 
 
 ### RQ-005 — apply safety gate and preservation semantics
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-005
-**Decision owner:** owner
-**Canonical references:** spec §7.1 FR-005/FR-006, §18.6, §8.5; `docs/research/{backup-integrity-verification,restore-from-manifest-design,combinatorial-safety-gate-testing}.md`; spec §21 OQ-005 (Status: Resolved). **⚑ ADR candidate** — now formalized in [ADR-0004](adr/adr-0004-apply-safety-gate-and-preservation.md). Preservation _strategy_ selection is governed by [RQ-007](#rq-007--preservation-posture-docmend-is-strategy-agnostic); pluggability by [RQ-010](#rq-010--genericity-design-for-pluggable-build-minimal).
+**Resolved:** 2026-07-05 **Source question:** OQ-005 **Decision owner:** owner **Canonical references:** spec §7.1 FR-005/FR-006, §18.6, §8.5; `docs/research/{backup-integrity-verification,restore-from-manifest-design,combinatorial-safety-gate-testing}.md`; spec §21 OQ-005 (Status: Resolved). **⚑ ADR candidate** — now formalized in [ADR-0004](adr/adr-0004-apply-safety-gate-and-preservation.md). Preservation _strategy_ selection is governed by [RQ-007](#rq-007--preservation-posture-docmend-is-strategy-agnostic); pluggability by [RQ-010](#rq-010--genericity-design-for-pluggable-build-minimal).
 
 **Canonical record — now formalized in [ADR-0004](adr/adr-0004-apply-safety-gate-and-preservation.md).** See the ADR for the full decision, drivers, considered alternatives, and consequences.
 
@@ -111,10 +96,7 @@ v1 is the "safe migration substrate": read-only scan/inventory, reviewable plan 
 
 ### RQ-006 — verify semantics and exit codes
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-006
-**Decision owner:** owner
-**Canonical references:** spec §7.1 FR-014, §18.5, IR-004; `docs/research/restore-from-manifest-design.md`; spec §21 OQ-006 (Status: Resolved)
+**Resolved:** 2026-07-05 **Source question:** OQ-006 **Decision owner:** owner **Canonical references:** spec §7.1 FR-014, §18.5, IR-004; `docs/research/restore-from-manifest-design.md`; spec §21 OQ-006 (Status: Resolved)
 
 **Canonical record — now formalized in [ADR-0012](adr/adr-0012-verify-semantics-exit-code-taxonomy.md).** See the ADR for the full decision, drivers, considered alternatives, and consequences.
 
@@ -124,10 +106,7 @@ v1 is the "safe migration substrate": read-only scan/inventory, reviewable plan 
 
 ### RQ-007 — preservation posture: docmend is strategy-agnostic
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-008
-**Decision owner:** owner
-**Canonical references:** spec §18.6, FR-005/FR-006 (RQ-005); `docs/research/{self-hosted-corpus-storage-options,docmend-backup-medium-durability-and-throughput-research}.md`; spec §21 OQ-008 (Status: Resolved)
+**Resolved:** 2026-07-05 **Source question:** OQ-008 **Decision owner:** owner **Canonical references:** spec §18.6, FR-005/FR-006 (RQ-005); `docs/research/{self-hosted-corpus-storage-options,docmend-backup-medium-durability-and-throughput-research}.md`; spec §21 OQ-008 (Status: Resolved)
 
 **Canonical record — now formalized in [ADR-0004](adr/adr-0004-apply-safety-gate-and-preservation.md).** See the ADR for the full decision, drivers, considered alternatives, and consequences.
 
@@ -139,10 +118,7 @@ docmend is a tool for document processing. It is not a tool for document preserv
 
 ### RQ-008 — frontmatter emission scope: optional, minimal in v1
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-009
-**Decision owner:** owner
-**Canonical references:** spec §7.1 FR-016, §9, DR-005; `docs/research/managing-pandoc-markdown-and-strict-yaml-frontmatter.md`; spec §21 OQ-009 (Status: Resolved). Gates OQ-007 (vocabularies), OQ-011 (EPUB), OQ-013 (schema detail), OQ-022 (YAML codec).
+**Resolved:** 2026-07-05 **Source question:** OQ-009 **Decision owner:** owner **Canonical references:** spec §7.1 FR-016, §9, DR-005; `docs/research/managing-pandoc-markdown-and-strict-yaml-frontmatter.md`; spec §21 OQ-009 (Status: Resolved). Gates OQ-007 (vocabularies), OQ-011 (EPUB), OQ-013 (schema detail), OQ-022 (YAML codec).
 
 **Canonical record — now formalized in [ADR-0011](adr/adr-0011-frontmatter-optional-minimal-split.md).** See the ADR for the full decision, drivers, considered alternatives, and consequences.
 
@@ -154,10 +130,7 @@ I would like very basic frontmatter support in v1, essentially just enough to ha
 
 ### RQ-009 — performance targets deferred
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-010
-**Decision owner:** owner
-**Canonical references:** spec §7.2 NFR-001, §14; `docs/research/{batch-throughput-and-capacity,docmend-backup-medium-durability-and-throughput-research}.md`; spec §21 OQ-010 (Status: Resolved)
+**Resolved:** 2026-07-05 **Source question:** OQ-010 **Decision owner:** owner **Canonical references:** spec §7.2 NFR-001, §14; `docs/research/{batch-throughput-and-capacity,docmend-backup-medium-durability-and-throughput-research}.md`; spec §21 OQ-010 (Status: Resolved)
 
 Numeric performance targets (wall-clock, throughput, memory ceiling, parallelism defaults) are **deferred**. v1 keeps only the **structural** performance criteria already binding in NFR-001 (bounded memory, streaming per-file processing, no whole-corpus in-memory model, resumability, idempotency). Correctness and safety come first; concrete numeric targets are revisited **after** the tool is proven correct and safe on real data. The existing profiling data (2,636–4,036 files/min, ~49 MiB RSS on a 5k-file local-SSD spike) and the backup-medium findings are recorded as **informative context**, not binding acceptance targets — and the 8-hour figure is explicitly not a v1 gate.
 
@@ -174,10 +147,7 @@ It is too early to set performance targets. I would like to see the tool working
 
 ### RQ-010 — genericity: design-for-pluggable, build-minimal
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-020
-**Decision owner:** owner (decided in session, 2026-07-05, in response to the AskUserQuestion on genericity)
-**Canonical references:** spec §1 (generally-useful ambition), §8 architecture/D-003, §9; relates to RQ-002 (naming), RQ-005/RQ-007 (preservation), OQ-007 (vocabularies), RQ-008 (frontmatter); spec §21 OQ-020 (Status: Resolved)
+**Resolved:** 2026-07-05 **Source question:** OQ-020 **Decision owner:** owner (decided in session, 2026-07-05, in response to the AskUserQuestion on genericity) **Canonical references:** spec §1 (generally-useful ambition), §8 architecture/D-003, §9; relates to RQ-002 (naming), RQ-005/RQ-007 (preservation), OQ-007 (vocabularies), RQ-008 (frontmatter); spec §21 OQ-020 (Status: Resolved)
 
 **Canonical record — now formalized in [ADR-0010](adr/adr-0010-pluggable-policy-seams.md).** See the ADR for the full decision, drivers, considered alternatives, and consequences.
 
@@ -187,10 +157,7 @@ _Decided in session via the genericity AskUserQuestion (2026-07-05): "Design-for
 
 ### RQ-011 — controlled vocabularies: external and per-corpus
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-007
-**Decision owner:** owner
-**Canonical references:** spec §9, §21 OQ-007 (Status: Resolved); relates to [RQ-008](#rq-008--frontmatter-emission-scope-optional-minimal-in-v1) (frontmatter scope), [RQ-010](#rq-010--genericity-design-for-pluggable-build-minimal) (genericity seam), OQ-023 / §13.4 (confidential-content posture)
+**Resolved:** 2026-07-05 **Source question:** OQ-007 **Decision owner:** owner **Canonical references:** spec §9, §21 OQ-007 (Status: Resolved); relates to [RQ-008](#rq-008--frontmatter-emission-scope-optional-minimal-in-v1) (frontmatter scope), [RQ-010](#rq-010--genericity-design-for-pluggable-build-minimal) (genericity seam), OQ-023 / §13.4 (confidential-content posture)
 
 **Canonical record — recorded as an instance in [ADR-0010](adr/adr-0010-pluggable-policy-seams.md).** See the ADR for the full decision.
 
@@ -202,10 +169,7 @@ Resolution note — confirmed in session via the OQ-007 AskUserQuestion (2026-07
 
 ### RQ-012 — EPUB export metadata deferred
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-011
-**Decision owner:** owner
-**Canonical references:** spec §9, §21 OQ-011 (Status: Resolved); `docs/research/managing-pandoc-markdown-and-strict-yaml-frontmatter.md`
+**Resolved:** 2026-07-05 **Source question:** OQ-011 **Decision owner:** owner **Canonical references:** spec §9, §21 OQ-011 (Status: Resolved); `docs/research/managing-pandoc-markdown-and-strict-yaml-frontmatter.md`
 
 Optional EPUB-export root metadata (`identifier`, `rights`, `creator`, `cover-image`) is **out of scope** — a far-future "maybe." Not needed for v1 (frontmatter is optional/minimal per RQ-008). Whenever it lands, `docmend.id` remains the sole stable internal identifier; Pandoc's `identifier` is an EPUB-facing publication field, never a substitute for it. If added later, EPUB fields stay optional and distinct from docmend identity, emitted only for intentionally export-ready documents.
 
@@ -219,10 +183,7 @@ Optional EPUB-export root metadata (`identifier`, `rights`, `creator`, `cover-im
 
 ### RQ-013 — in-place mutation for v1
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-012
-**Decision owner:** owner
-**Canonical references:** spec §8.5, §13.2, §18.2, §21 OQ-012 (Status: Resolved); relates to [RQ-005](#rq-005--apply-safety-gate-and-preservation-semantics) (safety gate). **⚑ ADR candidate** — the owner flagged OQ-012 (fundamental output model) for ADR consideration once settled; now formalized in [ADR-0003](adr/adr-0003-in-place-mutation-output-model.md).
+**Resolved:** 2026-07-05 **Source question:** OQ-012 **Decision owner:** owner **Canonical references:** spec §8.5, §13.2, §18.2, §21 OQ-012 (Status: Resolved); relates to [RQ-005](#rq-005--apply-safety-gate-and-preservation-semantics) (safety gate). **⚑ ADR candidate** — the owner flagged OQ-012 (fundamental output model) for ADR consideration once settled; now formalized in [ADR-0003](adr/adr-0003-in-place-mutation-output-model.md).
 
 **Canonical record — now formalized in [ADR-0003](adr/adr-0003-in-place-mutation-output-model.md).** See the ADR for the full decision, drivers, considered alternatives, and consequences.
 
@@ -234,10 +195,7 @@ _Reading confirmed in session via the OQ-012 AskUserQuestion (2026-07-05): in-pl
 
 ### RQ-014 — frontmatter schema detail for v1
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-013
-**Decision owner:** owner
-**Canonical references:** spec §9, FR-016, DR-005, §21 OQ-013 (Status: Resolved); `docs/research/safe-yaml-loading.md`; gated by [RQ-008](#rq-008--frontmatter-emission-scope-optional-minimal-in-v1); relates to [RQ-021](#rq-021--frontmatter-yaml-codec) (YAML codec)
+**Resolved:** 2026-07-05 **Source question:** OQ-013 **Decision owner:** owner **Canonical references:** spec §9, FR-016, DR-005, §21 OQ-013 (Status: Resolved); `docs/research/safe-yaml-loading.md`; gated by [RQ-008](#rq-008--frontmatter-emission-scope-optional-minimal-in-v1); relates to [RQ-021](#rq-021--frontmatter-yaml-codec) (YAML codec)
 
 **Canonical record — now formalized in [ADR-0011](adr/adr-0011-frontmatter-optional-minimal-split.md).** See the ADR for the full decision, drivers, considered alternatives, and consequences.
 
@@ -249,10 +207,7 @@ _Decided in session via the OQ-013 AskUserQuestion (2026-07-05): adopt the minim
 
 ### RQ-015 — real-write opt-in
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-014
-**Decision owner:** owner
-**Canonical references:** spec §7.1 FR-004, §7.3 IR-003, §18.2, §21 OQ-014 (Status: Resolved); relates to [RQ-005](#rq-005--apply-safety-gate-and-preservation-semantics) (safety gate)
+**Resolved:** 2026-07-05 **Source question:** OQ-014 **Decision owner:** owner **Canonical references:** spec §7.1 FR-004, §7.3 IR-003, §18.2, §21 OQ-014 (Status: Resolved); relates to [RQ-005](#rq-005--apply-safety-gate-and-preservation-semantics) (safety gate)
 
 **Canonical record — now formalized in [ADR-0004](adr/adr-0004-apply-safety-gate-and-preservation.md).** See the ADR for the full decision, drivers, considered alternatives, and consequences.
 
@@ -262,10 +217,7 @@ _Decided in session via the OQ-014 AskUserQuestion (2026-07-05): lock `--write`.
 
 ### RQ-016 — CPU-bound concurrency primitive
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-016
-**Decision owner:** owner (implementer-proposed)
-**Canonical references:** spec NFR-001, §14, §18.2, §21 OQ-016 (Status: Resolved); `docs/research/{python-314-concurrency-model,docmend-and-the-free-threaded-cpython-switch-decision}.md`; relates to [RQ-009](#rq-009--performance-targets-deferred) (perf targets deferred)
+**Resolved:** 2026-07-05 **Source question:** OQ-016 **Decision owner:** owner (implementer-proposed) **Canonical references:** spec NFR-001, §14, §18.2, §21 OQ-016 (Status: Resolved); `docs/research/{python-314-concurrency-model,docmend-and-the-free-threaded-cpython-switch-decision}.md`; relates to [RQ-009](#rq-009--performance-targets-deferred) (perf targets deferred)
 
 **Canonical record — now formalized in [ADR-0007](adr/adr-0007-concurrency-primitive-process-pool.md).** See the ADR for the full decision, drivers, considered alternatives, and consequences.
 
@@ -275,10 +227,7 @@ _Decided in session via the OQ-014 AskUserQuestion (2026-07-05): lock `--write`.
 
 ### RQ-017 — structured logging via structlog
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-017
-**Decision owner:** owner
-**Canonical references:** spec §19 MS-0, NFR-003, §18.5, IR-005, §8.6, §21 OQ-017 (Status: Resolved); `docs/research/structured-logging-library.md`
+**Resolved:** 2026-07-05 **Source question:** OQ-017 **Decision owner:** owner **Canonical references:** spec §19 MS-0, NFR-003, §18.5, IR-005, §8.6, §21 OQ-017 (Status: Resolved); `docs/research/structured-logging-library.md`
 
 **Canonical record — now formalized in [ADR-0013](adr/adr-0013-v1-dependency-selection.md).** See the ADR for the full decision, drivers, considered alternatives, and consequences.
 
@@ -288,10 +237,7 @@ _Decided in session via the OQ-014 AskUserQuestion (2026-07-05): lock `--write`.
 
 ### RQ-018 — JSON Schema validator library
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-018
-**Decision owner:** owner
-**Canonical references:** spec §8.6, FR-016, DR-005, §21 OQ-018 (Status: Resolved); relates to [RQ-004](#rq-004--artifact-json-schemas) (artifact schemas); `docs/research/json-schema-validator-library.md`
+**Resolved:** 2026-07-05 **Source question:** OQ-018 **Decision owner:** owner **Canonical references:** spec §8.6, FR-016, DR-005, §21 OQ-018 (Status: Resolved); relates to [RQ-004](#rq-004--artifact-json-schemas) (artifact schemas); `docs/research/json-schema-validator-library.md`
 
 **Canonical record — now formalized in [ADR-0013](adr/adr-0013-v1-dependency-selection.md).** See the ADR for the full decision, drivers, considered alternatives, and consequences.
 
@@ -301,10 +247,7 @@ _Decided in session via the OQ-014 AskUserQuestion (2026-07-05): lock `--write`.
 
 ### RQ-019 — property-based testing dependency
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-019
-**Decision owner:** owner
-**Canonical references:** spec §17.2, §8.6, NFR-005, Appendix B.2, §21 OQ-019 (Status: Resolved); `docs/research/property-based-testing-hypothesis.md`
+**Resolved:** 2026-07-05 **Source question:** OQ-019 **Decision owner:** owner **Canonical references:** spec §17.2, §8.6, NFR-005, Appendix B.2, §21 OQ-019 (Status: Resolved); `docs/research/property-based-testing-hypothesis.md`
 
 **Canonical record — now formalized in [ADR-0013](adr/adr-0013-v1-dependency-selection.md).** See the ADR for the full decision, drivers, considered alternatives, and consequences.
 
@@ -314,10 +257,7 @@ _Decided in session via the OQ-014 AskUserQuestion (2026-07-05): lock `--write`.
 
 ### RQ-020 — internal data-model library
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-021
-**Decision owner:** owner
-**Canonical references:** spec §7.4 DR-001–DR-004, §9, §8.6, §21 OQ-021 (Status: Resolved); relates to [RQ-004](#rq-004--artifact-json-schemas) (artifact schemas), [RQ-018](#rq-018--json-schema-validator-library) (external validator); `docs/research/python-library-research.md`
+**Resolved:** 2026-07-05 **Source question:** OQ-021 **Decision owner:** owner **Canonical references:** spec §7.4 DR-001–DR-004, §9, §8.6, §21 OQ-021 (Status: Resolved); relates to [RQ-004](#rq-004--artifact-json-schemas) (artifact schemas), [RQ-018](#rq-018--json-schema-validator-library) (external validator); `docs/research/python-library-research.md`
 
 **Canonical record — now formalized in [ADR-0013](adr/adr-0013-v1-dependency-selection.md).** See the ADR for the full decision, drivers, considered alternatives, and consequences.
 
@@ -327,10 +267,7 @@ _Decided in session via the OQ-014 AskUserQuestion (2026-07-05): lock `--write`.
 
 ### RQ-021 — frontmatter YAML codec
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-022
-**Decision owner:** owner
-**Canonical references:** spec §9, FR-016, DR-005, §8.6, §21 OQ-022 (Status: Resolved); relates to [RQ-008](#rq-008--frontmatter-emission-scope-optional-minimal-in-v1) (frontmatter scope), [RQ-014](#rq-014--frontmatter-schema-detail-for-v1) (schema detail); `docs/research/{python-library-research,safe-yaml-loading}.md`
+**Resolved:** 2026-07-05 **Source question:** OQ-022 **Decision owner:** owner **Canonical references:** spec §9, FR-016, DR-005, §8.6, §21 OQ-022 (Status: Resolved); relates to [RQ-008](#rq-008--frontmatter-emission-scope-optional-minimal-in-v1) (frontmatter scope), [RQ-014](#rq-014--frontmatter-schema-detail-for-v1) (schema detail); `docs/research/{python-library-research,safe-yaml-loading}.md`
 
 **Canonical record — now formalized in [ADR-0013](adr/adr-0013-v1-dependency-selection.md).** See the ADR for the full decision, drivers, considered alternatives, and consequences.
 
@@ -340,10 +277,7 @@ _Decided in session via the OQ-014 AskUserQuestion (2026-07-05): lock `--write`.
 
 ### RQ-022 — encoding detector and non-ASCII skip floor
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-015
-**Decision owner:** owner
-**Canonical references:** spec §7.1 FR-007, §18.2 (`encoding.fail_below_confidence` + a new non-ASCII byte-count floor key), A-003, G-005, §8.6; §17.2 (weird-document corpus); `docs/research/{encoding-detection-benchmark,charset-detection-floors-for-legacy-text-ingestion,python-library-research}.md`; spec §21 OQ-015 (Status: Resolved). Relates to [RQ-004](#rq-004--artifact-json-schemas) (inventory provenance fields), [RQ-010](#rq-010--genericity-design-for-pluggable-build-minimal) (build-minimal seam), [RQ-009](#rq-009--performance-targets-deferred) (validation-run deferral). Fixes GAP-43.
+**Resolved:** 2026-07-05 **Source question:** OQ-015 **Decision owner:** owner **Canonical references:** spec §7.1 FR-007, §18.2 (`encoding.fail_below_confidence` + a new non-ASCII byte-count floor key), A-003, G-005, §8.6; §17.2 (weird-document corpus); `docs/research/{encoding-detection-benchmark,charset-detection-floors-for-legacy-text-ingestion,python-library-research}.md`; spec §21 OQ-015 (Status: Resolved). Relates to [RQ-004](#rq-004--artifact-json-schemas) (inventory provenance fields), [RQ-010](#rq-010--genericity-design-for-pluggable-build-minimal) (build-minimal seam), [RQ-009](#rq-009--performance-targets-deferred) (validation-run deferral). Fixes GAP-43.
 
 **Canonical record — now formalized in [ADR-0009](adr/adr-0009-encoding-detection-dual-skip-gate.md).** See the ADR for the full decision, drivers, considered alternatives, and consequences.
 
@@ -353,10 +287,7 @@ _Decided in session via the OQ-015 AskUserQuestion (2026-07-05): close now on th
 
 ### RQ-023 — deferred-review-artifact content-exposure policy (WH-002/WH-005)
 
-**Resolved:** 2026-07-05
-**Source question:** OQ-023
-**Decision owner:** owner
-**Canonical references:** spec §2.2 NG-001, §2.3 WH-002/WH-005, §11, §13.4, §13.5; spec §21 OQ-023 (Status: Resolved). Relates to [RQ-001](#rq-001--v1-boundary-and-explicit-non-goals) (v1 boundary), [RQ-010](#rq-010--genericity-design-for-pluggable-build-minimal) (genericity), [RQ-011](#rq-011--controlled-vocabularies-external-and-per-corpus) (external per-corpus vocabularies), C-002 (synthetic fixtures). **Non-blocking** — WH-002/WH-005 are deferred (§2.3).
+**Resolved:** 2026-07-05 **Source question:** OQ-023 **Decision owner:** owner **Canonical references:** spec §2.2 NG-001, §2.3 WH-002/WH-005, §11, §13.4, §13.5; spec §21 OQ-023 (Status: Resolved). Relates to [RQ-001](#rq-001--v1-boundary-and-explicit-non-goals) (v1 boundary), [RQ-010](#rq-010--genericity-design-for-pluggable-build-minimal) (genericity), [RQ-011](#rq-011--controlled-vocabularies-external-and-per-corpus) (external per-corpus vocabularies), C-002 (synthetic fixtures). **Non-blocking** — WH-002/WH-005 are deferred (§2.3).
 
 The confidentiality line is drawn at the **public-repo / official-tool boundary, not at the operator's screen.**
 
@@ -379,10 +310,7 @@ _Text-rendering fork: **external tools render text** — docmend stops at detect
 
 ### RQ-024 — scale-flexibility is binding: tool-first reframing (amends RQ-010)
 
-**Resolved:** 2026-07-06
-**Source question:** OQ-024 (raised by the owner's 2026-07-06 rewrite of spec §1)
-**Decision owner:** owner
-**Canonical references:** spec §1 (tool-first Purpose & Background), §2.3 WH-008, §4 G-006, §7.2 NFR-006, §7.3 (single-file `PATH` semantics), §14 (lower-bound row), §17.2/§17.3, §20 (scale-flexibility row), §21 OQ-024 (Status: Resolved). **Amends [RQ-010](#rq-010--genericity-design-for-pluggable-build-minimal) / [ADR-0010](adr/adr-0010-pluggable-policy-seams.md)** (amendment note added to the ADR).
+**Resolved:** 2026-07-06 **Source question:** OQ-024 (raised by the owner's 2026-07-06 rewrite of spec §1) **Decision owner:** owner **Canonical references:** spec §1 (tool-first Purpose & Background), §2.3 WH-008, §4 G-006, §7.2 NFR-006, §7.3 (single-file `PATH` semantics), §14 (lower-bound row), §17.2/§17.3, §20 (scale-flexibility row), §21 OQ-024 (Status: Resolved). **Amends [RQ-010](#rq-010--genericity-design-for-pluggable-build-minimal) / [ADR-0010](adr/adr-0010-pluggable-policy-seams.md)** (amendment note added to the ADR).
 
 **Canonical record — now formalized in [ADR-0014](adr/adr-0014-tool-first-product-scope.md).** See the ADR for the full decision, drivers, considered alternatives, and consequences.
 
@@ -392,10 +320,7 @@ _Owner decision (from the OQ-024 AskUserQuestion, 2026-07-06): binding requireme
 
 ### RQ-025..033 — gap-register Batch B decisions (2026-07-06)
 
-**Resolved:** 2026-07-06
-**Source questions:** OQ-025..033 (minted from `docs/gap-analysis.md` Batch B triage — the nine decision-bearing gaps that survived the 2026-07-06 status audit)
-**Decision owner:** owner (two AskUserQuestion rounds plus an individual walkthrough of the GAP-49/GAP-52 research reports, 2026-07-06)
-**Canonical references:** spec §21 OQ-025..033 rows carry each decision's assumption; the spec body sections listed per item below are the binding text. Recorded together because all nine were settled in one sitting from one triage; split any item out if it is later amended individually.
+**Resolved:** 2026-07-06 **Source questions:** OQ-025..033 (minted from `docs/gap-analysis.md` Batch B triage — the nine decision-bearing gaps that survived the 2026-07-06 status audit) **Decision owner:** owner (two AskUserQuestion rounds plus an individual walkthrough of the GAP-49/GAP-52 research reports, 2026-07-06) **Canonical references:** spec §21 OQ-025..033 rows carry each decision's assumption; the spec body sections listed per item below are the binding text. Recorded together because all nine were settled in one sitting from one triage; split any item out if it is later amended individually.
 
 **Canonical records (2026-07-06 ADR review):** RQ-032 → [ADR-0015](adr/adr-0015-test-corpus-and-anonymization.md); RQ-025/030/031 → [ADR-0016](adr/adr-0016-mechanical-transform-boundary.md) (consolidated); RQ-026/027/028/033 → amendment notes on ADR-0009 / ADR-0007 / ADR-0007 / ADR-0002 (+ ADR-0013 for the dev deps); RQ-029 stays spec-canonical (§18.2, deliberate skip per `adr/adr-backlog.md`).
 

@@ -13,10 +13,10 @@
 | 0003 | In-place mutation + atomic-replace output model | 🔴 1 | RQ-013 ⚑, D-004 | ✍️ drafted 2026-07-05 |
 | 0004 | Apply safety gate + preservation posture | 🔴 1 | RQ-005 ⚑, RQ-007 | ✍️ drafted 2026-07-05 |
 | 0005 | Durable artifact schema contract (JSON + NDJSON) | 🔴 1 | RQ-004 ⚑, DR-001–004 | ✍️ drafted 2026-07-05 |
-| 0006 | Resume & recovery model | 🟡 2 | RQ-003 | 🔲 candidate |
-| 0007 | Concurrency primitive: ProcessPool + forkserver | 🟡 2 | RQ-016 | 🔲 candidate |
-| 0008 | Stable document identity (UUIDv7 + manifest) | 🟡 2 | RQ-002 | 🔲 candidate |
-| 0009 | Encoding detection & dual skip-gate | 🟡 2 | RQ-022, D-002 | 🔲 candidate |
+| 0006 | Resume & recovery model | 🟡 2 | RQ-003 | ✍️ drafted 2026-07-05 |
+| 0007 | Concurrency primitive: ProcessPool + forkserver | 🟡 2 | RQ-016 | ✍️ drafted 2026-07-05 |
+| 0008 | Stable document identity (UUIDv7 + manifest) | 🟡 2 | RQ-002 | ✍️ drafted 2026-07-05 |
+| 0009 | Encoding detection & dual skip-gate | 🟡 2 | RQ-022, D-002 | ✍️ drafted 2026-07-05 |
 | 0010 | Design-for-pluggable policy seams | 🟢 3 | RQ-010, D-009 | 🔲 candidate |
 | 0011 | Frontmatter: optional, minimal, mechanical/semantic split | 🟢 3 | RQ-008/014, D-001/007 | 🔲 candidate |
 | 0012 | verify semantics + tool-wide exit-code taxonomy | 🟢 3 | RQ-006 | 🔲 candidate |

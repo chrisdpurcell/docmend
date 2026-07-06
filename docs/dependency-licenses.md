@@ -27,7 +27,8 @@ Spec §16 requires an OSS-license compatibility check "at MS-0 when dependencies
 | pathspec | MPL-2.0 | ✅ File-level weak copyleft: using it unmodified as a dependency imposes no obligation on docmend's MIT code; MPL-2.0 is in the CI allowlist. Modifying vendored pathspec files (not planned) would require releasing those files' changes under MPL. |
 | jsonschema | MIT | ✅ (`format-nongpl` extra — exists precisely to keep GPL format validators out of the closure; keep using it) |
 | attrs / jsonschema-specifications / referencing / rpds-py (via jsonschema) | MIT | ✅ |
-| lark / rfc3339-validator / rfc3986-validator / rfc3987-syntax / uri-template / six (format-nongpl extras) | MIT | ✅ (rfc3987-syntax is the MIT replacement for the GPL rfc3987) |
+| lark / rfc3339-validator / rfc3986-validator / uri-template / six (format-nongpl extras) | MIT | ✅ |
+| rfc3987-syntax (format-nongpl extra) | MIT | ✅ The MIT replacement for the GPL `rfc3987`. GitHub's dependency graph mis-reports it as "Apache-2.0 AND GPL-1.0-or-later AND MIT" — verified 2026-07-06 against the installed distribution: LICENSE is MIT, `License-Expression: MIT`, no GPL text in any shipped file (a stale "Apache Software License" classifier + repo-level scanning cause the false expression). Exempted by purl in `dependency-review.yml` with this rationale. |
 | isoduration (format-nongpl extra) | ISC | ✅ |
 | jsonpointer / webcolors (format-nongpl extras) | BSD-3-Clause | ✅ |
 | arrow / tzdata (format-nongpl extras) | Apache-2.0 | ✅ |

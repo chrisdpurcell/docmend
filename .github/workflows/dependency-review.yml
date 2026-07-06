@@ -40,3 +40,12 @@ jobs:
           allow-licenses: >-
             MIT, BSD-2-Clause, BSD-3-Clause, Apache-2.0, ISC, Python-2.0, PSF-2.0, 0BSD, Unlicense, MPL-2.0, CC0-1.0, MIT-0, HPND
 
+          # rfc3987-syntax (via jsonschema[format-nongpl], spec §8.6/OQ-018):
+          # GitHub's scanner reports "Apache-2.0 AND GPL-1.0-or-later AND MIT",
+          # but the distributed package is MIT — verified 2026-07-06 against the
+          # installed dist: LICENSE file is MIT, METADATA License-Expression is
+          # MIT, and no file in the wheel carries a GPL header (the expression
+          # stems from a stale "Apache Software License" classifier + repo-level
+          # scanning). Rationale recorded in docs/dependency-licenses.md.
+          allow-dependencies-licenses: pkg:pypi/rfc3987-syntax
+

@@ -4,7 +4,7 @@
 # Deliberately NOT adopted: Markdown Frontmatter Standard — its canonical schema
 # conflicts with docmend's own frontmatter contracts (the Pandoc-flavored YAML the
 # tool emits into every converted document, plus the Pandoc-style spec draft).
-# Recorded as docs/decisions/adr-0001-no-markdown-frontmatter-standard.md.
+# Recorded as docs/adr/adr-0001-no-markdown-frontmatter-standard.md.
 
 # Contract-version labels (validated-if-present metadata; they run no check by themselves).
 python_tooling:
@@ -25,4 +25,4 @@ spec:
 # NOTE: no `markdown.frontmatter` block — the Frontmatter Standard is not adopted (ADR-0001).
 # NOTE: no `markdown.adr.require_sections` block either — that check rides the frontmatter
 # validator workflow, which is not installed here, so it would be inert. ADRs are authored
-# from docs/decisions/adr.template.md and kept consistent by convention.
+# from docs/adr/adr.template.md and kept consistent by convention.

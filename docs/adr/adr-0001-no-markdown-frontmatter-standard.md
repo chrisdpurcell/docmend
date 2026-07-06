@@ -60,7 +60,7 @@ Chosen option: **"Do not adopt the Markdown Frontmatter Standard"**, because doc
 
 - Good, because docmend's product frontmatter schema and the Pandoc spec metadata remain the uncontested authority over their files — no second validator competes for them.
 - Good, because glob-partitioning fragility (canonical vs. spec vs. product frontmatter) is avoided entirely.
-- Bad, because **ADR frontmatter is not CI-validated** in this repo. The `markdown.adr.require_sections` check "rides the same frontmatter workflow," which is not installed, so it would be inert; it is therefore omitted from `.project-standards.yml`. ADRs are authored from `docs/decisions/adr.template.md` and kept consistent **by convention**.
+- Bad, because **ADR frontmatter is not CI-validated** in this repo. The `markdown.adr.require_sections` check "rides the same frontmatter workflow," which is not installed, so it would be inert; it is therefore omitted from `.project-standards.yml`. ADRs are authored from `docs/adr/adr.template.md` and kept consistent **by convention**.
 - Bad, because other managed Markdown (docs/) likewise gets no canonical frontmatter validation. Markdown **body** linting/formatting is unaffected — the Markdown Tooling Standard (markdownlint + Prettier) is fully adopted and does cover these files.
 
 ### Confirmation

@@ -112,11 +112,11 @@ uv run python scripts/fix_spec_toc.py
 
 **Applies when:** recording a significant/architectural decision, or any deviation from an adopted standard.
 
-**Rule:** Author from `docs/decisions/adr.template.md` (MADR shape) under `docs/decisions/`. Filenames are `adr-NNNN-short-title.md`; frontmatter `id` embeds the repo name (`adr-NNNN-docmend-short-title`). ADR frontmatter is not CI-validated here (see #8) — keep it consistent by convention.
+**Rule:** Author from `docs/adr/adr.template.md` (MADR shape) under `docs/adr/`. Filenames are `adr-NNNN-short-title.md`; frontmatter `id` embeds the repo name (`adr-NNNN-docmend-short-title`). ADR frontmatter is not CI-validated here (see #8) — keep it consistent by convention.
 
 **Why:** a documented decision record prevents relitigating a rejected alternative and gives future sessions the _why_, not just the _what_.
 
-**Sources:** `docs/decisions/`.
+**Sources:** `docs/adr/`.
 
 **Related:** #8.
 
@@ -143,7 +143,7 @@ uv run python scripts/fix_spec_toc.py
 
 **Why:** the repo's Markdown Frontmatter Standard was deliberately not adopted (ADR-0001) because its schema conflicts with docmend's Pandoc-oriented output contract; conflating the two would either break product output or misapply repo-doc rules to it.
 
-**Sources:** `docs/decisions/adr-0001-no-markdown-frontmatter-standard.md`; spec §9 / DR-005.
+**Sources:** `docs/adr/adr-0001-no-markdown-frontmatter-standard.md`; spec §9 / DR-005.
 
 **Related:** #8.
 

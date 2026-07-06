@@ -13,7 +13,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from corpus import CORPUS_RECIPES, GENERATED_AT, RUN_ID, materialize, seeded_faker
-from docmend.config import DocmendConfig, PathsConfig
+from docmend.config import DocmendConfig, EncodingConfig, PathsConfig
 from docmend.discovery import NewlineCensus, classify_file, scan
 from docmend.inventory import Inventory
 
@@ -70,9 +70,11 @@ class TestClassification:
             if recipe.expected_bom:
                 assert facts.detected is not None and facts.detected.method == "bom"
             elif recipe.encoding == "windows-1252":
-                # Legacy detection is the MS-2 charset-normalizer rung; the
-                # deterministic rungs must leave it undecided, never guess.
-                assert facts.detected is None
+                # Legacy detection is the MS-2 charset-normalizer rung (this
+                # task): the deterministic rungs hand off, and the rung fills
+                # in the verdict at scan time.
+                assert facts.detected is not None
+                assert facts.detected.method == "charset-normalizer"
                 assert records[recipe.path].non_ascii_bytes > 0
 
     def test_nul_bytes_flagged(self, corpus: Path) -> None:
@@ -102,6 +104,56 @@ class TestClassification:
             DocmendConfig(paths=PathsConfig(include=["**/*.TXT"])),
         )
         assert inventory.files[0].suffix == ".TXT"
+
+    def test_legacy_detection__populates_inventory_at_scan(self, corpus: Path) -> None:
+        """DR-001 legacy rung (MS-2): charset-normalizer fills encoding.detected."""
+        inventory = run_scan(corpus)
+        legacy = {f.path: f for f in inventory.files}["legacy.txt"]
+        assert legacy.encoding.detected is not None
+        assert legacy.encoding.detected.method == "charset-normalizer"
+
+    def test_legacy_detection__skipped_for_bom_utf8_and_nul_files(self, corpus: Path) -> None:
+        inventory = run_scan(corpus)
+        by_path = {f.path: f for f in inventory.files}
+        assert by_path["bom.txt"].encoding.detected is not None
+        assert by_path["bom.txt"].encoding.detected.method == "bom"
+        assert by_path["plain.txt"].encoding.detected is not None
+        assert by_path["plain.txt"].encoding.detected.method == "utf8-strict"
+        # nulls.txt (corpus "binaryish") never reaches the legacy detector
+        # either: NUL and 0x01 are valid single-byte UTF-8 code points (EC-006),
+        # so it is already utf8-strict-valid before the charset-normalizer gate
+        # (which additionally excludes it on nul_bytes) is even checked.
+        assert by_path["nulls.txt"].encoding.detected is not None
+        assert by_path["nulls.txt"].encoding.detected.method == "utf8-strict"
+
+    def test_legacy_detection__no_candidate_leaves_detected_none(self, tmp_path: Path) -> None:
+        """A file that reaches the gate but the detector can't call at all
+        (binary-suspect, not merely a failure) leaves encoding.detected unset."""
+        (tmp_path / "blob.txt").write_bytes(bytes(range(0x80, 0x100)) * 8)
+        inventory = run_scan(tmp_path)
+        assert inventory.files[0].encoding.detected is None
+
+    def test_legacy_detection__disabled_by_config(self, corpus: Path) -> None:
+        config = DocmendConfig(encoding=EncodingConfig(detect=False))
+        inventory = run_scan(corpus, config)
+        legacy = {f.path: f for f in inventory.files}["legacy.txt"]
+        assert legacy.encoding.detected is None
+
+    def test_legacy_detection__detector_failure_is_an_unreadable_skip(
+        self, corpus: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ERR-007: a detect_legacy OSError is skipped the same way as an
+        unreadable file during classification, not raised through the scan."""
+
+        def _boom(path: Path) -> None:
+            raise OSError("simulated detector failure")
+
+        monkeypatch.setattr("docmend.detection.detect_legacy", _boom)
+        inventory = run_scan(corpus)
+        skipped = {record.path: record for record in inventory.skipped}
+        assert skipped["legacy.txt"].reason == "unreadable"
+        assert "simulated detector failure" in (skipped["legacy.txt"].detail or "")
+        assert "legacy.txt" not in {f.path for f in inventory.files}
 
 
 class TestFilters:

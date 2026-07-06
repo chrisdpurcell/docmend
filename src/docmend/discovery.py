@@ -15,8 +15,13 @@ planning layer's job (MS-2), consuming the facts recorded here.
 Encoding facts implement the deterministic rungs of FR-007's fixed order: BOM
 sniff (UTF-32 patterns checked before UTF-16 — the UTF-32-LE BOM begins with the
 UTF-16-LE BOM bytes), then strict full-file UTF-8 validity, then ASCII-only.
-The charset-normalizer legacy rung is MS-2 domain logic, so ``detected`` stays
-``None`` for files only that rung could decide.
+``classify_file`` itself only ever produces those deterministic rungs; the
+charset-normalizer legacy rung (``docmend.detection``, adr-0009) is applied
+afterward, once per candidate, by ``_process_candidate`` — gated to files that
+are no-BOM, non-UTF-8, and NUL-free (a decode failure or NUL byte would make
+the detector's guess meaningless). ``detected`` stays ``None`` only when that
+gate excludes the file, detection is disabled, or the detector itself found no
+candidate.
 
 Everything is single-pass and chunked: hash, NUL presence, non-ASCII byte count
 (the FR-007 floor gate's input, OQ-015), newline census, and incremental strict
@@ -34,7 +39,7 @@ from pathlib import Path
 from pathspec import PathSpec
 from pathspec.patterns.gitignore.spec import GitIgnoreSpecPattern
 
-from docmend import __version__
+from docmend import __version__, detection
 from docmend.config import DocmendConfig
 from docmend.inventory import (
     INVENTORY_SCHEMA_VERSION,
@@ -251,6 +256,8 @@ def _process_candidate(
     rel: str,
     include: PathSpec[GitIgnoreSpecPattern],
     exclude: PathSpec[GitIgnoreSpecPattern],
+    *,
+    detect: bool,
 ) -> None:
     """Filter and classify one directory entry (file or symlink, never a dir)."""
     log = get_logger(__name__)
@@ -280,6 +287,28 @@ def _process_candidate(
         state.skipped.append(SkipRecord(path=rel, reason="unreadable", detail=str(exc)))
         log.warning("file unreadable", path=rel, error=str(exc), err="ERR-007")
         return
+
+    if (
+        detect
+        and record.encoding.bom is None
+        and not record.encoding.utf8_valid
+        and not record.nul_bytes
+    ):
+        # FR-007 legacy rung (adr-0009 gate order): only a no-BOM, non-UTF-8,
+        # NUL-free file ever reaches charset-normalizer; a detection failure
+        # here is an ERR-007-style unreadable skip, same as classification.
+        try:
+            detected = detection.detect_legacy(full)
+        except OSError as exc:
+            state.skipped.append(SkipRecord(path=rel, reason="unreadable", detail=str(exc)))
+            log.warning("file unreadable", path=rel, error=str(exc), err="ERR-007")
+            return
+        if detected is not None:
+            record = record.model_copy(
+                update={"encoding": record.encoding.model_copy(update={"detected": detected})}
+            )
+            log.debug("legacy encoding detected", path=rel, name=detected.name)
+
     state.files.append(record)
     state.record_hard_link(stat, rel)
     log.debug(
@@ -335,10 +364,12 @@ def scan(
             for filename in sorted(filenames):
                 full = base / filename
                 rel = full.relative_to(root).as_posix()
-                _process_candidate(state, full, rel, include, exclude)
+                _process_candidate(
+                    state, full, rel, include, exclude, detect=config.encoding.detect
+                )
     else:
         rel = requested.name
-        _process_candidate(state, root / rel, rel, include, exclude)
+        _process_candidate(state, root / rel, rel, include, exclude, detect=config.encoding.detect)
         if not state.files and not state.symlinks and not state.skipped:
             log.warning(
                 "single-file PATH matched no include pattern; inventory is empty",

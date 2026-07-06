@@ -26,7 +26,21 @@
 	"MD030": false,
 	"MD031": { "list_items": true },
 	"MD032": false,
-	"MD033": { "allowed_elements": [], "table_allowed_elements": [] },
+	"MD033": {
+		"allowed_elements": [
+			"instruction",
+			"constraint",
+			"context",
+			"example",
+			"rationale",
+			"owner-note",
+			"agent-note",
+			"do-not-edit",
+			"acceptance-criteria",
+			"open-question"
+		],
+		"table_allowed_elements": []
+	},
 	"MD034": true,
 	"MD035": { "style": "consistent" },
 	"MD036": { "punctuation": ".,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f" },

@@ -16,8 +16,8 @@ Perform a comprehensive gap analysis of the `docmend` project.
 
 ## Resources and References
 
-- [docmend Specification](docs/specs/docmend.md)
+- [`docmend` Specification](docs/specs/docmend.md)
 - [Open Questions](docs/open-questions.md)
 - [Deep Research Queue](docs/deep-research-queue.md)
-- [Research Reports](docs/research-reports/)
+- [Research Reports](docs/research/)
 - [Architecture Decision Records](docs/decisions/)

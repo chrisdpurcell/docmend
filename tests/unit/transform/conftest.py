@@ -26,12 +26,13 @@ def block_filesystem_access(monkeypatch: pytest.MonkeyPatch) -> None:
     """
 
     def selective_blocker(*args: Any, **kwargs: Any) -> Any:
-        # Allow accessing .pyc files and their temp files (bytecode cache, not code)
+        # Allow reading bytecode cache files (pytest assertion-rewriter needs
+        # to read __pycache__/*.pyc for Hypothesis internals loaded at runtime).
+        # Only .pyc paths under __pycache__/ are allowed; application code must
+        # never access the filesystem (spec NFR-005).
         if args:
             path_str = str(args[0])  # Handle both str and Path objects
-            # Allow .pyc files themselves and pytest's temporary .pyc.NNNNN files
-            if path_str.endswith(".pyc") or ".pyc." in path_str:
-                # All modes allowed for .pyc files (read, write, append)
+            if "__pycache__" in path_str and (path_str.endswith(".pyc") or ".pyc." in path_str):
                 return builtin_open(*args, **kwargs)  # type: ignore[no-any-return]  # noqa: PTH123
 
         msg = "filesystem access is forbidden in transform unit tests (NFR-005/OQ-033)"

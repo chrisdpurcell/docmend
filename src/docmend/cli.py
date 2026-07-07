@@ -37,6 +37,7 @@ from docmend.observability import configure_logging, get_logger, new_run_id
 from docmend.plan import PLAN_SCHEMA_VERSION, ArtifactRef
 from docmend.report import Report, ReportTotals
 from docmend.restore import run_restore
+from docmend.verify import check_content, reconcile_manifest
 from docmend.writer import manifest
 from docmend.writer.apply import execute_plan
 from docmend.writer.gate import ApplyOptions, evaluate_gate
@@ -649,4 +650,76 @@ def restore(
         f"skipped: {counts.get('skipped', 0)}  failed: {counts.get('failed', 0)}"
     )
     if counts.get("skipped", 0) or counts.get("failed", 0):
+        raise typer.Exit(1)
+
+
+@app.command()
+def verify(
+    ctx: typer.Context,
+    path: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            help="Converted file or directory tree to verify; a single file is first-class (NFR-006).",
+        ),
+    ],
+    manifest_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--manifest", help="Reconcile against this manifest (DR-004 NDJSON); optional."
+        ),
+    ] = None,
+    run_id_arg: Annotated[
+        str | None,
+        typer.Option(
+            "--run-id",
+            help="Reconcile against .docmend/docmend-<ID>-manifest.jsonl (OQ-034 sidecar convention).",
+        ),
+    ] = None,
+    config_path: Annotated[
+        Path | None,
+        typer.Option("--config", help="TOML config file (default: ./docmend.toml when present)."),
+    ] = None,
+) -> None:
+    """Verify converted output read-only against the FR-014 checks (IR-004, adr-0012).
+
+    Read-only: reuses `scan`'s walk + facts, mutates nothing, writes no manifest.
+    Content checks (UTF-8 decodability, LF-only) always run over PATH; manifest
+    reconciliation runs when a manifest is supplied (flag or sidecar). Exit codes
+    (adr-0012): 0 clean; 1 findings (bad encoding, CRLF, hash mismatch); 2 input
+    error (bad flags, unreadable/invalid artifact).
+    """
+    opts = _global_options(ctx)
+    config = _load_effective_config(config_path, None, None)
+    if manifest_path is not None and run_id_arg is not None:
+        raise typer.BadParameter("provide at most one of --manifest or --run-id")
+    if run_id_arg is not None:
+        manifest_path = Path(ARTIFACT_DIR_NAME) / f"docmend-{run_id_arg}-manifest.jsonl"
+    now = datetime.now(UTC)
+    run_id = new_run_id(now)
+    artifact_dir = Path(ARTIFACT_DIR_NAME)
+    configure_logging(
+        run_id=run_id,
+        command="verify",
+        log_dir=artifact_dir,
+        verbose=opts.verbose,
+        quiet=opts.quiet,
+    )
+    log = get_logger(__name__)
+    log.info("verify starting", path=str(path))
+    inventory = discovery.scan(path, config, run_id=run_id, generated_at=now.isoformat())
+    findings = check_content(inventory)
+    if manifest_path is not None:
+        try:
+            records = manifest.read_manifest(manifest_path)
+        except artifacts.ArtifactError as exc:
+            # Unreadable/corrupt input artifact is an invocation error, not a
+            # finding (adr-0012 exit 2), mirroring restore's read_manifest guard.
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from exc
+        findings = findings + reconcile_manifest(records)
+    for finding in findings:
+        typer.echo(f"finding [{finding.check}] {finding.path}: {finding.detail}")
+    typer.echo(f"verify: {inventory.totals.files} files checked, {len(findings)} findings")
+    if findings:
         raise typer.Exit(1)

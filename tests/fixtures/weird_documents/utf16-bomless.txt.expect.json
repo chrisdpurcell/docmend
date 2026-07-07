@@ -1,0 +1,11 @@
+{
+  "anomaly": "utf16-suspect-bomless",
+  "spec_refs": [
+    "EC-010",
+    "FR-015"
+  ],
+  "expect": {
+    "disposition": "skip",
+    "reason": "utf16-suspect"
+  }
+}

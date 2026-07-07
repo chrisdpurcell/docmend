@@ -1,0 +1,9 @@
+{
+  "anomaly": "leading-interior-tabs",
+  "spec_refs": [
+    "OQ-031"
+  ],
+  "expect": {
+    "disposition": "noop"
+  }
+}

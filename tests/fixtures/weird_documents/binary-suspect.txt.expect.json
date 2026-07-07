@@ -1,0 +1,11 @@
+{
+  "anomaly": "binary-suspect",
+  "spec_refs": [
+    "EC-002",
+    "FR-015"
+  ],
+  "expect": {
+    "disposition": "skip",
+    "reason": "binary-suspect"
+  }
+}

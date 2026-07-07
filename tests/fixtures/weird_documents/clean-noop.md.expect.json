@@ -1,0 +1,9 @@
+{
+  "anomaly": "already-clean",
+  "spec_refs": [
+    "FR-017"
+  ],
+  "expect": {
+    "disposition": "noop"
+  }
+}

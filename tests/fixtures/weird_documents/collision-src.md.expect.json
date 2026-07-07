@@ -1,0 +1,9 @@
+{
+  "anomaly": "rename-target-collision",
+  "spec_refs": [
+    "EC-001"
+  ],
+  "expect": {
+    "disposition": "noop"
+  }
+}

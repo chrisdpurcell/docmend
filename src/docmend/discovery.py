@@ -33,6 +33,7 @@ import codecs
 import hashlib
 import os
 import stat as stat_module
+import time
 from collections import Counter
 from importlib.metadata import version as metadata_version
 from pathlib import Path
@@ -58,6 +59,7 @@ from docmend.inventory import (
     SymlinkRecord,
 )
 from docmend.observability import get_logger
+from docmend.watchdog import PerFileTimeoutError, per_file_watchdog
 
 _CHUNK_SIZE = 1 << 20  # 1 MiB per read: bounded memory regardless of file size
 _ASCII_BYTES = bytes(range(0x80))
@@ -261,6 +263,7 @@ def _process_candidate(
     exclude: PathSpec[GitIgnoreSpecPattern],
     *,
     detect: bool,
+    timeout: float,
 ) -> None:
     """Filter and classify one directory entry (file or symlink, never a dir)."""
     log = get_logger(__name__)
@@ -283,34 +286,49 @@ def _process_candidate(
         log.debug("excluded by filter", path=rel)
         return
 
+    # FR-019: the watchdog spans classification AND the legacy-detection rung —
+    # together they are the unbounded per-file work in this layer (streaming
+    # read + strict-UTF-8 decode + charset-normalizer). The writer is elsewhere
+    # and is never wrapped (see docmend.watchdog scope contract).
+    start = time.monotonic()
     try:
-        record = classify_file(full, rel, stat)
+        with per_file_watchdog(timeout):
+            record = classify_file(full, rel, stat)
+            if (
+                detect
+                and record.encoding.bom is None
+                and not record.encoding.utf8_valid
+                and not record.nul_bytes
+            ):
+                # FR-007 legacy rung (adr-0009 gate order): only a no-BOM,
+                # non-UTF-8, NUL-free file ever reaches charset-normalizer.
+                detected = detection.detect_legacy(full)
+                if detected is not None:
+                    record = record.model_copy(
+                        update={
+                            "encoding": record.encoding.model_copy(update={"detected": detected})
+                        }
+                    )
+                    log.debug("legacy encoding detected", path=rel, name=detected.name)
+    except PerFileTimeoutError:
+        # FR-019/ERR-009: a pathological file must not hang an unattended run;
+        # record the timeout with path + elapsed and let the batch continue.
+        elapsed = time.monotonic() - start
+        state.skipped.append(
+            SkipRecord(
+                path=rel, reason="timeout", detail=f"exceeded {timeout}s (elapsed {elapsed:.2f}s)"
+            )
+        )
+        log.warning(
+            "file classification timed out", path=rel, elapsed=round(elapsed, 3), err="ERR-009"
+        )
+        return
     except OSError as exc:
-        # ERR-007: unreadable during scan is recorded, never fatal.
+        # ERR-007: unreadable during scan (classification or detection) is
+        # recorded, never fatal.
         state.skipped.append(SkipRecord(path=rel, reason="unreadable", detail=str(exc)))
         log.warning("file unreadable", path=rel, error=str(exc), err="ERR-007")
         return
-
-    if (
-        detect
-        and record.encoding.bom is None
-        and not record.encoding.utf8_valid
-        and not record.nul_bytes
-    ):
-        # FR-007 legacy rung (adr-0009 gate order): only a no-BOM, non-UTF-8,
-        # NUL-free file ever reaches charset-normalizer; a detection failure
-        # here is an ERR-007-style unreadable skip, same as classification.
-        try:
-            detected = detection.detect_legacy(full)
-        except OSError as exc:
-            state.skipped.append(SkipRecord(path=rel, reason="unreadable", detail=str(exc)))
-            log.warning("file unreadable", path=rel, error=str(exc), err="ERR-007")
-            return
-        if detected is not None:
-            record = record.model_copy(
-                update={"encoding": record.encoding.model_copy(update={"detected": detected})}
-            )
-            log.debug("legacy encoding detected", path=rel, name=detected.name)
 
     state.files.append(record)
     state.record_hard_link(stat, rel)
@@ -368,11 +386,25 @@ def scan(
                 full = base / filename
                 rel = full.relative_to(root).as_posix()
                 _process_candidate(
-                    state, full, rel, include, exclude, detect=config.encoding.detect
+                    state,
+                    full,
+                    rel,
+                    include,
+                    exclude,
+                    detect=config.encoding.detect,
+                    timeout=config.limits.per_file_timeout,
                 )
     else:
         rel = requested.name
-        _process_candidate(state, root / rel, rel, include, exclude, detect=config.encoding.detect)
+        _process_candidate(
+            state,
+            root / rel,
+            rel,
+            include,
+            exclude,
+            detect=config.encoding.detect,
+            timeout=config.limits.per_file_timeout,
+        )
         if not state.files and not state.symlinks and not state.skipped:
             log.warning(
                 "single-file PATH matched no include pattern; inventory is empty",
@@ -397,6 +429,7 @@ def scan(
         skipped_by_reason=SkippedByReason(
             excluded=reasons.get("excluded", 0),
             unreadable=reasons.get("unreadable", 0),
+            timeout=reasons.get("timeout", 0),
         ),
         hard_link_groups=len(hard_link_groups),
         total_size_bytes=sum(record.size_bytes for record in state.files),

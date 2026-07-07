@@ -159,7 +159,7 @@
 			"properties": {
 				"path": { "$ref": "#/$defs/relative_path" },
 				"reason": {
-					"description": "Classified skip reasons: the FR-015 risky classes, collision policy (FR-011/EC-001), hard-link alias groups (EC-011), symlinks (EC-008), the FR-019 size guard, the EC-005 shrink invariant, filter exclusion (FR-012), and plan-time change detection — the file's bytes no longer match the inventory record (AW-004 analog; FR-003 remains the apply-time guard).",
+					"description": "Classified skip reasons: the FR-015 risky classes, collision policy (FR-011/EC-001), hard-link alias groups (EC-011), symlinks (EC-008), the FR-019 size guard and 'timeout' watchdog skip (1.2; ERR-009), the EC-005 shrink invariant, filter exclusion (FR-012), and plan-time change detection — the file's bytes no longer match the inventory record (AW-004 analog; FR-003 remains the apply-time guard).",
 					"enum": [
 						"binary-suspect",
 						"nul-bytes",
@@ -174,7 +174,8 @@
 						"shrink-invariant",
 						"excluded",
 						"unreadable",
-						"changed-since-scan"
+						"changed-since-scan",
+						"timeout"
 					]
 				},
 				"detail": { "type": ["string", "null"] }

@@ -6,6 +6,7 @@ provably read-only scanning, and working include/exclude filters.
 
 import hashlib
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -13,9 +14,9 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from corpus import CORPUS_RECIPES, GENERATED_AT, RUN_ID, materialize, seeded_faker
-from docmend.config import DocmendConfig, EncodingConfig, PathsConfig
+from docmend.config import DocmendConfig, EncodingConfig, LimitsConfig, PathsConfig
 from docmend.discovery import NewlineCensus, classify_file, scan
-from docmend.inventory import Inventory
+from docmend.inventory import FileRecord, Inventory
 
 
 @pytest.fixture
@@ -355,3 +356,41 @@ class TestClassifierChunking:
         assert record.newline_style == "mixed"
         assert record.encoding.utf8_valid is True
         assert record.non_ascii_bytes == 5  # 3 BOM bytes + 2-byte é
+
+
+class TestWatchdog:
+    """FR-019/OQ-028/ERR-009: the scan-side per-file watchdog (DEV-002)."""
+
+    def test_scan__slow_classification_recorded_as_timeout_batch_continues(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A file whose classification exceeds limits.per_file_timeout is
+        recorded as a 'timeout' skip (ERR-009) while the rest of the scan
+        classifies normally — one pathological file cannot hang the run."""
+        (tmp_path / "slow.txt").write_text("slow body\n")
+        (tmp_path / "fast.txt").write_text("fast body\n")
+
+        def slow_classify(
+            full: Path, rel: str, stat: os.stat_result, *, chunk_size: int = 1 << 20
+        ) -> FileRecord:
+            if rel == "slow.txt":
+                time.sleep(5)  # far beyond the 0.05s budget; the alarm fires first
+            # `classify_file` here is the test-module import (the real function),
+            # not the monkeypatched discovery.classify_file — so no recursion.
+            return classify_file(full, rel, stat, chunk_size=chunk_size)
+
+        monkeypatch.setattr("docmend.discovery.classify_file", slow_classify)
+        config = DocmendConfig(limits=LimitsConfig(per_file_timeout=0.05))
+        inventory = run_scan(tmp_path, config)
+
+        skips = {record.path: record.reason for record in inventory.skipped}
+        assert skips.get("slow.txt") == "timeout"
+        assert "fast.txt" in {record.path for record in inventory.files}
+        assert "slow.txt" not in {record.path for record in inventory.files}
+        assert inventory.totals.skipped_by_reason.timeout == 1
+        # totals still reconcile with the per-reason breakdown after the new reason.
+        assert inventory.totals.skipped == (
+            inventory.totals.skipped_by_reason.excluded
+            + inventory.totals.skipped_by_reason.unreadable
+            + inventory.totals.skipped_by_reason.timeout
+        )

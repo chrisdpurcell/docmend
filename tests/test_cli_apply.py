@@ -392,8 +392,8 @@ class TestPartialUndoWarning:
         )
 
         assert result.exit_code == 0, result.output
-        assert "restore` will undo" in result.output
-        assert "NOT the 2 content rewrite(s)" in result.output
+        assert "undo only its pure renames" in result.output
+        assert "2 action(s) with" in result.output
 
     def test_write_with_backup_dir__no_warning(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -408,7 +408,7 @@ class TestPartialUndoWarning:
         )
 
         assert result.exit_code == 0, result.output
-        assert "renames but NOT" not in result.output
+        assert "pure renames" not in result.output
 
     def test_rename_only_run__no_warning(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -424,7 +424,7 @@ class TestPartialUndoWarning:
         result = runner.invoke(app, ["apply", str(plan_path), "--write"])
 
         assert result.exit_code == 0, result.output
-        assert "renames but NOT" not in result.output
+        assert "pure renames" not in result.output
 
     def test_dry_run__no_warning(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Dry runs mutate nothing and record nothing — nothing to warn about."""
@@ -436,4 +436,4 @@ class TestPartialUndoWarning:
         result = runner.invoke(app, ["apply", str(plan_path)])
 
         assert result.exit_code == 0, result.output
-        assert "renames but NOT" not in result.output
+        assert "pure renames" not in result.output

@@ -55,8 +55,9 @@ def _verified_backup(record: ManifestRecord) -> bytes | RestoreOutcome:
             record.original_path,
             "skipped",
             "no-backup: the apply run took no tool backup for this content mutation "
-            "(FR-005 external preservation / low-risk opt-in) — recover these bytes "
-            "from that declared preservation (e.g. git or your external snapshot)",
+            "(the FR-005 gate was satisfied without --backup-dir) — recover these "
+            "bytes from whatever preservation covered that run (e.g. git, an "
+            "external snapshot, or other backups)",
         )
     try:
         data = Path(record.backup_path).read_bytes()

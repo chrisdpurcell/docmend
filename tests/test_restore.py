@@ -883,7 +883,9 @@ class TestRestoreCapabilityLine:
         result = runner.invoke(app, ["restore", "--manifest", str(manifest_path)])
 
         assert "restore capability: renames-only — 1 content mutation(s)" in result.output
-        assert "external" in result.output
+        # The line must NOT assert which FR-005 strategy was used — the manifest
+        # cannot distinguish git/external/--allow-no-backup (PR #16 review).
+        assert "whatever preservation covered the apply run" in result.output
 
     def test_tool_backup_manifest__no_capability_line(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

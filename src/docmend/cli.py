@@ -556,10 +556,11 @@ def apply(
             content_rewrites = sum(1 for a in plan.actions if is_content_rewrite(a))
             if options.backup_root is None and content_rewrites:
                 typer.echo(
-                    f"warning: no tool backups for this run — `docmend restore` will undo "
-                    f"renames but NOT the {content_rewrites} content rewrite(s); content "
-                    "recovery relies entirely on your declared preservation "
-                    "(FR-005: --preserved-by / --allow-no-backup)",
+                    f"warning: no tool backups for this run — `docmend restore` will be able "
+                    f"to undo only its pure renames; its {content_rewrites} action(s) with "
+                    "content rewrites (including any rename+rewrite) cannot be undone from "
+                    "the manifest. Content recovery relies on whatever preservation "
+                    "satisfied the gate (FR-005: --preserved-by / --allow-no-backup)",
                     err=True,
                 )
                 log.warning(
@@ -726,10 +727,14 @@ def restore(
         if r.result == "applied" and r.operation != "rename" and r.backup_path is None
     )
     if unrestorable:
+        # Wording states only what the manifest proves: a null backup_path. It
+        # cannot know WHICH FR-005 strategy satisfied the gate (--preserved-by
+        # git|external and --allow-no-backup all record the same shape).
         typer.echo(
             f"restore capability: renames-only — {unrestorable} content mutation(s) in this "
-            "manifest have no tool backup (the apply run declared FR-005 external "
-            "preservation); recover that content from the declared preservation"
+            "manifest have no tool backup and cannot be undone from it; recover that "
+            "content from whatever preservation covered the apply run (FR-005: a "
+            "git/external declaration or the low-risk opt-in)"
         )
 
     # OQ-036 (fixed MS-4): key on the manifest's recorded source_root so restore

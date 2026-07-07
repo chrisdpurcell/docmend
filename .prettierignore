@@ -3,3 +3,6 @@
 # them -text for the same reason). Sidecar .expect.json files stay byte-stable
 # with their generator's output (scripts/gen_weird_corpus.py).
 tests/fixtures/weird_documents/
+
+# Controller/agent scratch (SDD ledger, task briefs) — not repo content.
+.superpowers/

@@ -37,7 +37,7 @@ These interpret the spec where it left the operational definition to the impleme
 7. **Symlinks and hard-link-group members get explicit plan skip decisions** (`symlink`, `hard-link-alias`) so the plan is the complete apply worklist (EC-008/EC-011; the plan schema enumerates both reasons).
 8. **Legacy detection runs at scan** (populates `encoding.detected`, method `charset-normalizer`) only when: no BOM, not strict-UTF-8-valid, no NUL bytes, and `encoding.detect` is true. NUL-bearing files never reach the detector — planning skips them before encoding matters.
 9. **Transform execution order** (= the `operations` array order): `reencode`, `normalize_newlines`, `trim_trailing_whitespace`, `normalize_tabs`, `collapse_blank_lines`, `ensure_final_newline`, `rename` last. An operation is listed only if it would actually change the file (`reencode` iff source encoding ≠ UTF-8 or a BOM must be stripped; text ops iff output ≠ input at that step).
-10. **Whitespace semantics:** a *blank line* is empty or whitespace-only; collapsing a run keeps its first `max` lines verbatim. `normalize_tabs` replaces each tab in a line's leading `[ \t]*` prefix with `tab_width` spaces; interior tabs untouched (adr-0016). Text ops require LF-normalized input (they run after `normalize_newlines` by construction).
+10. **Whitespace semantics:** a _blank line_ is empty or whitespace-only; collapsing a run keeps its first `max` lines verbatim. `normalize_tabs` replaces each tab in a line's leading `[ \t]*` prefix with `tab_width` spaces; interior tabs untouched (adr-0016). Text ops require LF-normalized input (they run after `normalize_newlines` by construction).
 
 ---
 
@@ -46,11 +46,13 @@ These interpret the spec where it left the operational definition to the impleme
 The seeded recipe→bytes generator lives inside `tests/test_discovery.py` with an explicit promotion note ("when MS-2's weird-document fixtures need it too, promote it to a shared location"). MS-2 needs it for planning tests and fixture generation.
 
 **Files:**
+
 - Create: `tests/corpus.py`
 - Modify: `tests/test_discovery.py` (delete the moved block, import instead)
 - Create: `.gitattributes` (repo root)
 
 **Interfaces:**
+
 - Consumes: nothing new.
 - Produces: `tests/corpus.py` exporting `FileRecipe`, `RecipeEncoding`, `render(recipe, faker) -> bytes`, `materialize(root, recipes, faker) -> None`, `seeded_faker() -> Faker`, `CORPUS_RECIPES`, `RUN_ID`, `GENERATED_AT` — exactly the objects currently defined in `tests/test_discovery.py` lines ~27–108, unchanged.
 
@@ -78,8 +80,7 @@ tests/fixtures/weird_documents/** -text
 
 - [ ] **Step 4: Run the full test suite**
 
-Run: `uv run coverage run -m pytest && uv run coverage report`
-Expected: all 125 existing tests PASS (pure refactor, zero behavior change).
+Run: `uv run coverage run -m pytest && uv run coverage report` Expected: all 125 existing tests PASS (pure refactor, zero behavior change).
 
 - [ ] **Step 5: Commit**
 
@@ -93,10 +94,12 @@ git commit -m "tests: promote seeded corpus generator to tests/corpus.py for MS-
 ### Task 2: Pure transform — newline normalization (FR-008)
 
 **Files:**
+
 - Create: `src/docmend/transform/newlines.py`
 - Test: `tests/unit/transform/test_newlines.py`
 
 **Interfaces:**
+
 - Consumes: nothing.
 - Produces: `normalize_newlines(text: str) -> str` — CRLF, CR, and mixed all become LF. Pure; no imports beyond stdlib-typing-free string ops.
 
@@ -168,8 +171,7 @@ Use this corrected version (drop `test_line_structure_matches_universal_newlines
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run pytest tests/unit/transform/test_newlines.py -v`
-Expected: FAIL — `ModuleNotFoundError: docmend.transform.newlines`
+Run: `uv run pytest tests/unit/transform/test_newlines.py -v` Expected: FAIL — `ModuleNotFoundError: docmend.transform.newlines`
 
 - [ ] **Step 3: Implement**
 
@@ -188,8 +190,7 @@ def normalize_newlines(text: str) -> str:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `uv run pytest tests/unit/transform/test_newlines.py -v`
-Expected: PASS (all). The autouse purity fixture proves no filesystem access.
+Run: `uv run pytest tests/unit/transform/test_newlines.py -v` Expected: PASS (all). The autouse purity fixture proves no filesystem access.
 
 - [ ] **Step 5: Commit**
 
@@ -203,10 +204,12 @@ git commit -m "transform: newline normalization to LF (FR-008, EC-006)"
 ### Task 3: Pure transforms — whitespace quartet (FR-009)
 
 **Files:**
+
 - Create: `src/docmend/transform/whitespace.py`
 - Test: `tests/unit/transform/test_whitespace.py`
 
 **Interfaces:**
+
 - Consumes: nothing (plain scalars only — the import-linter contract bars config models).
 - Produces:
   - `trim_trailing(text: str) -> str`
@@ -366,8 +369,7 @@ class TestNormalizeTabs:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run pytest tests/unit/transform/test_whitespace.py -v`
-Expected: FAIL — `ModuleNotFoundError: docmend.transform.whitespace`
+Run: `uv run pytest tests/unit/transform/test_whitespace.py -v` Expected: FAIL — `ModuleNotFoundError: docmend.transform.whitespace`
 
 - [ ] **Step 3: Implement**
 
@@ -427,8 +429,7 @@ Watch one property-test edge: `ensure_final_newline` on text containing only new
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `uv run pytest tests/unit/transform/test_whitespace.py -v`
-Expected: PASS.
+Run: `uv run pytest tests/unit/transform/test_whitespace.py -v` Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -442,10 +443,12 @@ git commit -m "transform: whitespace quartet - trim, final newline, blank-line c
 ### Task 4: Pure transform — encoding decode/encode (FR-007 codec half)
 
 **Files:**
+
 - Create: `src/docmend/transform/encoding.py`
 - Test: `tests/unit/transform/test_encoding.py`
 
 **Interfaces:**
+
 - Consumes: nothing.
 - Produces:
   - `decode_source(data: bytes, *, bom: str | None, encoding_name: str) -> str` — strict decode; strips the BOM bytes first when `bom` is one of `"utf-8" | "utf-16-le" | "utf-16-be" | "utf-32-le" | "utf-32-be"` (the inventory's `BomKind` values, passed as plain strings — no model import); raises `UnicodeDecodeError` on any undecodable byte (EC-003 is caught by the caller, never smoothed with replacement characters).
@@ -509,8 +512,7 @@ Note: hypothesis `st.text()` can generate surrogates? It does not by default (va
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run pytest tests/unit/transform/test_encoding.py -v`
-Expected: FAIL — `ModuleNotFoundError: docmend.transform.encoding`
+Run: `uv run pytest tests/unit/transform/test_encoding.py -v` Expected: FAIL — `ModuleNotFoundError: docmend.transform.encoding`
 
 - [ ] **Step 3: Implement**
 
@@ -542,8 +544,7 @@ def encode_utf8(text: str) -> bytes:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `uv run pytest tests/unit/transform/test_encoding.py -v`
-Expected: PASS.
+Run: `uv run pytest tests/unit/transform/test_encoding.py -v` Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -557,10 +558,12 @@ git commit -m "transform: strict BOM-aware decode and UTF-8-no-BOM encode (FR-00
 ### Task 5: Transform dispatch — file classes, pipeline, operations, EC-005 counter
 
 **Files:**
+
 - Create: `src/docmend/transform/dispatch.py`
 - Test: `tests/unit/transform/test_dispatch.py`
 
 **Interfaces:**
+
 - Consumes: Task 2–3 functions (`normalize_newlines`, `trim_trailing`, `ensure_final_newline`, `collapse_blank_lines`, `normalize_tabs`).
 - Produces (planning imports all of these from here):
   - `type Operation = Literal["rename", "reencode", "normalize_newlines", "trim_trailing_whitespace", "ensure_final_newline", "collapse_blank_lines", "normalize_tabs", "frontmatter_migrate"]` — mirrors the plan schema's operation enum; the plan models (Task 7) import it from here so the vocabulary is single-sourced.
@@ -674,8 +677,7 @@ class TestInvariantMetric:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run pytest tests/unit/transform/test_dispatch.py -v`
-Expected: FAIL — `ModuleNotFoundError: docmend.transform.dispatch`
+Run: `uv run pytest tests/unit/transform/test_dispatch.py -v` Expected: FAIL — `ModuleNotFoundError: docmend.transform.dispatch`
 
 - [ ] **Step 3: Implement**
 
@@ -767,8 +769,7 @@ def apply_text_transforms(
 
 - [ ] **Step 4: Run tests, then the purity gates**
 
-Run: `uv run pytest tests/unit/transform/ tests/test_import_contracts.py -v`
-Expected: PASS — including the import-linter contract test now covering four real transform modules.
+Run: `uv run pytest tests/unit/transform/ tests/test_import_contracts.py -v` Expected: PASS — including the import-linter contract test now covering four real transform modules.
 
 - [ ] **Step 5: Commit**
 
@@ -782,6 +783,7 @@ git commit -m "transform: file-class dispatch, canonical pipeline, EC-005 metric
 ### Task 6: Legacy encoding detection — charset-normalizer rung (FR-007, DR-001)
 
 **Files:**
+
 - Modify: `pyproject.toml` via `uv add "charset-normalizer>=3.4.2"`
 - Create: `src/docmend/detection.py`
 - Modify: `src/docmend/discovery.py` (`_process_candidate` + `scan` signature threading)
@@ -789,13 +791,13 @@ git commit -m "transform: file-class dispatch, canonical pipeline, EC-005 metric
 - Test: `tests/test_detection.py`; extend `tests/test_discovery.py`
 
 **Interfaces:**
+
 - Consumes: `DetectedEncoding` model from `docmend.inventory`.
 - Produces: `detect_legacy(path: Path) -> DetectedEncoding | None` — runs charset-normalizer over the file; returns `None` when the detector has **no** candidate (planning maps that to `binary-suspect`); otherwise `DetectedEncoding(name=<python codec name>, confidence=1.0 - chaos, method="charset-normalizer")`. Discovery calls it only when: no BOM, not strict-UTF-8-valid, no NUL bytes, and detection enabled.
 
 - [ ] **Step 1: Add the dependency and license record**
 
-Run: `uv add "charset-normalizer>=3.4.2"`
-Then add a row to the runtime table in `docs/dependency-licenses.md` following its existing format: charset-normalizer, MIT, permissive — cleared. (Read the file first and match its exact column layout.)
+Run: `uv add "charset-normalizer>=3.4.2"` Then add a row to the runtime table in `docs/dependency-licenses.md` following its existing format: charset-normalizer, MIT, permissive — cleared. (Read the file first and match its exact column layout.)
 
 - [ ] **Step 2: Verify the charset-normalizer 3.x API against current docs**
 
@@ -883,8 +885,7 @@ Extend `tests/test_discovery.py` (class `TestClassification`):
 
 - [ ] **Step 4: Run tests to verify they fail**
 
-Run: `uv run pytest tests/test_detection.py tests/test_discovery.py -v`
-Expected: new tests FAIL (`ModuleNotFoundError: docmend.detection` / `detected is None` assertions).
+Run: `uv run pytest tests/test_detection.py tests/test_discovery.py -v` Expected: new tests FAIL (`ModuleNotFoundError: docmend.detection` / `detected is None` assertions).
 
 - [ ] **Step 5: Implement `src/docmend/detection.py`**
 
@@ -924,6 +925,7 @@ def detect_legacy(path: Path) -> DetectedEncoding | None:
 - [ ] **Step 6: Integrate into discovery**
 
 In `src/docmend/discovery.py`:
+
 1. `scan(...)` already receives `config: DocmendConfig` — thread `config.encoding.detect` into `_process_candidate` as a keyword `detect: bool`.
 2. In `_process_candidate`, after `record = classify_file(full, rel, stat)` succeeds:
 
@@ -954,8 +956,7 @@ In `src/docmend/discovery.py`:
 
 - [ ] **Step 7: Run the full suite**
 
-Run: `uv run coverage run -m pytest && uv run coverage report`
-Expected: PASS; the pre-existing `legacy.txt` classification expectations in `test_discovery.py` may need their `detected is None` assumption updated — that assumption was the MS-1 placeholder this task removes; update those assertions, nothing else.
+Run: `uv run coverage run -m pytest && uv run coverage report` Expected: PASS; the pre-existing `legacy.txt` classification expectations in `test_discovery.py` may need their `detected is None` assumption updated — that assumption was the MS-1 placeholder this task removes; update those assertions, nothing else.
 
 - [ ] **Step 8: Commit**
 
@@ -969,12 +970,14 @@ git commit -m "detection: charset-normalizer legacy rung populates inventory at 
 ### Task 7: Plan artifact — schema amendment, pydantic models, artifact IO (DR-002, IR-007)
 
 **Files:**
+
 - Modify: `src/docmend/schemas/plan.schema.json` (add `changed-since-scan` to the skip-reason enum; extend the reason `description` with "plan-time change detection (AW-004 analog)")
 - Create: `src/docmend/plan.py`
 - Modify: `src/docmend/artifacts.py` (add `write_plan`, `read_plan`, `sha256_of_file`)
 - Test: `tests/test_plan_artifact.py`; extend `tests/test_schemas.py` satisfiability fixtures if they enumerate skip reasons
 
 **Interfaces:**
+
 - Consumes: `Operation` from `docmend.transform.dispatch`; `RunId`/`Sha256`/`RelativePath`/`DetectedEncoding`/`NewlineStyle` patterns from `docmend.inventory` (reuse the type aliases; do not redefine).
 - Produces (planning and CLI rely on these exact names):
   - `PLAN_SCHEMA_VERSION = "1.0"`
@@ -1097,8 +1100,7 @@ class TestSha256OfFile:
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `uv run pytest tests/test_plan_artifact.py -v`
-Expected: FAIL — `ModuleNotFoundError: docmend.plan`
+Run: `uv run pytest tests/test_plan_artifact.py -v` Expected: FAIL — `ModuleNotFoundError: docmend.plan`
 
 - [ ] **Step 4: Implement `src/docmend/plan.py`** — follow `inventory.py`'s structure and docstring conventions exactly (strict `_StrictModel` base, `schema_kind` alias trick, patterns as `Annotated` aliases). Key extract:
 
@@ -1164,8 +1166,7 @@ def sha256_of_file(path: Path) -> str:
 
 - [ ] **Step 7: Run the full suite**
 
-Run: `uv run coverage run -m pytest && uv run coverage report`
-Expected: PASS.
+Run: `uv run coverage run -m pytest && uv run coverage report` Expected: PASS.
 
 - [ ] **Step 8: Commit**
 
@@ -1181,10 +1182,12 @@ git commit -m "plan: DR-002 models + artifact IO; add changed-since-scan skip re
 The engine is split in two tasks along a clean seam: part 1 decides everything derivable from the inventory + config alone (no file reads); part 2 adds the content pass. Part 1 ships a working `build_plan` that actions nothing yet — every candidate either skips on facts or lands in a `pending` list that part 2 consumes.
 
 **Files:**
+
 - Create: `src/docmend/planning.py`
 - Test: `tests/test_planning.py`
 
 **Interfaces:**
+
 - Consumes: `Inventory`/`FileRecord` (Task 6-populated detection), `DocmendConfig`, plan models (Task 7), `pathspec` (same `GitIgnoreSpecPattern` usage as discovery).
 - Produces:
   - `build_plan(inventory: Inventory, config: DocmendConfig, *, run_id: str, generated_at: str, inventory_ref: ArtifactRef, mint_id: Callable[[], uuid.UUID] = uuid.uuid7) -> Plan`
@@ -1192,6 +1195,7 @@ The engine is split in two tasks along a clean seam: part 1 decides everything d
   - Internal but tested: `_fact_skip(record, groups, config) -> SkipDecision | None` implementing the gate ladder below.
 
 **Gate ladder (fixed order, first hit wins) — part 1:**
+
 1. Plan-time include/exclude (FR-012 consistency): not matching effective `paths.include` → skip `excluded` (detail `"not matched by plan-time include patterns"`); matching `paths.exclude` → skip `excluded`.
 2. Hard-link group member (`path` in any `inventory.hard_link_groups[*].paths`) → skip `hard-link-alias`, detail `f"inode {group.inode}: {', '.join(group.paths)}"` (EC-011).
 3. Oversize: `size_bytes > config.limits.max_file_size_mib * 1024 * 1024` → skip `oversize` (FR-019 plan-time half).
@@ -1330,8 +1334,7 @@ class TestPlanShape:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run pytest tests/test_planning.py -v`
-Expected: FAIL — `ModuleNotFoundError: docmend.planning`
+Run: `uv run pytest tests/test_planning.py -v` Expected: FAIL — `ModuleNotFoundError: docmend.planning`
 
 - [ ] **Step 3: Implement part 1 of `src/docmend/planning.py`**
 
@@ -1474,8 +1477,7 @@ def build_plan(
 
 - [ ] **Step 4: Run tests** — the fact-gate and shape tests PASS; any test asserting actions exist (there are none yet in this task) stays for part 2.
 
-Run: `uv run pytest tests/test_planning.py -v`
-Expected: PASS.
+Run: `uv run pytest tests/test_planning.py -v` Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -1489,14 +1491,17 @@ git commit -m "planning: fact-level gate ladder - filters, hard links, oversize,
 ### Task 9: Planning engine, part 2 — content pass: decode, transform prediction, collisions, actions
 
 **Files:**
+
 - Modify: `src/docmend/planning.py`
 - Test: extend `tests/test_planning.py`
 
 **Interfaces:**
+
 - Consumes: Task 4/5 transform functions; `sha256_of_file` pattern (hash-while-reading inline here); Task 8's `pending` seam.
 - Produces: the completed `build_plan` — `pending` files become actions, no-ops, or content-derived skips. New internal function `_content_decision(record, source_root, config, claimed_targets) -> PlanAction-parts | SkipDecision | None` (exact shape below). `build_plan` gains a `source_root: Path` derived from `inventory.source_root`.
 
 **Content pass per pending file (fixed order):**
+
 1. Read all bytes (one read; files here are ≤ `max_file_size_mib`, bounded per-file memory per NFR-001), hashing as read. `OSError` → skip `unreadable` (ERR-005 analog). Hash ≠ `record.sha256` → skip `changed-since-scan` (detail: both hashes).
 2. NUL refinement: if `record.nul_bytes` and no BOM — `_utf16_suspect(data)` → skip `utf16-suspect` (EC-010, detail `"BOM-less interleaved-NUL pattern"`), else skip `nul-bytes`. (Part 1 currently skips these before content; MOVE that branch here so the split is byte-accurate — part 1's `nul-bytes` fact-skip is replaced by routing NUL files into pending.)
 3. Determine decode parameters: BOM → BOM codec; `utf8_valid` → `utf-8`; else `record.encoding.detected.name`. Strict `decode_source`; `UnicodeDecodeError` → skip `decode-replacement` (EC-003, detail names the encoding and error offset).
@@ -1661,13 +1666,13 @@ class TestCollisions:
 ```
 
 Notes for the implementer:
+
 - `test_decode_replacement__skipped` is honest about detector variance: after first run, **pin the observed branch** (if charset-normalizer names a decode-everything codec like latin-1 for that input, redesign the fixture: detected multibyte encodings such as cp932 raise on truncated sequences — e.g. detected-as-cp932 bytes ending in a lone lead byte `\x81`). The committed weird-corpus fixture (Task 10) must be a **deterministic** decode-replacement case; iterate there and mirror the final bytes here.
 - Delete the unfinished `test_two_sources_one_target__second_collides` stub if the claimed-targets branch proves unconstructible with pure extension renames — the disk- and inventory-existence branches are the reachable ones; keep the claimed-target set in code as cheap defense-in-depth with a comment saying why no test constructs it.
 
 - [ ] **Step 2: Run tests to verify the new ones fail**
 
-Run: `uv run pytest tests/test_planning.py -v`
-Expected: new tests FAIL (no actions produced yet); Task 8 tests still PASS (except `test_nul_bytes__skipped` semantics now refined — see step 3 change moving NUL handling to content pass; keep it green since both reasons were accepted).
+Run: `uv run pytest tests/test_planning.py -v` Expected: new tests FAIL (no actions produced yet); Task 8 tests still PASS (except `test_nul_bytes__skipped` semantics now refined — see step 3 change moving NUL handling to content pass; keep it green since both reasons were accepted).
 
 - [ ] **Step 3: Implement the content pass** in `src/docmend/planning.py`:
 
@@ -1811,8 +1816,7 @@ Detail to respect: in `_fact_skip`, the encoding-gate block must now be entered 
 
 - [ ] **Step 4: Run the full suite**
 
-Run: `uv run coverage run -m pytest && uv run coverage report`
-Expected: PASS, coverage ≥ 85%.
+Run: `uv run coverage run -m pytest && uv run coverage report` Expected: PASS, coverage ≥ 85%.
 
 - [ ] **Step 5: Commit**
 
@@ -1826,14 +1830,17 @@ git commit -m "planning: content pass - decode checks, transform prediction, EC-
 ### Task 10: CLI `plan` command (IR-002, FR-018 plan half)
 
 **Files:**
+
 - Modify: `src/docmend/cli.py`
 - Test: `tests/test_cli_plan.py`
 
 **Interfaces:**
+
 - Consumes: `build_plan`, `artifacts.write_plan`/`read_inventory`/`write_inventory`/`sha256_of_file`, `discovery.scan`, `_load_effective_config`, `new_run_id`, `configure_logging` — all existing.
 - Produces: `docmend plan [PATH] [--inventory FILE] [--out FILE] [--config FILE] [--include ...] [--exclude ...] [--fail-on-low-confidence-encoding]`.
 
 **Contract (IR-002 + §18.5 + design decisions 5/6):**
+
 - Exactly one of `PATH` / `--inventory` — both or neither is a usage error (`BadParameter`, exit 2).
 - `PATH` shorthand: scan first under the **same run-ID**, write the inventory artifact (default `.docmend/docmend-<run-id>-inventory.json`), then plan referencing it (`inventory_ref.path` = as written, `sha256` via `sha256_of_file`).
 - `--inventory FILE`: `read_inventory` — `ArtifactError` → message + exit 2 (ERR-008).
@@ -1948,8 +1955,7 @@ class TestPlanCommand:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run pytest tests/test_cli_plan.py -v`
-Expected: FAIL — `plan` is not a registered command (Typer usage error, exit 2 on every invocation including the happy paths).
+Run: `uv run pytest tests/test_cli_plan.py -v` Expected: FAIL — `plan` is not a registered command (Typer usage error, exit 2 on every invocation including the happy paths).
 
 - [ ] **Step 3: Implement the command** in `src/docmend/cli.py` (mirror `scan`'s structure — flags, config loading, run-ID, logging, artifact dir):
 
@@ -2059,8 +2065,7 @@ Imports to add: `from collections import Counter`, `from docmend import planning
 
 - [ ] **Step 4: Run the full suite**
 
-Run: `uv run coverage run -m pytest && uv run coverage report`
-Expected: PASS.
+Run: `uv run coverage run -m pytest && uv run coverage report` Expected: PASS.
 
 - [ ] **Step 5: End-to-end smoke by hand** (the `verify`-skill equivalent for this milestone):
 
@@ -2085,19 +2090,21 @@ git commit -m "cli: docmend plan - inventory consumption, PATH shorthand, findin
 ### Task 11: Initial weird-document corpus (§17.2, FR-015, adr-0015)
 
 **Files:**
+
 - Create: `scripts/gen_weird_corpus.py` (committed generator; run once, fixtures committed)
 - Create: `tests/fixtures/weird_documents/*` (fixture bytes + `<name>.expect.json` sidecars)
 - Test: `tests/test_weird_corpus.py` (the growing regression harness)
 
 **Interfaces:**
+
 - Consumes: `tests/corpus.py` recipes where useful; `discovery.scan` + `planning.build_plan`.
 - Produces: the corpus contract — every fixture file `F` has sidecar `F.expect.json`:
 
 ```json
 {
-  "anomaly": "utf16-suspect-bomless",
-  "spec_refs": ["EC-010", "FR-015"],
-  "expect": { "disposition": "skip", "reason": "utf16-suspect" }
+	"anomaly": "utf16-suspect-bomless",
+	"spec_refs": ["EC-010", "FR-015"],
+	"expect": { "disposition": "skip", "reason": "utf16-suspect" }
 }
 ```
 
@@ -2195,8 +2202,7 @@ If any "verified" fixture cannot be constructed to behave deterministically (det
 
 - [ ] **Step 3: Generate, inspect, run**
 
-Run: `uv run python scripts/gen_weird_corpus.py && uv run pytest tests/test_weird_corpus.py -v`
-Expected: PASS, one parametrized case per fixture. Inspect `git status` — only intended fixture files added; confirm every fixture is small (`du -sh tests/fixtures/weird_documents`).
+Run: `uv run python scripts/gen_weird_corpus.py && uv run pytest tests/test_weird_corpus.py -v` Expected: PASS, one parametrized case per fixture. Inspect `git status` — only intended fixture files added; confirm every fixture is small (`du -sh tests/fixtures/weird_documents`).
 
 - [ ] **Step 4: Full suite + commit**
 
@@ -2211,6 +2217,7 @@ git commit -m "tests: initial weird-document corpus + regression harness (§17.2
 ### Task 12: Encoding-floor boundary fixtures + RQ-022 calibration checkpoint
 
 **Files:**
+
 - Modify: `scripts/gen_weird_corpus.py` (add the floor-matrix generation under `tests/fixtures/weird_documents/encoding_floor/`)
 - Create: `tests/fixtures/weird_documents/encoding_floor/*` (+ sidecars, same contract)
 - Create: `tests/test_encoding_floor.py`
@@ -2218,10 +2225,11 @@ git commit -m "tests: initial weird-document corpus + regression harness (§17.2
 - Modify: `docs/handoff/sessions/2026-07.md` (calibration record — done in Task 13's handoff pass if preferred)
 
 **Interfaces:**
+
 - Consumes: `detect_legacy`, `build_plan`, corpus recipes.
 - Produces: the §17.2 three-axis fixture matrix and a recorded calibration verdict (keep 20, or tune within 8–20 — never outside; never reopen OQ-015).
 
-- [ ] **Step 1: Build the matrix generator.** Axes per §17.2/adr-0009: **total length** (~30 B, ~200 B, ~2 KiB) × **non-ASCII count** (8, 12, 19, 20, 21, 40) × **placement** (clustered at start, spread evenly, clustered at end), in cp1252; plus family-equivalence pairs: identical Japanese text bytes as cp932 vs Shift_JIS-labelled recipe and Chinese text as GBK vs GB18030 (assert the *decode outcome* is identical whichever family member the detector names — the §17.2 "family-equivalent decode outcomes" requirement). Not every cell needs committing: commit the **boundary sets** — every (length, placement) at counts 19/20/21 (false-skip and false-accept boundaries), plus one clear-accept (40) and one clear-skip (8) per length, plus the two family pairs. Roughly 35 small files.
+- [ ] **Step 1: Build the matrix generator.** Axes per §17.2/adr-0009: **total length** (~30 B, ~200 B, ~2 KiB) × **non-ASCII count** (8, 12, 19, 20, 21, 40) × **placement** (clustered at start, spread evenly, clustered at end), in cp1252; plus family-equivalence pairs: identical Japanese text bytes as cp932 vs Shift*JIS-labelled recipe and Chinese text as GBK vs GB18030 (assert the \_decode outcome* is identical whichever family member the detector names — the §17.2 "family-equivalent decode outcomes" requirement). Not every cell needs committing: commit the **boundary sets** — every (length, placement) at counts 19/20/21 (false-skip and false-accept boundaries), plus one clear-accept (40) and one clear-skip (8) per length, plus the two family pairs. Roughly 35 small files.
 
 - [ ] **Step 2: Write `tests/test_encoding_floor.py`**
 
@@ -2303,6 +2311,7 @@ git commit -m "tests: encoding-floor boundary matrix; RQ-022 MS-2 calibration ch
 ### Task 13: Spec traceability, docs sync, verification gate, PR
 
 **Files:**
+
 - Modify: `docs/specs/docmend.md` (revision row 0.15; §3.1 current-state; §17.3 rows; §21 nothing new unless a DEV/OQ arose)
 - Modify: `TODO.md` (move MS-2 + RQ-022 items to Completed)
 - Modify: `docs/handoff/state.md`, `STATUS.md`, `docs/handoff/sessions/2026-07.md`, `docs/handoff/architecture.md` (new modules)
@@ -2339,8 +2348,7 @@ Run `uv run python scripts/check_traceability.py` (or however the `traceability`
 
 - [ ] **Step 4: Markdown + spec gates**
 
-Run: `npx prettier --write . && npx markdownlint-cli2 --fix "**/*.md" && npx prettier --check . && npx markdownlint-cli2 "**/*.md"` plus the spec validators used by CI (`validate-specs` / `spec lint` — check `.github/workflows/` for exact invocations and run them locally).
-Expected: all green. Beware conventions #4 (ToC dead-anchor gotcha) if §17.3 edits touched headings.
+Run: `npx prettier --write . && npx markdownlint-cli2 --fix "**/*.md" && npx prettier --check . && npx markdownlint-cli2 "**/*.md"` plus the spec validators used by CI (`validate-specs` / `spec lint` — check `.github/workflows/` for exact invocations and run them locally). Expected: all green. Beware conventions #4 (ToC dead-anchor gotcha) if §17.3 edits touched headings.
 
 - [ ] **Step 5: Full verification gate**
 
@@ -2387,9 +2395,3 @@ Checked against spec §19 MS-2 and the milestone summary ("Correct decisions ove
 1. **Spec coverage.** §19 MS-2 item 1 (planning layer, FR-002/FR-015/DR-002) → Tasks 7–10; item 2 (pure transforms FR-007–FR-009) → Tasks 2–6; item 3 (edge-case/threshold tests over the initial weird-document corpus, §10.3) → Tasks 11–12 (every EC-001..EC-011 case has a named test or fixture; EC-008/EC-011 in Task 8); item 4 (decision provenance, C.4) → provenance blocks + config snapshot in Tasks 7/9. RQ-022 checkpoint → Task 12. Out of MS-2 scope by design: FR-003–FR-006, FR-013/FR-014, FR-016 (frontmatter emission optional, MS-5), FR-018 report artifact (MS-3 — the plan artifact itself is FR-002's), watchdog half of FR-019 (MS-5).
 2. **Placeholder scan.** No TBDs. Three deliberate empirical-iteration points are flagged as such with concrete procedures (detector-variance fixtures in Tasks 6/9/11, the calibration tabulation in Task 12) — the honest form for behavior pinned to a third-party detector, per the two-corpus strategy.
 3. **Type consistency.** `Operation`/`FileClass` single-sourced in `transform/dispatch.py`; plan models re-use `inventory.py` aliases; `build_plan(inventory, config, *, run_id, generated_at, inventory_ref, mint_id)` is identical in Tasks 8, 9, 10 and both test helpers; `apply_text_transforms` keyword names match between Task 5 definition and Task 9 call site; `sha256_of_file` defined Task 7, used Task 10.
-
-
-
-
-
-

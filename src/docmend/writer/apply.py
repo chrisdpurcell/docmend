@@ -169,6 +169,145 @@ def _record(
     )
 
 
+def _record_intent(
+    manifest: ManifestWriter | None,
+    action: PlanAction,
+    kind: ManifestOperation,
+    source: Path,
+    target: Path,
+    backup_path: Path | None,
+    after: str,
+    overwritten_sha: str | None,
+    overwritten_backup: Path | None,
+    run_id: str,
+) -> None:
+    """The 1.3 write-ahead record for a multi-step mutation: appended (and
+    fsync'd) BEFORE the target publish so a hard kill anywhere in the
+    publish→unlink→record window leaves reconcilable evidence. after_sha256
+    carries the EXPECTED output hash — that is what lets resume decide from
+    disk state alone whether the publish happened."""
+    if manifest is None:
+        return
+    manifest.append(
+        ManifestRecord(
+            run_id=run_id,
+            action_id=action.action_id,
+            docmend_id=action.docmend_id,
+            seq=1,  # stamped by the writer
+            recorded_at="1970-01-01T00:00:00+00:00",  # stamped by the writer
+            operation=kind,
+            original_path=str(source.resolve()),
+            target_path=str(target.resolve()),
+            backup_path=str(backup_path) if backup_path is not None else None,
+            before_sha256=action.source_sha256,
+            after_sha256=after,
+            result="intent",
+            error=None,
+            overwritten_sha256=overwritten_sha,
+            overwritten_backup_path=str(overwritten_backup)
+            if overwritten_backup is not None
+            else None,
+        )
+    )
+
+
+def _reconcile_intent(
+    action: PlanAction,
+    record: ManifestRecord,
+    options: ApplyOptions,
+    manifest: ManifestWriter | None,
+    run_id: str,
+) -> ApplyOutcome | None:
+    """Resume decision for a DANGLING intent record (1.3): a prior run was
+    killed inside a multi-step mutation's window and left evidence but no
+    final record. Disk state decides:
+
+    - live target matches the intent's expected after-hash → the publish
+      happened; complete the action (unlink a still-present source) or adopt
+      the finished-but-unrecorded mutation, appending the applied record the
+      interrupted run never wrote — the union of manifests stays the complete
+      restore evidence.
+    - target missing, or still holding the recorded to-be-overwritten bytes →
+      the publish never happened; return None so the action executes normally
+      (still behind the FR-003 hash guard).
+    - anything else → ERR-002 external interference; mutate nothing.
+    """
+    target = Path(record.target_path)
+    source = Path(record.original_path)
+    try:
+        target_data = target.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        return _failed(
+            action,
+            "ERR-002",
+            f"{target}: unreadable while reconciling the intent recorded in "
+            f"{record.run_id} ({exc.strerror or exc})",
+        )
+    if _sha(target_data) == record.after_sha256:
+        source_data: bytes | None
+        try:
+            source_data = source.read_bytes()
+        except FileNotFoundError:
+            source_data = None
+        except OSError as exc:
+            return _failed(
+                action,
+                "ERR-002",
+                f"{source}: unreadable while reconciling the intent recorded in "
+                f"{record.run_id} ({exc.strerror or exc})",
+            )
+        if source_data is not None and _sha(source_data) != record.before_sha256:
+            return _failed(
+                action,
+                "ERR-002",
+                f"{source}: changed since the intent recorded in {record.run_id}; "
+                f"resume must not remove it",
+            )
+        if not options.write:
+            return ApplyOutcome(
+                action_id=action.action_id,
+                path=action.path,
+                status="would_apply",
+                before_sha256=action.source_sha256,
+                after_sha256=None,
+                skip_reason=None,
+                error=None,
+            )
+        if source_data is not None:
+            try:
+                source.unlink()
+            except OSError as exc:
+                return _failed(
+                    action,
+                    "ERR-003",
+                    f"{source}: target already published but source not removed "
+                    f"on resume ({exc.strerror or exc})",
+                )
+        if manifest is not None:
+            # seq/recorded_at/source_root re-stamped by the writer; run_id is
+            # the resuming run's — it is the run asserting this evidence.
+            manifest.append(record.model_copy(update={"result": "applied", "run_id": run_id}))
+        return ApplyOutcome(
+            action_id=action.action_id,
+            path=action.path,
+            status="applied",
+            before_sha256=action.source_sha256,
+            after_sha256=record.after_sha256,
+            skip_reason=None,
+            error=None,
+        )
+    if record.overwritten_sha256 is not None and _sha(target_data) == record.overwritten_sha256:
+        return None
+    return _failed(
+        action,
+        "ERR-002",
+        f"{target}: neither the expected output nor the recorded pre-overwrite "
+        f"content (intent recorded in {record.run_id}; changed externally)",
+    )
+
+
 def _reconcile_completed(action: PlanAction, record: ManifestRecord) -> ApplyOutcome:
     """The adr-0006 resume decision for an action a prior manifest records as
     applied: skip `already-applied` when the live output still matches the
@@ -330,6 +469,24 @@ def _execute_action(
 
     content = is_content_rewrite(action)
     after = _sha(payload) if content else action.source_sha256
+    if kind == "rename_and_rewrite":
+        # The only multi-step mutation (publish target, unlink source): its
+        # write-ahead intent record must be durable before the first step.
+        # Single-step kinds stay one-record — atomic_write_bytes/rename leave
+        # no window in which the corpus is mutated but unmanifested.
+        assert target is not None
+        _record_intent(
+            manifest,
+            action,
+            kind,
+            source,
+            target,
+            backup_path,
+            after,
+            overwritten_sha,
+            overwritten_backup,
+            run_id,
+        )
     try:
         mode = source.stat().st_mode
         if kind == "rewrite":
@@ -438,11 +595,19 @@ def execute_plan(
     # action wins (an apply→restore→apply chain can record one action twice).
     # Sorted by (recorded_at, seq) rather than caller order so a multi-resume
     # chain passed out of flag order cannot let a stale record win and raise a
-    # spurious ERR-002 (PR #10 review).
+    # spurious ERR-002 (PR #10 review). A 1.3 intent record with no LATER
+    # final record for its action is DANGLING — the kill landed inside that
+    # action's mutation window — and, being the newest evidence, it takes
+    # precedence over any earlier applied record for the same action.
     completed: dict[str, ManifestRecord] = {}
+    dangling_intents: dict[str, ManifestRecord] = {}
     for record in sorted(resume_records or [], key=lambda r: (r.recorded_at, r.seq)):
-        if record.result == "applied":
-            completed[record.action_id] = record
+        if record.result == "intent":
+            dangling_intents[record.action_id] = record
+        else:
+            dangling_intents.pop(record.action_id, None)
+            if record.result == "applied":
+                completed[record.action_id] = record
 
     outcomes: list[ApplyOutcome] = []
     manifest: ManifestWriter | None = None
@@ -458,7 +623,28 @@ def execute_plan(
             if abort:
                 break
             prior = completed.get(action.action_id)
-            if prior is not None:
+            intent = dangling_intents.get(action.action_id)
+            if intent is not None:
+                # Newest evidence wins: a None verdict means the publish never
+                # happened, so the action executes normally below — never via
+                # _reconcile_completed against an older, superseded record.
+                reconciled = _reconcile_intent(action, intent, options, manifest, run_id)
+                if reconciled is not None:
+                    outcome = reconciled
+                else:
+                    outcome, abort = _execute_action(
+                        action,
+                        source_root,
+                        root_resolved,
+                        config,
+                        options,
+                        include,
+                        exclude,
+                        manifest,
+                        run_id,
+                        log,
+                    )
+            elif prior is not None:
                 outcome = _reconcile_completed(action, prior)
             else:
                 outcome, abort = _execute_action(

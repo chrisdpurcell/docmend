@@ -199,6 +199,7 @@ class TestKillAndResume:
             r.action_id
             for path in (interrupted_manifest, resume_manifest)
             for r in read_manifest(path)
+            if r.result == "applied"  # intent records are evidence, not coverage
         ]
         assert len(set(covered)) == len(covered) == 3
 

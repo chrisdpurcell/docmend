@@ -29,6 +29,7 @@ from docmend.artifacts import (
 )
 from docmend.config import DocmendConfig
 from docmend.inventory import Inventory
+from docmend.plan import Plan
 
 RUN_ID = "run_20260706T000000Z_abc123"
 ACTION_ID = f"{RUN_ID}/a1"
@@ -227,4 +228,27 @@ class TestPydanticCrossCheck:
             assert hand_props == model_props, f"property names differ at {path!r}"
             # The model may require less (fields with defaults are always emitted
             # anyway) but must never require MORE than the durable contract.
+            assert model_required <= hand_required, f"model over-requires at {path!r}"
+
+    def test_plan_model__matches_hand_authored_schema(self) -> None:
+        hand: dict[str, tuple[set[str], set[str]]] = {}
+        _object_shapes(load_schema("plan"), load_schema("plan"), "", hand)
+
+        # `config` is deliberately unmodeled (Plan.config: dict[str, object]) —
+        # the schema's config_snapshot and DocmendConfig's own strict models
+        # already own that shape (adr-0005), so its subtree is excluded here.
+        hand = {
+            path: shape
+            for path, shape in hand.items()
+            if path != "config" and not path.startswith("config.")
+        }
+
+        emitted = cast("dict[str, object]", Plan.model_json_schema(by_alias=True))
+        model: dict[str, tuple[set[str], set[str]]] = {}
+        _object_shapes(emitted, emitted, "", model)
+
+        assert set(hand) == set(model), "object paths differ between schema and model"
+        for path, (hand_props, hand_required) in hand.items():
+            model_props, model_required = model[path]
+            assert hand_props == model_props, f"property names differ at {path!r}"
             assert model_required <= hand_required, f"model over-requires at {path!r}"

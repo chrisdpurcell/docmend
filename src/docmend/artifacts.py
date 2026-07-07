@@ -18,6 +18,7 @@ Cross-file contracts:
   happen case of docmend producing a document its own schema rejects.
 """
 
+import hashlib
 import json
 import os
 from collections.abc import Iterator
@@ -30,6 +31,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as SchemaValidationError
 
 from docmend.inventory import Inventory
+from docmend.plan import Plan
 
 type ArtifactKind = Literal["inventory", "plan", "report", "manifest"]
 
@@ -113,3 +115,38 @@ def read_inventory(path: Path) -> Inventory:
         raise ArtifactError(msg) from exc
     validate_artifact("inventory", document)
     return Inventory.model_validate(document)
+
+
+def write_plan(plan: Plan, path: Path) -> None:
+    """Validate a produced plan against the external contract, then persist it."""
+    document: dict[str, object] = plan.model_dump(mode="json")
+    # Self-check before touching disk: if docmend emits a document its own
+    # checked-in schema rejects, that is a defect to fail loudly on, not an
+    # artifact to write.
+    validate_artifact("plan", document)
+    write_json_artifact(document, path)
+
+
+def read_plan(path: Path) -> Plan:
+    """Load and validate a plan artifact (ERR-008 semantics on failure)."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        msg = f"{path}: cannot read plan artifact ({exc.strerror or exc})"
+        raise ArtifactError(msg) from exc
+    try:
+        document: object = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        msg = f"{path}: not valid JSON — {exc}"
+        raise ArtifactError(msg) from exc
+    validate_artifact("plan", document)
+    return Plan.model_validate(document)
+
+
+def sha256_of_file(path: Path) -> str:
+    """Hash an artifact file for cross-artifact references (adr-0005 identity fields)."""
+    hasher = hashlib.sha256()
+    with path.open("rb") as fh:
+        while chunk := fh.read(1 << 20):
+            hasher.update(chunk)
+    return f"sha256:{hasher.hexdigest()}"

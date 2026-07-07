@@ -336,11 +336,25 @@ class TestCollisions:
         action = {a.path: a for a in plan.actions}["foo.txt"]
         assert action.target_path == "foo.md"
 
-    # Note: no test constructs the claimed_targets in-run collision branch.
-    # Pure extension rename (stem + ".md") only collides for two source paths
-    # sharing a stem, which cannot occur within one directory listing — the
-    # disk-existence and inventory-existence branches above are the only
-    # reachable ones. See the comment on `claimed_targets` in planning.py.
+    def test_case_variant_sources__second_claims_collision(self, tmp_path: Path) -> None:
+        """Two sources differing only in suffix case both target a.md; the second collides.
+
+        The default `paths.include` glob ("**/*.txt") is case-sensitive
+        (pathspec/gitignore semantics), so a bare ".TXT" file never reaches
+        discovery under default config. The include list is widened here to
+        admit both, which is what exposes the claimed_targets in-run branch.
+        """
+        (tmp_path / "a.TXT").write_bytes(b"one\r\n")
+        (tmp_path / "a.txt").write_bytes(b"two\r\n")
+        config = DocmendConfig(paths=PathsConfig(include=["**/*.txt", "**/*.TXT"]))
+        plan = plan_over(tmp_path, config)
+        actions = {a.path: a for a in plan.actions}
+        skips = {s.path: s for s in plan.skips}
+        assert len(actions) == 1 and len(skips) == 1
+        # sorted() ranks "a.TXT" before "a.txt" (ASCII 'T' < 't'), so a.TXT is
+        # processed first and claims a.md; a.txt is the later collider.
+        assert actions["a.TXT"].target_path == "a.md"
+        assert skips["a.txt"].reason == "collision"
 
     def test_action_ids__sequential_and_run_scoped(self, tmp_path: Path) -> None:
         """DR-002: per-action ID correlated with the run-ID."""

@@ -1102,10 +1102,11 @@ Questions may proceed on a recorded **current assumption** unless marked blockin
 
 ## Deviations Log
 
-Maintained by the **implementer** during the build ([Appendix B](#appendix-b-agent-implementation-contract)). Any divergence from this spec is recorded here — never silently patched into requirements text. None yet: implementation has not started.
+Maintained by the **implementer** during the build ([Appendix B](#appendix-b-agent-implementation-contract)). Any divergence from this spec is recorded here — never silently patched into requirements text.
 
-| ID  | Spec Reference | Deviation | Reason | Approved? |
-| --- | -------------- | --------- | ------ | --------- |
+| ID | Spec Reference | Deviation | Reason | Approved? |
+| --- | --- | --- | --- | --- |
+| DEV-001 | EC-011 (§10.3) | Hard-link alias groups receive their skip decision at plan time (every member), not at apply. | The plan is the complete apply worklist; plan-time skip is strictly more conservative and keeps danger detection in the planning layer (§8.1). | Pending owner review (recorded at MS-2 closeout). |
 
 ---
 

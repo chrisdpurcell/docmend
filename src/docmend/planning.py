@@ -168,11 +168,12 @@ def build_plan(
     # Part 2: turn `pending` into actions, content-derived skips, or no-ops
     # (FR-017's third state — a file that needs nothing is in neither list).
     # `claimed_targets` guards against two renames in *this run* landing on
-    # the same target; no fixture constructs it because pure-extension
-    # rename (stem + ".md") only collides for two distinct source paths that
-    # share a stem, which cannot occur within one directory listing. Kept as
-    # cheap defense-in-depth (e.g. a future rename policy keyed on something
-    # other than stem) rather than dead code removed outright.
+    # the same target. This does happen within one directory listing: suffix
+    # matching is case-insensitive (`record.suffix.lower() == ".txt"`), so
+    # `a.TXT` and `a.txt` can coexist on a case-sensitive filesystem and both
+    # target `a.md`. `pending` is processed in the globally sorted order set
+    # by `discovery.py`, so the lexicographically first source claims the
+    # target and every later collider is skipped via this set.
     claimed_targets: set[str] = set()
     inventory_paths = {f.path for f in inventory.files}
     source_root = Path(inventory.source_root)

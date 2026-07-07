@@ -6,7 +6,7 @@ description: 'docmend resumes an interrupted run by reconciling the immutable pl
 doc_type: 'adr'
 status: 'accepted'
 created: '2026-07-05'
-updated: '2026-07-05'
+updated: '2026-07-07'
 reviewed: null
 owner: 'chrisdpurcell'
 consumer: 'agent'
@@ -71,6 +71,7 @@ Confirmed by: kill-and-resume tests that crash at each pipeline stage and prove 
 
 ## More Information
 
+- **Amendment (2026-07-07, cross-repo alignment review):** the "never a partial target" invariant holds per WRITE, but `rename_and_rewrite` is a multi-step action (publish target, unlink source, record) — a hard kill inside that window used to leave a mutated corpus with no manifest evidence, degrading resume to indirect signals (stale-hash/unreadable skips). Manifest schema 1.3 closes this with a **write-ahead intent record** (`result: "intent"`, carrying the expected after-hash and, under overwrite, the clobbered target's hash) appended and fsync'd before the first mutation step. On resume, a **dangling** intent (no later applied/failed record for its action) is reconciled from disk state: target matches the expected after-hash → complete the unlink if pending and append the applied record the interrupted run never wrote (the union of manifests stays the complete restore evidence); target missing or still holding the recorded pre-overwrite bytes → the publish never happened, execute normally; anything else → ERR-002. Restore replays and verify reconciles only `result == "applied"` records, so intents are inert to both. Single-step actions stay one-record.
 - Spec: §7.1 FR-013, §12.2/§12.3, NFR-002; D-004 (atomic replace).
 - Research: `append-safe-manifest-format`.
 - Decision owner: implementer (RQ-003). Relates to ADR-0002 (plan as immutable intent record), ADR-0003 (atomic writes make partial state impossible), ADR-0005 (the NDJSON manifest resume reads).

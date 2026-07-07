@@ -2,6 +2,20 @@
 
 All notable changes to docmend are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Safety hardening from the 2026-07-07 cross-repo alignment review, ahead of broad real-library mutation. The repository boundary with the workstation-side tooling is recorded in `docs/adr/adr-0018-doc-processing-repository-boundary.md` (proposed).
+
+### Fixed
+
+- Planning no longer lets `rename.on_collision = "overwrite"` merge two same-run actions onto one target (e.g. `a.TXT` + `a.txt` both planning `a.md`): a plan-internal claim conflict now always skips the later action with a collision reason, under every policy. Overwrite continues to apply only to pre-existing targets.
+- A hard kill inside a `rename_and_rewrite`'s window (target published, source not yet unlinked, or mutation done but unrecorded) no longer leaves the corpus mutated without manifest evidence. Apply appends a write-ahead `intent` record (manifest schema 1.2 → 1.3) before the first step; resume reconciles a dangling intent from disk state — completing the unlink, adopting the finished mutation into the resuming run's manifest, re-executing when the publish never happened, or failing ERR-002 on external interference. Restore and verify are unaffected (they act on `applied` records only).
+
+### Changed
+
+- Scan prunes excluded directories (`.git/`, `.venv/`, `node_modules/`, `.docmend/`, and any configured directory pattern) from the walk instead of descending and recording a per-file `excluded` skip for everything inside. Selection is unchanged; inventories are quieter and large-tree scans faster. Per-file skip records remain for file-pattern excludes.
+- The release workflow's `setup-uv` action is SHA-pinned like the check workflow's (it publishes artifacts with `contents: write`).
+
 ## [1.0.1] - 2026-07-07
 
 Fixes the partial-undo trap reported in [#15](https://github.com/chrisdpurcell/docmend/issues/15): when an apply run satisfies the write gate with a declared external preservation (no `--backup-dir`), its manifest records content mutations as hashes only, so `docmend restore` can undo renames but not rewrites — and users discovered that only at restore time.

@@ -28,7 +28,7 @@ from typing import Annotated
 
 import typer
 
-from docmend import __version__, artifacts, discovery, planning
+from docmend import __version__, artifacts, discovery, lock, planning
 from docmend.config import ConfigError, DocmendConfig, PathsConfig, load_config
 from docmend.observability import configure_logging, get_logger, new_run_id
 from docmend.plan import ArtifactRef
@@ -262,6 +262,11 @@ def plan(
         if not path.exists():
             typer.echo(f"error: {path}: no such file or directory", err=True)
             raise typer.Exit(2)
+        # The root is known before scanning: acquire here (not after) so the
+        # scan+plan pair is covered as one run (OQ-027) instead of leaving the
+        # scan step racy against a concurrent invocation over the same tree.
+        scan_root = (path if path.is_dir() else path.parent).resolve()
+        run_lock = _acquire_run_lock(scan_root, run_id=run_id)
         log.info("plan starting (scan shorthand)", path=str(path))
         inventory = discovery.scan(path, config, run_id=run_id, generated_at=now.isoformat())
         # Resolved to absolute: inventory_ref.path must stay valid outside this
@@ -277,38 +282,70 @@ def plan(
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(2) from exc
         inventory_artifact = inventory_path.resolve()
+        # The root is only known once the inventory is read, so the lock is
+        # acquired here rather than up front (OQ-027).
+        run_lock = _acquire_run_lock(Path(inventory.source_root), run_id=run_id)
 
-    inventory_ref = ArtifactRef(
-        path=str(inventory_artifact),
-        run_id=inventory.run_id,
-        sha256=artifacts.sha256_of_file(inventory_artifact),
-    )
-    result = planning.build_plan(
-        inventory, config, run_id=run_id, generated_at=now.isoformat(), inventory_ref=inventory_ref
-    )
-    out_path = out if out is not None else artifact_dir / f"docmend-{run_id}-plan.json"
-    artifacts.write_plan(result, out_path)
-
-    reasons = Counter(skip.reason for skip in result.skips)
-    typer.echo(f"plan: {out_path}")
-    typer.echo(
-        f"actions: {result.totals.actions}  skips: {result.totals.skips}"
-        + (f"  ({', '.join(f'{r} {n}' for r, n in sorted(reasons.items()))})" if reasons else "")
-    )
-
-    findings = reasons.get("unreadable", 0) + reasons.get("changed-since-scan", 0)
-    if path is not None:
-        # IR-002: the PATH shorthand's own scan step can skip unreadable files
-        # (ERR-007) that never reach the plan at all — they live in the
-        # inventory, not result.skips — so `plan PATH` must still count them
-        # here, or it would silently exit 0 over a tree `scan PATH` would
-        # have exited 1 on.
-        findings += inventory.totals.skipped_by_reason.unreadable
-    if config.rename.on_collision == "fail":
-        findings += reasons.get("collision", 0)
-    if fail_on_low_confidence:
-        findings += reasons.get("low-confidence-encoding", 0) + reasons.get(
-            "below-non-ascii-floor", 0
+    try:
+        inventory_ref = ArtifactRef(
+            path=str(inventory_artifact),
+            run_id=inventory.run_id,
+            sha256=artifacts.sha256_of_file(inventory_artifact),
         )
-    if findings:
-        raise typer.Exit(1)
+        result = planning.build_plan(
+            inventory,
+            config,
+            run_id=run_id,
+            generated_at=now.isoformat(),
+            inventory_ref=inventory_ref,
+        )
+        out_path = out if out is not None else artifact_dir / f"docmend-{run_id}-plan.json"
+        artifacts.write_plan(result, out_path)
+
+        reasons = Counter(skip.reason for skip in result.skips)
+        typer.echo(f"plan: {out_path}")
+        typer.echo(
+            f"actions: {result.totals.actions}  skips: {result.totals.skips}"
+            + (
+                f"  ({', '.join(f'{r} {n}' for r, n in sorted(reasons.items()))})"
+                if reasons
+                else ""
+            )
+        )
+
+        findings = reasons.get("unreadable", 0) + reasons.get("changed-since-scan", 0)
+        if path is not None:
+            # IR-002: the PATH shorthand's own scan step can skip unreadable files
+            # (ERR-007) that never reach the plan at all — they live in the
+            # inventory, not result.skips — so `plan PATH` must still count them
+            # here, or it would silently exit 0 over a tree `scan PATH` would
+            # have exited 1 on.
+            findings += inventory.totals.skipped_by_reason.unreadable
+        if config.rename.on_collision == "fail":
+            findings += reasons.get("collision", 0)
+        if fail_on_low_confidence:
+            findings += reasons.get("low-confidence-encoding", 0) + reasons.get(
+                "below-non-ascii-floor", 0
+            )
+        if findings:
+            raise typer.Exit(1)
+    finally:
+        if run_lock is not None:
+            run_lock.release()
+
+
+def _acquire_run_lock(source_root: Path, *, run_id: str) -> lock.RunLock | None:
+    """Acquire the OQ-027 run lock for `plan`, mapping contention to exit 3.
+
+    `plan` is read-only (§3.1), so a lock the tool cannot even create (e.g. an
+    unwritable state dir) must not block it — that OSError degrades to a
+    warning and an unlocked run, per the OQ-036 posture.
+    """
+    try:
+        return lock.acquire(source_root, run_id=run_id, command="plan")
+    except lock.LockHeldError as exc:
+        typer.echo(f"refused: {exc}", err=True)
+        raise typer.Exit(3) from exc
+    except OSError as exc:
+        get_logger(__name__).warning("run lock unavailable", error=str(exc))
+        return None

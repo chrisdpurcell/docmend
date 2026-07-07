@@ -18,6 +18,7 @@ import pytest
 import structlog
 from typer.testing import CliRunner
 
+from docmend import cli, lock
 from docmend.cli import app
 
 runner = CliRunner()
@@ -37,6 +38,13 @@ def isolate_logging() -> Iterator[None]:
     root.setLevel(saved_level)
     structlog.reset_defaults()
     structlog.contextvars.clear_contextvars()
+
+
+@pytest.fixture(autouse=True)
+def isolate_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """plan now acquires the OQ-027 run lock; keep its state dir out of the
+    real $XDG_STATE_HOME/~/.local/state so tests never touch developer state."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
 
 
 def make_corpus(root: Path) -> None:
@@ -197,3 +205,43 @@ class TestPlanCommand:
         assert len(plans) == 1
         document = json.loads(plans[0].read_text())
         assert [action["path"] for action in document["actions"]] == ["a.txt"]
+
+
+class TestPlanLock:
+    def test_lock_held_by_other_run__refuses_exit_3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OQ-027/AW-005: a second live run against the same target refuses,
+        naming the holder, exit 3 — `isolate_state_dir` already points
+        $XDG_STATE_HOME at tmp_path, so pre-acquiring here contends for real."""
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        make_corpus(corpus)
+        monkeypatch.chdir(tmp_path)
+        # No explicit state_dir: XDG_STATE_HOME is already pointed at tmp_path
+        # by the isolate_state_dir fixture, matching the default `plan` uses.
+        held = lock.acquire(corpus, run_id="run_20260706T000000Z_00004b", command="apply")
+        try:
+            result = runner.invoke(app, ["plan", str(corpus)])
+            assert result.exit_code == 3
+            assert "run_20260706T000000Z_00004b" in result.output
+        finally:
+            held.release()
+
+    def test_lock_unavailable_oserror__proceeds_without_lock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OQ-036 posture: `plan` is read-only, so a lock the tool can't even
+        create (e.g. an unwritable state dir) degrades to a warning, not a
+        refusal — the run still completes and exits 0."""
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        make_corpus(corpus)
+        monkeypatch.chdir(tmp_path)
+
+        def _raise_oserror(*_args: object, **_kwargs: object) -> lock.RunLock:
+            raise OSError("state dir unwritable")
+
+        monkeypatch.setattr(cli.lock, "acquire", _raise_oserror)
+        result = runner.invoke(app, ["plan", str(corpus)])
+        assert result.exit_code == 0, result.output

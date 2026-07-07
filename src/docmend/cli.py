@@ -23,15 +23,20 @@ Cross-file contracts:
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
 import typer
+from pydantic import ValidationError
 
 from docmend import __version__, artifacts, discovery, lock, planning
 from docmend.config import ConfigError, DocmendConfig, PathsConfig, load_config
 from docmend.observability import configure_logging, get_logger, new_run_id
-from docmend.plan import ArtifactRef
+from docmend.plan import PLAN_SCHEMA_VERSION, ArtifactRef
+from docmend.report import Report, ReportTotals
+from docmend.writer.apply import execute_plan
+from docmend.writer.gate import ApplyOptions, evaluate_gate
 
 #: Default per-run artifact/log directory, created in the invoking directory
 #: (proposed OQ-034; the run-ID-keyed names inside it are the OQ-006 sidecar
@@ -349,3 +354,195 @@ def _acquire_run_lock(source_root: Path, *, run_id: str) -> lock.RunLock | None:
     except OSError as exc:
         get_logger(__name__).warning("run lock unavailable", error=str(exc))
         return None
+
+
+def _acquire_run_lock_strict(source_root: Path, *, run_id: str, command: str) -> lock.RunLock:
+    """Acquire the OQ-027 run lock for a write-capable command (e.g. `apply`).
+
+    Unlike `plan`'s `_acquire_run_lock`, a write-capable command must REFUSE
+    (exit 3) when the lock cannot even be created — an unwritable state dir is
+    not a reason to proceed unlocked into a run that can mutate the library
+    (AW-005; contrast the OQ-036 read-only posture that lets `plan` degrade).
+    """
+    try:
+        return lock.acquire(source_root, run_id=run_id, command=command)
+    except (lock.LockHeldError, OSError) as exc:
+        typer.echo(f"refused: {exc}", err=True)
+        raise typer.Exit(3) from exc
+
+
+class PreservedBy(StrEnum):
+    """FR-005 declared byte-preserving strategies external to docmend's own backups."""
+
+    git = "git"
+    external = "external"
+
+
+@app.command()
+def apply(
+    ctx: typer.Context,
+    plan_path: Annotated[
+        Path,
+        typer.Argument(exists=True, metavar="PLAN", help="Plan artifact to execute (IR-003)."),
+    ],
+    write: Annotated[
+        bool,
+        typer.Option("--write", help="Opt into real mutation (OQ-014); default is dry-run."),
+    ] = False,
+    dry_run_flag: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Preview outcomes without writing (the default)."),
+    ] = False,
+    backup_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--backup-dir",
+            help="Tool-written backup destination (FR-006); overrides write.backup_dir.",
+        ),
+    ] = None,
+    preserved_by: Annotated[
+        PreservedBy | None,
+        typer.Option(
+            "--preserved-by",
+            help="Declare an external byte-preserving strategy (FR-005): git or external.",
+        ),
+    ] = None,
+    allow_no_backup: Annotated[
+        bool,
+        typer.Option(
+            "--allow-no-backup",
+            help="FR-005 low-risk opt-in: single-action plans only, no rollback copy.",
+        ),
+    ] = False,
+    report: Annotated[
+        Path | None,
+        typer.Option(
+            "--report",
+            help="Write the report to FILE (default: .docmend/docmend-<run-id>-report.json).",
+        ),
+    ] = None,
+) -> None:
+    """Execute a reviewed plan; dry-run by default (FR-004, IR-003).
+
+    Exit codes (§18.5): 0 clean; 1 findings (skips/failures); 2 input error
+    (ERR-006 invalid plan, flag conflicts); 3 safety refusal (gate or lock).
+    """
+    opts = _global_options(ctx)
+    if write and (dry_run_flag or opts.dry_run):
+        # IR-003: --write conflicts with --dry-run and with the global -n
+        # (IR-005 gains its write-capable effect right here).
+        raise typer.BadParameter("--write and --dry-run are mutually exclusive")
+
+    now = datetime.now(UTC)
+    run_id = new_run_id(now)
+    artifact_dir = Path(ARTIFACT_DIR_NAME)
+    configure_logging(
+        run_id=run_id, command="apply", log_dir=artifact_dir, verbose=opts.verbose, quiet=opts.quiet
+    )
+    log = get_logger(__name__)
+
+    try:
+        plan = artifacts.read_plan(plan_path)
+    except artifacts.ArtifactError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+    if int(plan.schema_version.split(".")[1]) > int(PLAN_SCHEMA_VERSION.split(".")[1]):
+        typer.echo(
+            f"error: {plan_path}: plan schema {plan.schema_version} is newer than this "
+            f"docmend supports ({PLAN_SCHEMA_VERSION}) — regenerate the plan (ERR-006)",
+            err=True,
+        )
+        raise typer.Exit(2)
+    if plan.source_root is None:
+        typer.echo(
+            f"error: {plan_path}: plan lacks source_root (pre-1.1 artifact) — regenerate the plan (ERR-006)",
+            err=True,
+        )
+        raise typer.Exit(2)
+    source_root = Path(plan.source_root)
+    if not source_root.is_dir():
+        typer.echo(f"error: {source_root}: plan source root is not a directory", err=True)
+        raise typer.Exit(2)
+    try:
+        config = DocmendConfig.model_validate(plan.config)
+    except ValidationError as exc:
+        typer.echo(f"error: {plan_path}: config snapshot invalid — {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    backup_root = backup_dir if backup_dir is not None else config.write.backup_dir
+    options = ApplyOptions(
+        write=write,
+        # Resolved ONCE here (codex CR-005): every backup path derived from
+        # this root lands in the manifest, which restore must be able to
+        # follow from any cwd (IR-008) — a relative --backup-dir must never
+        # produce cwd-dependent manifest entries.
+        backup_root=backup_root.resolve() if backup_root is not None else None,
+        preserved_by=preserved_by.value if preserved_by is not None else None,
+        allow_no_backup=allow_no_backup,
+    )
+    manifest_path = artifact_dir / f"docmend-{run_id}-manifest.jsonl"
+    report_path = report if report is not None else artifact_dir / f"docmend-{run_id}-report.json"
+    plan_ref = ArtifactRef(
+        path=str(plan_path), run_id=plan.run_id, sha256=artifacts.sha256_of_file(plan_path)
+    )
+    started_at = now.isoformat()
+
+    run_lock = _acquire_run_lock_strict(source_root, run_id=run_id, command="apply")
+    try:
+        if write:
+            # CRITICAL (Task 9 carry-forward): the gate is invoked
+            # unconditionally before execute_plan on every write run — the
+            # engine itself does not self-enforce preservation.
+            refusals = evaluate_gate(
+                plan, config, source_root=source_root, options=options, manifest_dir=artifact_dir
+            )
+            if refusals:
+                for refusal in refusals:
+                    typer.echo(f"refused [{refusal.predicate}]: {refusal.message}", err=True)
+                    log.error("gate refusal", predicate=refusal.predicate, detail=refusal.message)
+                _write_refusal_report(plan_ref, run_id, started_at, report_path)
+                raise typer.Exit(3)
+        result = execute_plan(
+            plan,
+            config,
+            run_id=run_id,
+            plan_ref=plan_ref,
+            options=options,
+            manifest_path=manifest_path,
+            started_at=started_at,
+        )
+    finally:
+        run_lock.release()
+
+    artifacts.write_report(result, report_path)
+    totals = result.totals
+    typer.echo(f"report: {report_path}")
+    if write and (totals.applied or totals.failed):
+        typer.echo(f"manifest: {manifest_path}")
+    reasons = Counter(o.skip_reason for o in result.outcomes if o.skip_reason is not None)
+    detail = f" ({', '.join(f'{r} {n}' for r, n in sorted(reasons.items()))})" if reasons else ""
+    typer.echo(
+        f"applied: {totals.applied}  would-apply: {totals.would_apply}  "
+        f"skipped: {totals.skipped}{detail}  failed: {totals.failed}"
+    )
+    if totals.skipped or totals.failed:
+        raise typer.Exit(1)
+
+
+def _write_refusal_report(
+    plan_ref: ArtifactRef, run_id: str, started_at: str, report_path: Path
+) -> None:
+    # §8.5: even a refused run leaves an artifact; zero outcomes, library untouched.
+    artifacts.write_report(
+        Report(
+            run_id=run_id,
+            generated_by=f"docmend {__version__}",
+            plan_ref=plan_ref,
+            dry_run=False,
+            started_at=started_at,
+            completed_at=datetime.now(UTC).isoformat(),
+            outcomes=[],
+            totals=ReportTotals(applied=0, would_apply=0, skipped=0, failed=0),
+        ),
+        report_path,
+    )

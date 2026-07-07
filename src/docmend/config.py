@@ -126,6 +126,15 @@ class WriteConfig(_StrictModel):
     backup_dir: Path | None = None
     atomic: bool = True
 
+    @field_validator("backup_dir", mode="before")
+    @classmethod
+    def _coerce_str_path(cls, value: object) -> object:
+        # strict=True normally means "no coercion", but TOML has no path type —
+        # every value tomllib hands back for this key is a plain str. Without
+        # this pre-validator, `write.backup_dir` (a documented §18.2 key) could
+        # never actually be set from a config file at all.
+        return Path(value) if isinstance(value, str) else value
+
 
 class ParallelConfig(_StrictModel):
     """§18.2 `parallel.*` — OQ-016/OQ-027; sequential by default until MS-5 profiling."""

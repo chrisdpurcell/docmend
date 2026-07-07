@@ -99,6 +99,10 @@ class HardLinkGroup(_StrictModel):
 class ScanConfigRecord(_StrictModel):
     include: list[Annotated[str, Field(min_length=1)]]
     exclude: list[Annotated[str, Field(min_length=1)]]
+    # 1.1 (MS-2 final-review Important #1): scan-output provenance beyond filters.
+    # None = a pre-1.1 artifact where the fact is unknown; new scans always record.
+    encoding_detect: bool | None = None
+    detector: Annotated[str, Field(min_length=1)] | None = None
 
 
 class SkippedByReason(_StrictModel):

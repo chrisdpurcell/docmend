@@ -51,7 +51,15 @@
 			"required": ["include", "exclude"],
 			"properties": {
 				"include": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-				"exclude": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+				"exclude": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+				"encoding_detect": {
+					"description": "Whether encoding detection ran during this scan (1.1) — planning must not read 'detected: null' as binary-suspect when detection never ran. Null only in pre-1.1 artifacts.",
+					"type": ["boolean", "null"]
+				},
+				"detector": {
+					"description": "Detector name and version when detection ran (e.g. 'charset-normalizer 3.4.4'); null when detection was off or in pre-1.1 artifacts.",
+					"type": ["string", "null"]
+				}
 			}
 		},
 		"files": {

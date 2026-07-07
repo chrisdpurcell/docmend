@@ -34,6 +34,7 @@ import hashlib
 import os
 import stat as stat_module
 from collections import Counter
+from importlib.metadata import version as metadata_version
 from pathlib import Path
 
 from pathspec import PathSpec
@@ -412,7 +413,14 @@ def scan(
         requested_path=str(requested),
         source_root=str(root),
         scan_config=ScanConfigRecord(
-            include=list(config.paths.include), exclude=list(config.paths.exclude)
+            include=list(config.paths.include),
+            exclude=list(config.paths.exclude),
+            encoding_detect=config.encoding.detect,
+            detector=(
+                f"charset-normalizer {metadata_version('charset-normalizer')}"
+                if config.encoding.detect
+                else None
+            ),
         ),
         files=state.files,
         symlinks=state.symlinks,

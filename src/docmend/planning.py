@@ -51,6 +51,7 @@ def _fact_skip(
     config: DocmendConfig,
     include: PathSpec[GitIgnoreSpecPattern],
     exclude: PathSpec[GitIgnoreSpecPattern],
+    scan_detect: bool | None,
 ) -> SkipDecision | None:
     path = record.path
     if not include.match_file(path):
@@ -94,6 +95,12 @@ def _fact_skip(
                 path=path, reason="low-confidence-encoding", detail="encoding detection disabled"
             )
         if enc.detected is None:
+            if scan_detect is False:
+                return SkipDecision(
+                    path=path,
+                    reason="low-confidence-encoding",
+                    detail="encoding detection was not run at scan",
+                )
             return SkipDecision(path=path, reason="binary-suspect", detail="no encoding candidate")
         threshold = config.encoding.fail_below_confidence
         if enc.detected.confidence < threshold:
@@ -195,7 +202,9 @@ def build_plan(
             skips.append(SkipDecision(path=link.path, reason="symlink", detail=f"-> {link.target}"))
     pending: list[FileRecord] = []
     for record in inventory.files:
-        decision = _fact_skip(record, hard_linked, config, include, exclude)
+        decision = _fact_skip(
+            record, hard_linked, config, include, exclude, inventory.scan_config.encoding_detect
+        )
         if decision is not None:
             skips.append(decision)
             log.debug("planned skip", path=record.path, reason=decision.reason)

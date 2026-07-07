@@ -31,7 +31,9 @@ from docmend.artifacts import (
 from docmend.config import DocmendConfig
 from docmend.inventory import Inventory
 from docmend.plan import Plan, PlanSkipReason
+from docmend.report import Report
 from docmend.transform.dispatch import Operation
+from docmend.writer.manifest import ManifestRecord
 
 RUN_ID = "run_20260706T000000Z_abc123"
 ACTION_ID = f"{RUN_ID}/a1"
@@ -103,7 +105,7 @@ class TestEnumDriftGuard:
 def _minimal_plan() -> dict[str, object]:
     return {
         "schema": "docmend/plan",
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "run_id": RUN_ID,
         "generated_at": TIMESTAMP,
         "generated_by": "docmend 0.1.0",
@@ -268,6 +270,36 @@ class TestPydanticCrossCheck:
         }
 
         emitted = cast("dict[str, object]", Plan.model_json_schema(by_alias=True))
+        model: dict[str, tuple[set[str], set[str]]] = {}
+        _object_shapes(emitted, emitted, "", model)
+
+        assert set(hand) == set(model), "object paths differ between schema and model"
+        for path, (hand_props, hand_required) in hand.items():
+            model_props, model_required = model[path]
+            assert hand_props == model_props, f"property names differ at {path!r}"
+            assert model_required <= hand_required, f"model over-requires at {path!r}"
+
+    def test_manifest_model__matches_hand_authored_schema(self) -> None:
+        hand: dict[str, tuple[set[str], set[str]]] = {}
+        _object_shapes(load_schema("manifest"), load_schema("manifest"), "", hand)
+
+        emitted = cast("dict[str, object]", ManifestRecord.model_json_schema(by_alias=True))
+        model: dict[str, tuple[set[str], set[str]]] = {}
+        _object_shapes(emitted, emitted, "", model)
+
+        assert set(hand) == set(model), "object paths differ between schema and model"
+        for path, (hand_props, hand_required) in hand.items():
+            model_props, model_required = model[path]
+            assert hand_props == model_props, f"property names differ at {path!r}"
+            # overwritten_sha256/overwritten_backup_path (1.1) default to None
+            # and are therefore never in the model's required set — expected.
+            assert model_required <= hand_required, f"model over-requires at {path!r}"
+
+    def test_report_model__matches_hand_authored_schema(self) -> None:
+        hand: dict[str, tuple[set[str], set[str]]] = {}
+        _object_shapes(load_schema("report"), load_schema("report"), "", hand)
+
+        emitted = cast("dict[str, object]", Report.model_json_schema(by_alias=True))
         model: dict[str, tuple[set[str], set[str]]] = {}
         _object_shapes(emitted, emitted, "", model)
 

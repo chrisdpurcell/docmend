@@ -34,6 +34,7 @@ import hashlib
 import os
 import stat as stat_module
 from collections import Counter
+from importlib.metadata import version as metadata_version
 from pathlib import Path
 
 from pathspec import PathSpec
@@ -83,7 +84,9 @@ _BOM_ENCODING_NAME: dict[BomKind, str] = {
 }
 
 
-def _sniff_bom(header: bytes) -> BomKind | None:
+def sniff_bom(header: bytes) -> BomKind | None:
+    """Public: the apply engine (Task 9) re-sniffs the BOM from bytes whose
+    hash already matched the scan, so the sniff is provenance-equivalent."""
     for bom, kind in _BOMS:
         if header.startswith(bom):
             return kind
@@ -174,7 +177,7 @@ def classify_file(
         # Read the 4-byte BOM window first so sniffing never spans a chunk
         # boundary, whatever chunk_size is.
         header = fh.read(4)
-        bom = _sniff_bom(header)
+        bom = sniff_bom(header)
         consume(header)
         while chunk := fh.read(chunk_size):
             consume(chunk)
@@ -412,7 +415,14 @@ def scan(
         requested_path=str(requested),
         source_root=str(root),
         scan_config=ScanConfigRecord(
-            include=list(config.paths.include), exclude=list(config.paths.exclude)
+            include=list(config.paths.include),
+            exclude=list(config.paths.exclude),
+            encoding_detect=config.encoding.detect,
+            detector=(
+                f"charset-normalizer {metadata_version('charset-normalizer')}"
+                if config.encoding.detect
+                else None
+            ),
         ),
         files=state.files,
         symlinks=state.symlinks,

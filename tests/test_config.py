@@ -89,6 +89,15 @@ class TestDiscoveryAndPrecedence:
         assert cfg.rename.on_collision == "fail"
         assert cfg.encoding.fail_below_confidence == 0.80  # untouched section intact
 
+    def test_write_backup_dir__toml_string_coerces_to_path(self, tmp_path: Path) -> None:
+        """§18.2: `write.backup_dir` is a documented TOML key; tomllib only ever
+        hands back a str for it, so strict=True must not reject that str
+        outright (it would make the key impossible to set from any file)."""
+        path = tmp_path / "docmend.toml"
+        path.write_text("[write]\nbackup_dir = 'backups'\n", encoding="utf-8")
+        cfg = load_config(path)
+        assert cfg.write.backup_dir == Path("backups")
+
 
 class TestStrictValidation:
     """IR-006 acceptance criteria: each rejection class produces a clear error."""

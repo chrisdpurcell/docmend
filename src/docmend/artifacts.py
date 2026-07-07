@@ -21,6 +21,7 @@ Cross-file contracts:
 import hashlib
 import json
 import os
+from collections import Counter
 from collections.abc import Iterator
 from functools import cache
 from importlib import resources
@@ -32,6 +33,7 @@ from jsonschema.exceptions import ValidationError as SchemaValidationError
 
 from docmend.inventory import Inventory
 from docmend.plan import Plan
+from docmend.report import Report
 
 type ArtifactKind = Literal["inventory", "plan", "report", "manifest"]
 
@@ -141,6 +143,40 @@ def read_plan(path: Path) -> Plan:
         raise ArtifactError(msg) from exc
     validate_artifact("plan", document)
     return Plan.model_validate(document)
+
+
+def write_report(report: Report, path: Path) -> None:
+    """Validate a produced report, enforce DR-003 count reconciliation, persist."""
+    counts = Counter(outcome.status for outcome in report.outcomes)
+    expected = {
+        "applied": report.totals.applied,
+        "would_apply": report.totals.would_apply,
+        "skipped": report.totals.skipped,
+        "failed": report.totals.failed,
+    }
+    actual = {key: counts.get(key, 0) for key in expected}
+    if expected != actual:
+        msg = f"report totals {expected} do not reconcile with outcomes {actual} (DR-003)"
+        raise ArtifactError(msg)
+    document: dict[str, object] = report.model_dump(mode="json")
+    validate_artifact("report", document)
+    write_json_artifact(document, path)
+
+
+def read_report(path: Path) -> Report:
+    """Load and validate a report artifact (ERR-008 semantics on failure)."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        msg = f"{path}: cannot read report artifact ({exc.strerror or exc})"
+        raise ArtifactError(msg) from exc
+    try:
+        document: object = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        msg = f"{path}: not valid JSON — {exc}"
+        raise ArtifactError(msg) from exc
+    validate_artifact("report", document)
+    return Report.model_validate(document)
 
 
 def sha256_of_file(path: Path) -> str:

@@ -2,12 +2,12 @@
 
 The four hand-authored JSON Schemas here are the **durable external contract** for docmend's run artifacts (spec DR-001..DR-004, IR-007; canonical decision: `docs/adr/adr-0005-durable-artifact-schema-contract.md`). They were pinned at MS-1, before any code froze their shapes, and the direction of authority is fixed: **code and internal pydantic models conform to these files, never the reverse.** The internal models' emitted JSON Schema is cross-checked against these in tests, but the checked-in files are the contract.
 
-| Schema | Artifact | Representation | Producing command |
-| --- | --- | --- | --- |
-| `inventory.schema.json` | DR-001 inventory | single JSON document | `scan` (MS-1) |
-| `plan.schema.json` | DR-002 plan | single JSON document | `plan` (MS-2) |
-| `report.schema.json` | DR-003 apply report | single JSON document | `apply` (MS-3) |
-| `manifest.schema.json` | DR-004 manifest — schema covers **one NDJSON line** | JSON Lines, append-only | `apply` (MS-3) |
+| Schema | Artifact | Representation | Producing command | Current version |
+| --- | --- | --- | --- | --- |
+| `inventory.schema.json` | DR-001 inventory | single JSON document | `scan` (MS-1) | 1.1 (MS-3: `encoding.detect` provenance, path-containment patterns) |
+| `plan.schema.json` | DR-002 plan | single JSON document | `plan` (MS-2) | 1.1 (MS-3: optional `source_root`, path-containment patterns) |
+| `report.schema.json` | DR-003 apply report | single JSON document | `apply` (MS-3) | 1.0 |
+| `manifest.schema.json` | DR-004 manifest — schema covers **one NDJSON line** | JSON Lines, append-only | `apply` (MS-3) | 1.1 (MS-3: `overwritten_*` overwrite-preservation fields) |
 
 Conventions (adr-0005):
 

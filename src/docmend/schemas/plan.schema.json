@@ -27,6 +27,11 @@
 			"description": "The inventory this plan consumed (IR-002); when `plan PATH` shorthand scanned first, this references the inventory that scan produced.",
 			"$ref": "#/$defs/artifact_ref"
 		},
+		"source_root": {
+			"description": "1.1: absolute source root the action paths are relative to, copied from the consumed inventory — apply resolves files from the plan alone. Optional for schema-compat with 1.0 plans, which apply refuses with ERR-006 (regenerate).",
+			"type": "string",
+			"minLength": 1
+		},
 		"config": { "$ref": "#/$defs/config_snapshot" },
 		"actions": { "type": "array", "items": { "$ref": "#/$defs/action" } },
 		"skips": { "type": "array", "items": { "$ref": "#/$defs/skip_decision" } },
@@ -52,7 +57,12 @@
 			"type": "string",
 			"format": "uuid"
 		},
-		"relative_path": { "type": "string", "minLength": 1 },
+		"relative_path": {
+			"description": "POSIX-style path relative to source_root; never absolute, never containing '..' — enforced by pattern since 1.1 (MS-2 final-review hardening).",
+			"type": "string",
+			"minLength": 1,
+			"pattern": "^(?!/)(?!(?:.*/)?\\.\\.(?:/|$)).+$"
+		},
 		"sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
 		"artifact_ref": {
 			"type": "object",

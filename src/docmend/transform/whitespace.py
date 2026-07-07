@@ -37,7 +37,10 @@ def collapse_blank_lines(text: str, max_consecutive: int) -> str:
         else:
             run = 0
         kept.append(line)
-    return "\n".join(kept) + ("\n" if trailing_newline else "")
+    # `and kept`: when every line was dropped (all-blank input under max 0),
+    # emit "" — reattaching the trailing "\n" would reintroduce the very blank
+    # line we just removed, producing a phantom run that violates max_consecutive.
+    return "\n".join(kept) + ("\n" if trailing_newline and kept else "")
 
 
 def normalize_tabs(text: str, tab_width: int) -> str:

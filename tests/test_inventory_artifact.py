@@ -58,7 +58,7 @@ class TestRoundTrip:
         document = json.loads(artifact.read_text(encoding="utf-8"))
         validate_artifact("inventory", document)
         assert document["schema"] == "docmend/inventory"
-        assert document["schema_version"] == "1.0"
+        assert document["schema_version"] == "1.1"
         assert document["run_id"] == RUN_ID
 
 

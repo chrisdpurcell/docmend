@@ -45,10 +45,18 @@
 			"description": "What mutated: 'rename' moved the file without content change; 'rewrite' replaced content in place; 'rename_and_rewrite' did both as one atomic action.",
 			"enum": ["rename", "rewrite", "rename_and_rewrite"]
 		},
-		"original_path": { "type": "string", "minLength": 1 },
-		"target_path": { "type": "string", "minLength": 1 },
+		"original_path": {
+			"description": "Absolute path — restore locates files from the manifest alone (IR-008).",
+			"type": "string",
+			"minLength": 1
+		},
+		"target_path": {
+			"description": "Absolute path — restore locates files from the manifest alone (IR-008).",
+			"type": "string",
+			"minLength": 1
+		},
 		"backup_path": {
-			"description": "Verified backup copy location when tool-written backups were enabled (FR-006); null under the Git/external/low-risk-opt-in preservation strategies.",
+			"description": "Verified backup copy location when tool-written backups were enabled (FR-006); null under the Git/external/low-risk-opt-in preservation strategies. Absolute path — restore locates files from the manifest alone (IR-008).",
 			"type": ["string", "null"]
 		},
 		"before_sha256": { "$ref": "#/$defs/sha256" },
@@ -70,6 +78,14 @@
 					}
 				}
 			]
+		},
+		"overwritten_sha256": {
+			"description": "1.1 (OQ-035): hash of the pre-existing target this mutation clobbered under the overwrite collision policy; null otherwise.",
+			"oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
+		},
+		"overwritten_backup_path": {
+			"description": "1.1 (OQ-035): verified backup of the clobbered target when tool backups were enabled; null otherwise.",
+			"type": ["string", "null"]
 		}
 	},
 	"$defs": {

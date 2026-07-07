@@ -15,9 +15,14 @@ SPEC_PATH = Path(__file__).resolve().parent.parent / "docs" / "specs" / "docmend
 
 # Matches the unindented ToC root entry, e.g.:
 #   - [`docmend` — Specification (Full)](#docmend--specification-full)
-# immediately followed by the first indented child entry, e.g.:
+# immediately followed by the first indented child entry, which in this spec's
+# section order is always Revision History:
 #     - [Revision History](#revision-history)
-ROOT_ENTRY = re.compile(r"^- \[[^\]]+\]\(#[^)]+\)\n(?=  - \[)", re.MULTILINE)
+# The lookahead is pinned to that child deliberately: a bare "indented entry
+# follows" lookahead also matches every body list whose top-level bullet links
+# and has linking sub-bullets (13 of them as of rev 0.24), tripping the
+# exactly-one guard even when no dead root entry exists.
+ROOT_ENTRY = re.compile(r"^- \[[^\]]+\]\(#[^)]+\)\n(?=  - \[Revision History\])", re.MULTILINE)
 
 
 def main() -> int:

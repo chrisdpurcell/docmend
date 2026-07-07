@@ -105,6 +105,39 @@ def test_restore_rewrite__bytes_match_before_hash(tmp_path: Path) -> None:
     assert _sha((root / "legacy.md").read_bytes()) == records[0].before_sha256
 
 
+def test_restore_rewrite__mode_preserved(tmp_path: Path) -> None:
+    """IR-008/§8.1: apply carries the source file's mode onto its rewritten
+    target (`writer/apply.py`'s own `source.stat().st_mode` pass-through) —
+    restore must carry that same mode back onto the reinstated original,
+    not leave it at `atomic_write_bytes`'s temp-file default (0o600)."""
+    root = tmp_path / "root"
+    materialize(
+        root, [FileRecipe("legacy.md", "windows-1252", "crlf", sentences=15)], seeded_faker()
+    )
+    (root / "legacy.md").chmod(0o644)
+    config = DocmendConfig()
+    plan = _plan_for(root, config)
+    _execute(plan, config, tmp_path, write=True, backup_root=tmp_path / "backups")
+    records = _records_for(tmp_path)
+    assert records[0].operation == "rewrite"
+    # Confirms the fixture actually exercises mode preservation on the apply
+    # side too, so a restore-side regression alone is what this test catches.
+    assert (root / "legacy.md").stat().st_mode & 0o777 == 0o644
+
+    outcomes = run_restore(
+        records,
+        run_id=RESTORE_RUN_ID,
+        write=True,
+        only_ids=None,
+        manifest_out=tmp_path / "restore-manifest.jsonl",
+    )
+
+    assert outcomes[0].status == "restored"
+    restored = root / "legacy.md"
+    assert restored.stat().st_mode & 0o777 == 0o644
+    assert _sha(restored.read_bytes()) == records[0].before_sha256
+
+
 def test_restore_rename__file_moved_back(tmp_path: Path) -> None:
     """A pure rename record restores by moving the file back — .md gone, .txt
     back with identical bytes (no content was ever changed)."""

@@ -65,6 +65,7 @@
 #### Agent notes
 
 - Landed via the adversarial plan audit that produced the MS-3 implementation plan.
+- Final MS-3 review (2026-07-07): `restore` keys its lock on `os.path.commonpath` of the manifest's `original_path`s (`cli.py`'s restore command), while `plan`/`apply` key on the resolved `source_root`. When every mutated file shares a subdirectory, `commonpath` resolves to that subdirectory, not the source root, so the two keys diverge and AW-005 mutual exclusion between a concurrent `apply` and `restore` has a gap (an `apply` locking the source root and a `restore` locking a narrower commonpath do not contend). Not fixed here — the lock code itself is unchanged. Proposed MS-4 fix: add a `source_root` field to manifest records (MINOR 1.2 schema bump) written at apply time, and key restore's lock acquisition on that recorded value instead of `commonpath`.
 
 #### My Comments
 

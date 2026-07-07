@@ -607,6 +607,12 @@ def restore(
         typer.echo("nothing to restore: manifest holds no records")
         return
 
+    # KNOWN GAP (OQ-036, MS-4 fix pending): this keys the lock on the
+    # commonpath of the manifest's own original paths, whereas plan/apply key
+    # on the resolved source_root. When every mutated file shares a
+    # subdirectory, commonpath narrows below source_root and the two keys
+    # diverge, leaving an AW-005 mutual-exclusion gap between a concurrent
+    # apply and restore. Not fixed here — see docs/open-questions.md § OQ-036.
     root = Path(os.path.commonpath([r.original_path for r in records]))
     run_lock = _acquire_run_lock_strict(
         root if root.is_dir() else root.parent, run_id=run_id, command="restore"

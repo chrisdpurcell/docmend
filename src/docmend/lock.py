@@ -1,6 +1,6 @@
 """Run-level lock — one live plan/apply/restore per target tree (OQ-027, AW-005).
 
-Location (OQ-036 proposal): $XDG_STATE_HOME/docmend/locks/<sha256(root)>.json,
+Location (OQ-036 proposal): $XDG_STATE_HOME/docmend/locks/<sha256(root)>.lock,
 NOT inside the library tree — plan stays write-free over the library (§3.1) and
 a read-only tree stays plannable. Keyed on the RESOLVED source root so
 invocations from different CWDs contend correctly.

@@ -7,6 +7,12 @@ before_sha256 (ERR-004 on mismatch); records with no backup reference are
 skipped — the operator's own preservation strategy (git/external) is the
 recovery path there, by design (FR-005). Restore is itself mutation: it
 dry-runs by default and appends inverse records to its own run manifest.
+
+Permission preservation (IR-008, §8.1): apply carries the source file's mode
+onto the applied target, so every reinstatement write below stats the live
+target immediately before mutating and passes that mode through to
+`atomic_write_bytes` — otherwise restored files come back at the temp-file
+default (0o600) instead of their original permissions.
 """
 
 import hashlib
@@ -141,6 +147,25 @@ def _restore_one(
     original = Path(record.original_path)
     target = Path(record.target_path)
 
+    # IR-008/§8.1: apply preserved the source file's mode onto the applied
+    # target, so the live target's current mode IS the original's mode —
+    # capture it now (before any mutation) and carry it through every
+    # reinstatement write below, or restored files come back at the
+    # temp-file default (0o600) instead of their real permissions. Stat here
+    # rather than earlier: `_live_matches_after` just proved this exact path
+    # readable, so a vanishing-between-checks race is near-impossible: still
+    # handled as the same "unreadable" skip for safety, not a hard failure.
+    try:
+        mode = target.stat().st_mode
+    except OSError:
+        return RestoreOutcome(
+            record.action_id,
+            record.docmend_id,
+            record.original_path,
+            "skipped",
+            "unreadable: applied file missing or unreadable",
+        )
+
     if record.operation != "rewrite" and original.exists():
         return RestoreOutcome(
             record.action_id,
@@ -204,7 +229,7 @@ def _restore_one(
     try:
         if record.operation == "rewrite":
             assert backup is not None
-            atomic_write_bytes(original, backup)
+            atomic_write_bytes(original, backup, mode=mode)
         elif record.operation == "rename":
             if clobbered is not None:
                 # Keep the target name occupied throughout: link the applied
@@ -212,14 +237,14 @@ def _restore_one(
                 # target with the clobbered content — no window where either
                 # name is missing.
                 link_no_clobber(target, original)
-                atomic_write_bytes(target, clobbered)
+                atomic_write_bytes(target, clobbered, mode=mode)
             else:
                 rename_no_clobber(target, original)
         else:  # rename_and_rewrite
             assert backup is not None
-            atomic_write_bytes(original, backup, clobber=False)
+            atomic_write_bytes(original, backup, mode=mode, clobber=False)
             if clobbered is not None:
-                atomic_write_bytes(target, clobbered)
+                atomic_write_bytes(target, clobbered, mode=mode)
             else:
                 target.unlink()
     except (WriteError, OSError, FileExistsError) as exc:

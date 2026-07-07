@@ -12,6 +12,7 @@ _None outstanding._
 
 - [ ] **OQ-034 owner decision (raised at MS-1, non-blocking, wanted by MS-3):** default artifact/log location. Implementation proceeds on the recorded assumption — `./.docmend/` in the invoking directory, run-ID-keyed filenames, `--report` override, `.docmend/` in default excludes. Confirm or redirect in `docs/open-questions.md` § OQ-034.
 - [ ] **OQ-035/OQ-036 owner sign-off (raised at MS-3, non-blocking, wanted by MS-4):** preservation CLI surface + risk tiers; run-lock location.
+- [ ] **MS-4 input (final MS-3 review, OQ-036 lock-key gap):** `restore`'s lock key (`commonpath` of manifest original paths) can diverge from `apply`/`plan`'s `source_root` key, leaving an AW-005 mutual-exclusion gap; fix is to record `source_root` on manifest entries and key restore's lock on it — see `docs/open-questions.md` § OQ-036 Agent notes.
 - [ ] Author `schemas/frontmatter.schema.json` and rewrite the §9 null-heavy example to the RQ-014 minimal shape when frontmatter schema work lands (GAP-56; gated by OQ-009/OQ-013).
 
 ## Completed Tasks

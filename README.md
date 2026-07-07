@@ -12,7 +12,7 @@ Execute a reviewed plan. **Dry-run by default** — nothing is written until you
 
 ### `docmend restore [--manifest FILE | --run-id ID]`
 
-Undo an apply run by replaying its manifest newest-first. Dry-run by default; `--write` performs the restore; `--id DOCMEND_ID` limits it to specific documents. A file modified since apply is skipped, never clobbered.
+Undo an apply run by replaying its manifest newest-first. Dry-run by default; `--write` performs the restore; `--id DOCMEND_ID` limits it to specific documents. A file modified since apply is skipped, never clobbered. Exit codes: 0 clean, 1 findings (skips/failures), 2 input error, 3 safety refusal.
 
 ## Contributing / workflow
 

@@ -20,6 +20,7 @@ Cross-file contracts:
   the artifact path). The default excludes make ``.docmend/`` invisible to scans.
 """
 
+import os
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -35,6 +36,8 @@ from docmend.config import ConfigError, DocmendConfig, PathsConfig, load_config
 from docmend.observability import configure_logging, get_logger, new_run_id
 from docmend.plan import PLAN_SCHEMA_VERSION, ArtifactRef
 from docmend.report import Report, ReportTotals
+from docmend.restore import run_restore
+from docmend.writer import manifest
 from docmend.writer.apply import execute_plan
 from docmend.writer.gate import ApplyOptions, evaluate_gate
 
@@ -546,3 +549,83 @@ def _write_refusal_report(
         ),
         report_path,
     )
+
+
+@app.command()
+def restore(
+    ctx: typer.Context,
+    manifest_path: Annotated[
+        Path | None,
+        typer.Option("--manifest", help="Manifest to replay (DR-004 NDJSON)."),
+    ] = None,
+    run_id_arg: Annotated[
+        str | None,
+        typer.Option(
+            "--run-id",
+            help="Resolve .docmend/docmend-<ID>-manifest.jsonl (OQ-034 sidecar convention).",
+        ),
+    ] = None,
+    only_id: Annotated[
+        list[str] | None,
+        typer.Option("--id", help="Restore only these docmend.id values (repeatable)."),
+    ] = None,
+    write: Annotated[
+        bool, typer.Option("--write", help="Perform the restore; default previews (mirrors apply).")
+    ] = False,
+    dry_run_flag: Annotated[bool, typer.Option("--dry-run", help="Preview (the default).")] = False,
+) -> None:
+    """Replay manifest records LIFO to undo an apply run (IR-008, §18.6).
+
+    Exit codes (§18.5): 0 clean; 1 findings (skips/failures); 2 input error
+    (bad manifest); 3 safety refusal (lock).
+    """
+    opts = _global_options(ctx)
+    if write and (dry_run_flag or opts.dry_run):
+        raise typer.BadParameter("--write and --dry-run are mutually exclusive")
+    if (manifest_path is None) == (run_id_arg is None):
+        raise typer.BadParameter("provide exactly one of --manifest or --run-id")
+    if manifest_path is None:
+        manifest_path = Path(ARTIFACT_DIR_NAME) / f"docmend-{run_id_arg}-manifest.jsonl"
+
+    now = datetime.now(UTC)
+    run_id = new_run_id(now)
+    artifact_dir = Path(ARTIFACT_DIR_NAME)
+    configure_logging(
+        run_id=run_id,
+        command="restore",
+        log_dir=artifact_dir,
+        verbose=opts.verbose,
+        quiet=opts.quiet,
+    )
+
+    try:
+        records = manifest.read_manifest(manifest_path)
+    except artifacts.ArtifactError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+    if not records:
+        typer.echo("nothing to restore: manifest holds no records")
+        return
+
+    root = Path(os.path.commonpath([r.original_path for r in records]))
+    run_lock = _acquire_run_lock_strict(
+        root if root.is_dir() else root.parent, run_id=run_id, command="restore"
+    )
+    try:
+        outcomes = run_restore(
+            records,
+            run_id=run_id,
+            write=write,
+            only_ids=frozenset(only_id) if only_id else None,
+            manifest_out=artifact_dir / f"docmend-{run_id}-manifest.jsonl",
+        )
+    finally:
+        run_lock.release()
+
+    counts = Counter(outcome.status for outcome in outcomes)
+    typer.echo(
+        f"restored: {counts.get('restored', 0)}  would-restore: {counts.get('would_restore', 0)}  "
+        f"skipped: {counts.get('skipped', 0)}  failed: {counts.get('failed', 0)}"
+    )
+    if counts.get("skipped", 0) or counts.get("failed", 0):
+        raise typer.Exit(1)

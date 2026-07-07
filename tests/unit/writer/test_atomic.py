@@ -66,6 +66,27 @@ def test_no_clobber_publish__creates_when_free(tmp_path: Path) -> None:
     assert target.read_bytes() == b"new"
 
 
+def test_no_clobber_publish_unlink_failure__publish_stands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NFR-002: a failed temp-unlink after a successful hardlink must not be
+    reported as a WriteError — the publish already happened, so the caller
+    would otherwise be told a lie about the mutation's outcome."""
+    target = tmp_path / "a.md"
+    tmp = target.with_name(f".{target.name}.docmend-tmp")
+    real_unlink = Path.unlink
+
+    def boom(self: Path, missing_ok: bool = False) -> None:
+        if self == tmp:
+            raise OSError(5, "I/O error")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", boom)
+    atomic.atomic_write_bytes(target, b"new", clobber=False)
+    assert target.read_bytes() == b"new"
+    assert tmp.exists()  # documented residue: a second name for the same inode
+
+
 def test_rename_no_clobber__moves_and_refuses(tmp_path: Path) -> None:
     src = tmp_path / "a.txt"
     src.write_bytes(b"payload")
@@ -81,6 +102,50 @@ def test_rename_no_clobber__moves_and_refuses(tmp_path: Path) -> None:
         atomic.rename_no_clobber(other, blocker)
     assert other.read_bytes() == b"other"
     assert blocker.read_bytes() == b"blocker"
+
+
+def test_rename_no_clobber_source_unlink_failure__rolls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FR-011/NFR-002: if the link succeeds but removing the source fails,
+    rollback must remove the just-created target link, leaving the exact
+    pre-action state (codex CR-NEW-004 class)."""
+    source = tmp_path / "a.txt"
+    source.write_bytes(b"payload")
+    target = tmp_path / "a.md"
+    real_unlink = Path.unlink
+
+    def boom(self: Path, missing_ok: bool = False) -> None:
+        if self == source:
+            raise OSError(5, "I/O error")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", boom)
+    with pytest.raises(atomic.WriteError):
+        atomic.rename_no_clobber(source, target)
+    assert not target.exists()
+    assert source.read_bytes() == b"payload"
+
+
+def test_rename_no_clobber_double_failure__residue_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FR-011/NFR-002: if both the source unlink and the rollback's target
+    unlink fail, the failure is reported (never silently swallowed) and both
+    names remain pointing at one intact inode — a superset, never lossy."""
+    source = tmp_path / "a.txt"
+    source.write_bytes(b"payload")
+    target = tmp_path / "a.md"
+
+    def boom(self: Path, missing_ok: bool = False) -> None:
+        raise OSError(5, "I/O error")
+
+    monkeypatch.setattr(Path, "unlink", boom)
+    with pytest.raises(atomic.WriteError, match="second name"):
+        atomic.rename_no_clobber(source, target)
+    assert source.exists()
+    assert target.exists()
+    assert source.read_bytes() == target.read_bytes() == b"payload"
 
 
 def test_rename_overwrite__replaces_and_wraps_errors(
@@ -111,7 +176,7 @@ def test_rename_overwrite__replaces_and_wraps_errors(
     assert blocker.read_bytes() == b"blocker"
 
 
-def test_write_failure_wraps_oserror(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_write_failure__wraps_oserror(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """ERR-003: environmental write errors surface as WriteError with the cause."""
     target = tmp_path / "a.txt"
 

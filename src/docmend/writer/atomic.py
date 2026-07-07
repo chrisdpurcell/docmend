@@ -4,8 +4,13 @@ Every mutation path in the writer goes through these two functions; nothing
 else in docmend calls os.replace/os.link on library files. Invariants:
 
 - On ANY failure the target is untouched and the temp file is removed
-  (ERR-003: "temp file cleaned up; original untouched").
-- clobber=False publishes via os.link + unlink-temp: atomic on POSIX and
+  (ERR-003: "temp file cleaned up; original untouched") — with one deliberate
+  exception: clobber=False publishes via hardlink + unlink-temp, and if the
+  link succeeds but the temp unlink fails, the publish already happened, so
+  that failure is swallowed rather than reported as a WriteError (see
+  atomic_write_bytes). The stray temp name is lossless residue, not a
+  partial write.
+- clobber=False publishes via hardlink + unlink-temp: atomic on POSIX and
   EEXIST-safe against a target appearing between the collision check and the
   publish (the TOCTOU window os.replace cannot close). FileExistsError is
   deliberately NOT wrapped — the caller maps it to the collision policy.
@@ -14,6 +19,7 @@ else in docmend calls os.replace/os.link on library files. Invariants:
   then the mount's problem, not a docmend error.
 """
 
+import contextlib
 import os
 from pathlib import Path
 
@@ -44,7 +50,7 @@ def _write_temp(target: Path, data: bytes, mode: int | None) -> Path:
             fh.flush()
             os.fsync(fh.fileno())
         if mode is not None:
-            os.chmod(tmp, mode & 0o7777)  # noqa: PTH101
+            tmp.chmod(mode & 0o7777)
     except OSError:
         tmp.unlink(missing_ok=True)
         raise
@@ -62,10 +68,9 @@ def atomic_write_bytes(
         raise WriteError(msg) from exc
     try:
         if clobber:
-            os.replace(tmp, target)  # noqa: PTH105
+            tmp.replace(target)
         else:
-            os.link(tmp, target)  # FileExistsError on a collision race — caller's policy
-            tmp.unlink()
+            target.hardlink_to(tmp)  # FileExistsError on a collision race — caller's policy
     except FileExistsError:
         tmp.unlink(missing_ok=True)
         raise
@@ -73,6 +78,16 @@ def atomic_write_bytes(
         tmp.unlink(missing_ok=True)
         msg = f"{target}: cannot publish write ({exc.strerror or exc})"
         raise WriteError(msg) from exc
+    if not clobber:
+        # The link above already succeeded, so target now holds the new bytes
+        # — the publish happened. The stray ".{name}.docmend-tmp" is just a
+        # second name for that same inode (lossless residue); a later write
+        # attempt will surface it as an O_EXCL collision on the temp-file
+        # stage. Reporting WriteError here would tell the caller the mutation
+        # failed when it didn't — worse than the residue, so we swallow this
+        # one deliberately.
+        with contextlib.suppress(OSError):
+            tmp.unlink()
     fsync_dir(target.parent)
 
 
@@ -80,7 +95,7 @@ def link_no_clobber(source: Path, target: Path) -> None:
     """Give `source`'s inode a second name at `target`, refusing an existing
     target. The lossless half of a rename: after it, BOTH names exist."""
     try:
-        os.link(source, target)
+        target.hardlink_to(source)
     except FileExistsError:
         raise
     except OSError as exc:
@@ -122,7 +137,7 @@ def rename_overwrite(source: Path, target: Path) -> None:
     no-clobber one. Callers have already backed up the clobbered target.
     """
     try:
-        os.replace(source, target)  # noqa: PTH105
+        source.replace(target)
     except OSError as exc:
         msg = f"{target}: cannot replace with {source} ({exc.strerror or exc})"
         raise WriteError(msg) from exc

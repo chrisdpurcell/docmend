@@ -24,6 +24,7 @@
 | 0014 | Tool-first product scope — scale-flexibility binding | 🟢 3 | RQ-024, G-006, NFR-006 | ✅ accepted |
 | 0015 | Two-corpus test architecture & anonymization | 🟡 2 | RQ-032 | ✅ accepted |
 | 0016 | The mechanical-transform boundary (consolidated) | 🟢 3 | RQ-025/030/031 | ✅ accepted |
+| 0017 | Branch strategy, protection, release process, CI/CD | 🟡 2 | workflow adoption (no RQ; authored 2026-07-06 before MS-0) | ✅ accepted |
 
 ## Tier 1 — write now (foundational; hard to reverse)
 

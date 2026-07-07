@@ -1,10 +1,10 @@
 # Dependabot configuration — ported from the hw-radar workflow (adr-0017).
 # See the uv-strict-python security-setup reference for advanced options.
 #
-# docmend has no production dependencies yet (`dependencies = []`); the
-# production-dependencies group below is inert until the CLI's runtime deps
-# land at MS-0+, kept now so the policy is in place before the first one is
-# added rather than retrofitted after.
+# Covers the runtime closure (typer/pydantic/structlog/rich/pathspec/
+# jsonschema/charset-normalizer/ruamel.yaml — see docs/dependency-licenses.md)
+# and the dev group. Vulnerability alerts + automated security fixes were
+# enabled repo-side at the post-v1.0.0 hygiene pass (2026-07-07).
 
 version: 2
 updates:

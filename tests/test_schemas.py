@@ -70,14 +70,27 @@ class TestSchemaFiles:
         walk(load_schema(kind), "")
         assert not offenders, f"non-strict object schemas in {kind}: {offenders}"
 
-    @pytest.mark.parametrize("kind", ARTIFACT_KINDS)
+    @pytest.mark.parametrize("kind", [k for k in ARTIFACT_KINDS if k != "frontmatter"])
     def test_schema__declares_kind_and_version_fields(self, kind: ArtifactKind) -> None:
+        """The kind/version/run-ID identity contract binds the four RUN artifacts.
+        Frontmatter is the product-document contract: it has no run_id (a document
+        outlives runs) and carries its version as docmend.schema_version instead —
+        asserted separately below."""
         schema = load_schema(kind)
         properties = cast("dict[str, dict[str, object]]", schema["properties"])
         assert str(properties["schema"]["const"]).startswith("docmend/")
         assert "pattern" in properties["schema_version"]
         required = cast("list[str]", schema["required"])
         assert {"schema", "schema_version", "run_id"} <= set(required)
+
+    def test_frontmatter_schema__versioned_under_docmend_namespace(self) -> None:
+        """DR-005/adr-0011: the product contract's version gate is
+        docmend.schema_version, required and pattern-constrained."""
+        schema = load_schema("frontmatter")
+        properties = cast("dict[str, dict[str, Any]]", schema["properties"])
+        docmend_ns = properties["docmend"]
+        assert "pattern" in docmend_ns["properties"]["schema_version"]
+        assert {"id", "schema_version"} <= set(docmend_ns["required"])
 
 
 class TestEnumDriftGuard:

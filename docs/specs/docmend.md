@@ -59,6 +59,7 @@ related:
 | 0.16 | `2026-07-06` | `coding-agent` | **MS-3 User and admin experience implemented** (§19 items 1–3). Spec-side changes: §17.3 rows FR-003/FR-004/FR-005/FR-006/FR-011/FR-018/NFR-002/NFR-004/IR-003/IR-008/DR-003/DR-004 Complete, FR-007/FR-010/FR-012/NFR-006/IR-005/IR-007 advanced, each with named tests; §3.1 refreshed (apply/restore live; verify lands MS-4); §21 gains OQ-035 (FR-005 CLI surface + risk tiers) and OQ-036 (run-lock location) — both Open, non-blocking, proceeding on recorded assumptions. Code side (for context): the writer layer (atomic same-dir replace + parent fsync, link-based no-clobber renames, verify-then-mutate backups, fsync-per-record NDJSON manifest with AOF read rule), the adr-0004 pure-predicate safety gate (pairwise-tested), `docmend apply` (dry-run default, snapshot-driven, per-file FR-003 hash guard, console summary mirroring the DR-003 counts per §18.5), `docmend restore` (LIFO replay, IR-008) with the automated §18.6 drill, the OQ-027 run lock, and the two MS-2 final-review inputs: inventory 1.1 detection provenance (cross-config binary-suspect fix) and artifact path-containment hardening (inventory/plan 1.1 patterns + model validators). Manifest schema 1.1 adds the overwrite-preservation fields; plan schema 1.1 adds optional `source_root`. |
 | 0.17 | `2026-07-07` | `coding-agent` | **MS-4 Unattended operation — in progress.** Spec-side changes: §17.3 rows IR-004 Complete and FR-014 Partial, each with named tests; §3.1 current-state refreshed (verify now runs content + reconciliation checks). Code side (for context): the OQ-036 lock-key gap closed — manifest schema 1.1→**1.2** adds a writer-stamped `source_root` and `docmend restore` keys its run-lock on it (falls back to `commonpath` for pre-1.2 manifests), so a restore contends with a concurrent apply even when mutated files nest below the source root (AW-005); and `docmend verify` (FR-014, IR-004, `adr-0012-verify-semantics-exit-code-taxonomy`) — read-only UTF-8-decodability + LF-only content checks over PATH (reusing scan's facts) plus manifest after-hash reconciliation, input via `--manifest`/`--run-id` sidecar, the 0/1/2 exit taxonomy, proven read-only. Frontmatter validation (FR-016) and report/manifest count reconciliation remain deferred with the frontmatter feature (FR-016; MS-4/MS-5). Resume (FR-013), idempotency (FR-017), and the single-file verify journey (NFR-006) are the remaining MS-4 work. |
 | 0.18 | `2026-07-07` | `coding-agent` | **MS-4 Unattended operation complete** (§19 items 1–3). Spec-side changes: §17.3 rows FR-013/FR-017/NFR-006 Complete and FR-003 extended (duplicate-run/stale-plan shapes), each with named tests; §3.1 current-state refreshed (MS-4 complete; MS-5 remains). Code side (for context): resume (FR-013, `adr-0006-resume-and-recovery-model`) — `docmend apply --resume-run-id/--resume-manifest` (both repeatable for multiply-interrupted runs) reconciles plan actions against prior manifest records before execution: recorded-applied actions whose live output matches `after_sha256` skip as `already-applied` (a new internal skip reason, NOT counted as an exit-1 finding so unattended re-invocation converges; the schema's `skip_reason` is free-string, no bump), changed/missing outputs fail ERR-002, unrecorded actions execute normally behind the FR-003 hash guard; a wrong-tree resume manifest refuses exit 2 via the 1.2 `source_root` cross-check. Kill-and-resume e2e proves corpus + union-of-manifests identical to an uninterrupted control. Idempotency (FR-017) covered in all three duplicate shapes; the NFR-006 journey now runs scan → plan → apply `--write` → verify over one file. |
+| 0.19 | `2026-07-07` | `coding-agent` | **MS-5 items: frontmatter contract + FR-014 closure.** Spec-side changes: §17.3 rows FR-014/FR-016/DR-005 Complete (FR-016 for v1 scope — emission-side validation rides the deferred OQ-009 seam), each with named tests; §9 schema-location sentence updated to the pinned `src/docmend/schemas/frontmatter.schema.json` and the null-heavy worked example rewritten to the OQ-013 minimal shape (required mechanical fields non-null; optional fields omitted, never null; gap-56 closed). Code side (for context): `schemas/frontmatter.schema.json` 1.0 pinned per `adr-0011-frontmatter-optional-minimal-split` (strict, versioned under `docmend.schema_version` — a product document has no run_id); `frontmatter.py` codec (`ruamel.yaml` safe loader per OQ-022 — duplicate keys rejected at parse time (C-006), timestamp scalars preserved as strings so `format: date-time` assertions fire); `verify` validates frontmatter WHERE PRESENT over `.md` files (absent = legal) and gains `--report` + run-ID report-sidecar discovery for the FR-014 report↔manifest accounting reconciliation (applied outcomes ↔ applied records, both directions + duplicate detection). `ruamel.yaml` moved from pre-cleared to installed in the §16 license record. |
 
 **Spec lifecycle:** This document is **living until `approved`**, then **change-controlled**: post-approval edits require a new revision row and, for scope-affecting changes, re-approval by the owner. Implementation deviations are recorded in the [Deviations Log](#deviations-log), not silently patched into requirements. When replaced, set `status: superseded` and `superseded_by:` in the frontmatter.
 
@@ -522,8 +523,8 @@ The frontmatter contract is the durable heart of the data model. Generated front
 
 Schema strategy:
 
-- Frontmatter emission is **optional** (OQ-009): a run may emit none. When emitted, v1 produces at most a **minimal skeleton** — the required mechanical fields plus a placeholder `title` — for processed-document tracking; richer or inferred semantic metadata is deferred to later versions. The null-heavy worked example below is the eventual target shape, not the v1 minimal output; per OQ-013, it is rewritten to the required/null/omitted convention when `schemas/frontmatter.schema.json` is authored (tracked in `docs/gap-analysis.md`).
-- Store the canonical schema in the repository, e.g. `schemas/frontmatter.schema.json` (DR-005).
+- Frontmatter emission is **optional** (OQ-009): a run may emit none. When emitted, v1 produces at most a **minimal skeleton** — the required mechanical fields plus a placeholder `title` — for processed-document tracking; richer or inferred semantic metadata is deferred to later versions. The worked example below shows exactly that OQ-013 shape: required mechanical fields present and non-null, optional fields **omitted rather than emitted as `null`**.
+- Store the canonical schema in the repository: `src/docmend/schemas/frontmatter.schema.json` (DR-005; inside the package so the installed wheel can validate, like the four run-artifact schemas).
 - Validate generated frontmatter during `plan`, `apply`, and `verify` (FR-016).
 - Reject duplicate frontmatter keys at YAML parse time, before schema validation — a permissive parser silently collapses duplicates, and schema validation only ever sees the already-collapsed result (C-006).
 - Treat frontmatter scalar values as plain data, never authored Markdown — Pandoc parses YAML metadata leaf scalars as Markdown even for CommonMark-family readers, so unconstrained formatting in fields like `description` would blur metadata and body semantics (C-006).
@@ -539,31 +540,16 @@ Schema strategy:
 
 Initial required fields: `title`, `docmend.id`, `docmend.schema_version`, `source.original_path`, `source.hash`, `output.hash`.
 
-Example shape:
+Example shape — the v1 minimal skeleton (OQ-013: required mechanical fields non-null; unknown optional fields **omitted**, never `null`; `title` may be the static `Untitled` placeholder because v1 infers no titles):
 
 ```yaml
 ---
-title: 'Example title: quoted because it contains a colon'
-author: null
-date: null
-lang: en
-keywords: []
-subject: null
-description: null
-tags: []
-genre: unknown
-status: unknown
-story_type: unknown
-rating: unrated
-deduplication:
-  cluster_id: null
-  canonical: null
-  confidence: null
+title: 'Untitled'
 docmend:
   id: '00000000-0000-7000-8000-000000000000'
-  schema_version: '0.1'
-  generated_at: '2026-07-05T00:00:00Z'
-  conversion_version: 'docmend 0.1.0'
+  schema_version: '1.0'
+  generated_at: '2026-07-05T00:00:00+00:00'
+  conversion_version: 'docmend 1.0.0'
 source:
   original_path: 'synthetic/example.txt'
   original_extension: '.txt'
@@ -572,15 +558,15 @@ source:
   detected_encoding:
     name: windows-1252
     confidence: 0.97
-  newline_style: CRLF
+  newline_style: crlf
 output:
   hash: 'sha256:...'
   markdown_format: pandoc
-  word_count: 200
-  chapter_count: 0
-  generated_by: 'docmend 0.1.0'
+  generated_by: 'docmend 1.0.0'
 ---
 ```
+
+Semantic fields appear only when they carry a real value (e.g. `author: ['A. Writer']`, `date: '2003'`, `genre: memoir`) — the eventual known/inferred/unknown provenance wrapper is deferred with semantic enrichment (OQ-013).
 
 Future extension fields are safe by construction: unknown optional fields are omitted rather than reserved, and `docmend.schema_version` gates interpretation.
 
@@ -846,9 +832,9 @@ The implementer fills this in as the completion evidence ([Appendix B.3](#b3-req
 | FR-011 | Collision policy tests (skip/fail/overwrite) — `tests/test_planning.py::TestCollisions`, `tests/test_cli_plan.py`; append `tests/test_apply.py::test_collision_policies__skip_fail_overwrite`. | Complete (MS-3: apply half incl. overwrite manifest) |
 | FR-012 | Filter consistency tests across scan/plan/apply. Scan half at MS-1: include/exclude selection, OQ-029 replace semantics, single-file filtering — `tests/test_discovery.py`, `tests/test_cli_scan.py`; plan half at MS-2 — `tests/test_planning.py`, `tests/test_cli_plan.py`; append `tests/test_apply.py::test_snapshot_filter_enforced__foreign_action_excluded`. | Partial → apply leg done (MS-3) |
 | FR-013 | Kill-and-resume end-to-end test — `tests/test_resume.py` (engine: interrupt mid-batch, resume completes remainder, corpus + union-of-manifests identical to uninterrupted control; already-applied / ERR-002 changed-output / ERR-002 missing-output / lost-trailing-record arms), `tests/test_cli_resume.py` (CLI: `--resume-run-id`/`--resume-manifest` incl. repeatable multi-resume chain, wrong-tree refusal, dry-run preview). | Complete (MS-4) |
-| FR-014 | Verify command seeded-defect tests — bad-encoding, CRLF, hash-mismatch, and missing-output each caught with exit 1; a clean corpus and a clean manifest each exit 0 — `tests/test_cli_verify.py`, `tests/test_verify.py`. | Partial (MS-4: UTF-8-decodability + LF-only content checks and manifest after-hash reconciliation; frontmatter validation deferred with the frontmatter feature (FR-016); report/manifest count reconciliation pending) |
+| FR-014 | Verify command seeded-defect tests — bad-encoding, CRLF, hash-mismatch, missing-output, invalid-frontmatter, and report/manifest accounting drift each caught with exit 1; a clean corpus, a clean manifest, and clean cross-artifact accounting each exit 0 — `tests/test_cli_verify.py`, `tests/test_verify.py`, `tests/test_frontmatter.py`. | Complete (MS-5: frontmatter-where-present validation + report/manifest accounting close the FR-014 check set) |
 | FR-015 | Risky-file skip tests over the weird-document corpus — `tests/test_weird_corpus.py`, `tests/test_planning.py`. | Complete (MS-2) |
-| FR-016 | Frontmatter schema validation tests at plan/apply/verify. | Not Started |
+| FR-016 | Frontmatter schema validation tests — schema + codec confirmation set (null required field, missing `docmend.id`, duplicate key, format assertion on malformed date-time, no-frontmatter legality) in `tests/test_frontmatter.py`; verify wiring in `tests/test_cli_verify.py`. Plan/apply-time validation applies only when emission exists — emission is a deferred OQ-009 seam, so the validate-on-emit half rides that seam. | Complete for v1 scope (MS-5: schema pinned + verify where-present; emission-side validation deferred with the OQ-009 seam) |
 | FR-017 | Double-apply idempotency test. Plan-level no-op half at MS-2 — `tests/test_planning.py::TestContentPass::test_already_clean_file__neither_action_nor_skip`; apply half at MS-4 — `tests/test_idempotency.py` (blind double-apply → zero mutations/all stale-hash, double-apply under `--resume-run-id` → exit 0, re-plan over converted output → zero actions). | Complete (MS-4) |
 | FR-018 | Report schema and count-reconciliation tests — `tests/test_report_artifact.py`, `tests/test_apply.py::test_report_counts_reconcile__and_manifest_seq_monotonic`. | Complete (MS-3) |
 | FR-019 | Watchdog-timeout termination test; oversize plan-time skip test — `tests/test_planning.py::TestFactGates::test_oversize_file__skipped_with_reason`. | Partial (MS-2 oversize plan-time guard; watchdog at MS-5) |
@@ -870,7 +856,7 @@ The implementer fills this in as the completion evidence ([Appendix B.3](#b3-req
 | DR-002 | Plan schema validation; per-action ID and source-hash presence tests — `tests/test_plan_artifact.py`, `tests/test_planning.py`. | Complete (MS-2) |
 | DR-003 | Report schema validation; summary-vs-outcome reconciliation tests — `tests/test_report_artifact.py` (schema + reconciliation). | Complete (MS-3) |
 | DR-004 | Manifest schema validation; mechanical-restorability test — `tests/unit/writer/test_manifest.py`, `tests/test_restore_drill.py` (mechanical restorability). | Complete (MS-3) |
-| DR-005 | Frontmatter schema validation tests (duplicate keys, format assertion). | Not Started |
+| DR-005 | Frontmatter schema validation tests (duplicate keys, format assertion) — `tests/test_frontmatter.py::TestParse::test_duplicate_key__rejected_at_parse`, `::TestValidate::test_malformed_generated_at__format_assertion_fires`; schema pinned at `src/docmend/schemas/frontmatter.schema.json` (1.0). | Complete (MS-5) |
 
 ---
 

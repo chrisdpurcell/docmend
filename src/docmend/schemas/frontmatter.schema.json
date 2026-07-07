@@ -1,0 +1,111 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://github.com/chrisdpurcell/docmend/schemas/frontmatter.schema.json",
+	"title": "docmend product frontmatter (DR-005, adr-0011)",
+	"description": "The YAML frontmatter docmend writes into converted product documents, validated after safe YAML parsing (duplicate keys rejected at parse time, C-006; date scalars preserved as strings so format assertions fire, adr-0011 rule 4). RQ-014 shape: required mechanical fields always present and non-null; optional fields are OMITTED, never null; Pandoc-recognized export fields at the root; docmend-owned mechanical data under the namespaced docmend/source/output objects. Controlled-vocabulary fields (genre/status/story_type/rating) validate as plain strings here — per-corpus vocabularies are injected externally and are deliberately not hardcoded in this public schema (OQ-007).",
+	"type": "object",
+	"additionalProperties": false,
+	"required": ["title", "docmend", "source", "output"],
+	"properties": {
+		"title": {
+			"description": "Required semantic field; v1 infers no titles, so a static 'Untitled' placeholder is legal (adr-0011 rule 2).",
+			"type": "string",
+			"minLength": 1
+		},
+		"author": {
+			"type": "array",
+			"items": { "type": "string", "minLength": 1 }
+		},
+		"date": {
+			"description": "Prefer ISO 8601-compatible values; kept a plain string because partial dates ('2003') are legitimate for legacy documents.",
+			"type": "string",
+			"minLength": 1
+		},
+		"lang": { "type": "string", "minLength": 2 },
+		"keywords": {
+			"type": "array",
+			"items": { "type": "string", "minLength": 1 }
+		},
+		"subject": { "type": "string", "minLength": 1 },
+		"description": { "type": "string", "minLength": 1 },
+		"abstract": { "type": "string", "minLength": 1 },
+		"tags": {
+			"type": "array",
+			"items": { "type": "string", "minLength": 1 }
+		},
+		"genre": { "type": "string", "minLength": 1 },
+		"status": { "type": "string", "minLength": 1 },
+		"story_type": { "type": "string", "minLength": 1 },
+		"rating": { "type": "string", "minLength": 1 },
+		"deduplication": {
+			"description": "Populated by deferred WH-005 fuzzy-duplicate work; all fields optional until then.",
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"cluster_id": { "type": "string", "minLength": 1 },
+				"canonical": { "type": "boolean" },
+				"confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+			}
+		},
+		"docmend": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["id", "schema_version"],
+			"properties": {
+				"id": {
+					"description": "Stable document identity surviving renames and rewrites (adr-0008); UUIDv7.",
+					"type": "string",
+					"format": "uuid"
+				},
+				"schema_version": {
+					"type": "string",
+					"pattern": "^1\\.\\d+$"
+				},
+				"generated_at": { "type": "string", "format": "date-time" },
+				"conversion_version": { "type": "string", "minLength": 1 }
+			}
+		},
+		"source": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["original_path", "hash"],
+			"properties": {
+				"original_path": { "type": "string", "minLength": 1 },
+				"original_extension": { "type": "string" },
+				"hash": { "$ref": "#/$defs/sha256" },
+				"size_bytes": { "type": "integer", "minimum": 0 },
+				"detected_encoding": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["name"],
+					"properties": {
+						"name": { "type": "string", "minLength": 1 },
+						"confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+					}
+				},
+				"newline_style": {
+					"description": "Lowercase, matching the inventory newline census vocabulary.",
+					"enum": ["lf", "crlf", "cr", "mixed", "none"]
+				}
+			}
+		},
+		"output": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["hash"],
+			"properties": {
+				"hash": { "$ref": "#/$defs/sha256" },
+				"word_count": { "type": "integer", "minimum": 0 },
+				"chapter_count": { "type": "integer", "minimum": 0 },
+				"markdown_format": { "const": "pandoc" },
+				"generated_by": { "type": "string", "minLength": 1 }
+			}
+		}
+	},
+	"$defs": {
+		"sha256": {
+			"type": "string",
+			"pattern": "^sha256:[0-9a-f]{64}$"
+		}
+	}
+}

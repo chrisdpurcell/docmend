@@ -3,15 +3,20 @@
 Read-only (adr-0012, G-005 posture): reuses `discovery.scan`'s walk + facts and
 reconciles the manifest/report against them; it mutates nothing and writes no
 manifest. It yields findings; the CLI maps their presence to the adr-0012 exit
-taxonomy (0 clean / 1 findings). Frontmatter validation (FR-016) is deferred with
-the frontmatter feature — the v1 pipeline emits none (RQ-008).
+taxonomy (0 clean / 1 findings). Frontmatter is validated WHERE PRESENT
+(FR-016, adr-0011): documents without frontmatter are legal — the v1 pipeline
+emits none (RQ-008) — but a present block must parse safely and validate
+against `schemas/frontmatter.schema.json`.
 """
 
 import hashlib
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+from docmend.frontmatter import validate_frontmatter
 from docmend.inventory import Inventory
+from docmend.report import Report
 from docmend.writer.manifest import ManifestRecord
 
 # LF-only per adr-0012. "none" (a file with no line endings) trivially has no CR
@@ -49,6 +54,33 @@ def check_content(inventory: Inventory) -> list[VerifyFinding]:
     return findings
 
 
+def check_frontmatter(inventory: Inventory) -> list[VerifyFinding]:
+    """Frontmatter-validity findings where frontmatter is present (FR-016).
+
+    Scoped to `.md` files — docmend's output format, the only place the DR-005
+    contract applies; a `---` opener in a legacy `.txt` is body text, not a
+    metadata claim. Files scan already flagged non-UTF-8 are skipped here: they
+    cannot be decoded to look for a block, and the encoding finding from
+    check_content already covers them (one defect, one finding).
+    """
+    findings: list[VerifyFinding] = []
+    root = Path(inventory.source_root)
+    for record in inventory.files:
+        if not record.path.endswith(".md") or not record.encoding.utf8_valid:
+            continue
+        try:
+            text = (root / record.path).read_text(encoding="utf-8")
+        except OSError as exc:
+            findings.append(
+                VerifyFinding(record.path, "frontmatter", f"unreadable ({exc.strerror or exc})")
+            )
+            continue
+        detail = validate_frontmatter(text)
+        if detail is not None:
+            findings.append(VerifyFinding(record.path, "frontmatter", detail))
+    return findings
+
+
 def _sha(data: bytes) -> str:
     return f"sha256:{hashlib.sha256(data).hexdigest()}"
 
@@ -79,4 +111,41 @@ def reconcile_manifest(records: list[ManifestRecord]) -> list[VerifyFinding]:
                     record.target_path, "hash", "live hash does not match recorded after-hash"
                 )
             )
+    return findings
+
+
+def reconcile_report(report: Report, records: list[ManifestRecord]) -> list[VerifyFinding]:
+    """Cross-artifact accounting (FR-014 'skipped-file accounting / artifact
+    internal consistency', OQ-006): every applied report outcome must have an
+    applied manifest record and vice versa. The intra-report totals rule
+    (totals == outcome counts) is already enforced by `artifacts.read_report`;
+    this is the BETWEEN-artifacts half it cannot see.
+    """
+    findings: list[VerifyFinding] = []
+    applied_outcomes = {o.action_id for o in report.outcomes if o.status == "applied"}
+    applied_records = {r.action_id for r in records if r.result == "applied"}
+    for action_id in sorted(applied_outcomes - applied_records):
+        findings.append(
+            VerifyFinding(
+                action_id, "accounting", "report records applied but manifest has no applied record"
+            )
+        )
+    for action_id in sorted(applied_records - applied_outcomes):
+        findings.append(
+            VerifyFinding(
+                action_id,
+                "accounting",
+                "manifest records applied but report has no applied outcome",
+            )
+        )
+    # A duplicate applied record for one action would slip past the set logic.
+    duplicates = [
+        a
+        for a, n in Counter(r.action_id for r in records if r.result == "applied").items()
+        if n > 1
+    ]
+    for action_id in sorted(duplicates):
+        findings.append(
+            VerifyFinding(action_id, "accounting", "manifest holds duplicate applied records")
+        )
     return findings

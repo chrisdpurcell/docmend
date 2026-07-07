@@ -9,7 +9,7 @@
   - ✅ **Idempotency (FR-017):** all three duplicate shapes tested (`tests/test_idempotency.py`) — blind double-apply (zero mutations, stale-hash skips, exit 1 by design), double-apply under `--resume-run-id` (exit 0), re-plan over converted output (zero actions).
   - ✅ **NFR-006 journey closed:** scan → plan → apply `--write` (low-risk opt-in) → verify over one file, default config (`test_restore_drill.py::test_single_file_journey…`).
   - The MS-3 final-review inputs are all cleared (mode-reset fix + lock rekey landed earlier); verify's report/count reconciliation stays deferred with the frontmatter feature (FR-016, MS-5).
-- **MS-5 next (§19):** 100k seeded scale test + NFR-001 memory bound; frontmatter schema + verify wiring (FR-016/DR-005, gap-56); §18.7 docs (README, runbooks); release wiring per adr-0017 (tag → `uv build` → GitHub Release) and v1.0.0. The "first real-library run" (§18.4 staged rollout) and weird-corpus expansion from real scans are **owner actions** post-release.
+- **MS-5 underway (§19):** ✅ frontmatter contract landed (spec rev 0.19): `schemas/frontmatter.schema.json` 1.0 (adr-0011/RQ-014 shape), `frontmatter.py` ruamel.yaml codec (duplicate-key rejection, timestamp-string preservation), verify validates frontmatter where present + report↔manifest accounting (`--report`/run-ID sidecar) — FR-014 Complete, FR-016 Complete for v1 scope, DR-005 Complete, gap-56 closed. Remaining: 100k seeded scale test + NFR-001 memory bound (subagent worktree in flight); §18.7 docs (README, runbooks); release wiring per adr-0017 (tag → `uv build` → GitHub Release) and v1.0.0. The "first real-library run" (§18.4 staged rollout) and weird-corpus expansion from real scans are **owner actions** post-release.
 - **MS-3 merged** (PR #9 → `main` `468dd9f`, 2026-07-07). Detail: `sessions/2026-07.md`.
 - **Owner sign-off wanted (non-blocking):** OQ-034 (`.docmend/`), OQ-035 (preservation flags/tiers), OQ-036 (lock location/mechanism — key gap fixed); DEV-001 (MS-2) pending.
 - **Workflow:** `dev`→PR→`main`; no CI on direct `dev` pushes — run the local gate (README) first. Milestone ladder §19 binding.
@@ -20,5 +20,5 @@
 
 ## Pointers
 
-- Spec: `docs/specs/docmend.md` (SPEC-VHHB, draft, v0.18)
+- Spec: `docs/specs/docmend.md` (SPEC-VHHB, draft, v0.19)
 - Decisions: `docs/resolved-questions.md` (RQ-001..033) · open: `docs/open-questions.md` (OQ-034..036) · ADRs: `docs/adr/` (0001–0017 + backlog)

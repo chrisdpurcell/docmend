@@ -37,7 +37,7 @@ from docmend.observability import configure_logging, get_logger, new_run_id
 from docmend.plan import PLAN_SCHEMA_VERSION, ArtifactRef
 from docmend.report import Report, ReportTotals
 from docmend.restore import run_restore
-from docmend.verify import check_content, reconcile_manifest
+from docmend.verify import check_content, check_frontmatter, reconcile_manifest, reconcile_report
 from docmend.writer import manifest
 from docmend.writer.apply import execute_plan
 from docmend.writer.gate import ApplyOptions, evaluate_gate
@@ -564,7 +564,10 @@ def apply(
     artifacts.write_report(result, report_path)
     totals = result.totals
     typer.echo(f"report: {report_path}")
-    if write and (totals.applied or totals.failed):
+    # exists() and not just the counts: resume reconciliation can fail actions
+    # read-only (ERR-002) without a single mutation, and the lazy-opening
+    # ManifestWriter then never created the file (PR #10 review).
+    if write and (totals.applied or totals.failed) and manifest_path.exists():
         typer.echo(f"manifest: {manifest_path}")
     reasons = Counter(o.skip_reason for o in result.outcomes if o.skip_reason is not None)
     detail = f" ({', '.join(f'{r} {n}' for r, n in sorted(reasons.items()))})" if reasons else ""
@@ -741,7 +744,16 @@ def verify(
         str | None,
         typer.Option(
             "--run-id",
-            help="Reconcile against .docmend/docmend-<ID>-manifest.jsonl (OQ-034 sidecar convention).",
+            help="Reconcile against .docmend/docmend-<ID>-manifest.jsonl (OQ-034 sidecar convention; "
+            "the run's report is reconciled too when its sidecar exists).",
+        ),
+    ] = None,
+    report_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--report",
+            help="Reconcile report↔manifest accounting against this DR-003 report "
+            "(requires a manifest via --manifest or --run-id).",
         ),
     ] = None,
     config_path: Annotated[
@@ -752,17 +764,30 @@ def verify(
     """Verify converted output read-only against the FR-014 checks (IR-004, adr-0012).
 
     Read-only: reuses `scan`'s walk + facts, mutates nothing, writes no manifest.
-    Content checks (UTF-8 decodability, LF-only) always run over PATH; manifest
-    reconciliation runs when a manifest is supplied (flag or sidecar). Exit codes
-    (adr-0012): 0 clean; 1 findings (bad encoding, CRLF, hash mismatch); 2 input
-    error (bad flags, unreadable/invalid artifact).
+    Content checks (UTF-8 decodability, LF-only) and frontmatter-where-present
+    validation (FR-016, adr-0011) always run over PATH; manifest reconciliation
+    runs when a manifest is supplied (flag or sidecar), and report↔manifest
+    accounting when a report is too. Exit codes (adr-0012): 0 clean; 1 findings
+    (bad encoding, CRLF, invalid frontmatter, hash mismatch, accounting drift);
+    2 input error (bad flags, unreadable/invalid artifact).
     """
     opts = _global_options(ctx)
     config = _load_effective_config(config_path, None, None)
     if manifest_path is not None and run_id_arg is not None:
         raise typer.BadParameter("provide at most one of --manifest or --run-id")
+    if report_path is not None and manifest_path is None and run_id_arg is None:
+        # Accounting is a CROSS-artifact check: a report alone has its internal
+        # totals rule enforced at read time; without a manifest there is nothing
+        # to reconcile it against.
+        raise typer.BadParameter("--report requires a manifest (--manifest or --run-id)")
     if run_id_arg is not None:
         manifest_path = Path(ARTIFACT_DIR_NAME) / f"docmend-{run_id_arg}-manifest.jsonl"
+        if report_path is None:
+            # Sidecar convention: reconcile the run's report too when present;
+            # absence is legal (the operator may have relocated it via --report).
+            sidecar_report = Path(ARTIFACT_DIR_NAME) / f"docmend-{run_id_arg}-report.json"
+            if sidecar_report.is_file():
+                report_path = sidecar_report
     now = datetime.now(UTC)
     run_id = new_run_id(now)
     artifact_dir = Path(ARTIFACT_DIR_NAME)
@@ -776,7 +801,7 @@ def verify(
     log = get_logger(__name__)
     log.info("verify starting", path=str(path))
     inventory = discovery.scan(path, config, run_id=run_id, generated_at=now.isoformat())
-    findings = check_content(inventory)
+    findings = check_content(inventory) + check_frontmatter(inventory)
     if manifest_path is not None:
         try:
             records = manifest.read_manifest(manifest_path)
@@ -786,6 +811,13 @@ def verify(
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(2) from exc
         findings = findings + reconcile_manifest(records)
+        if report_path is not None:
+            try:
+                run_report = artifacts.read_report(report_path)
+            except artifacts.ArtifactError as exc:
+                typer.echo(f"error: {exc}", err=True)
+                raise typer.Exit(2) from exc
+            findings = findings + reconcile_report(run_report, records)
     for finding in findings:
         typer.echo(f"finding [{finding.check}] {finding.path}: {finding.detail}")
     typer.echo(f"verify: {inventory.totals.files} files checked, {len(findings)} findings")

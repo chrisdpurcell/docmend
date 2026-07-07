@@ -3,13 +3,15 @@
 adr-0012 exit taxonomy is the contract under test: 0 clean, 1 findings, 2
 invocation/artifact-input error, 3 safety refusal. v1 checks (RQ-006 / this
 session's scope decision): UTF-8 decodability without replacement, LF-only line
-endings, and manifest/report reconciliation. Frontmatter validation is deferred
-with the frontmatter feature (RQ-008 — the pipeline emits none in v1).
+endings, manifest/report reconciliation, frontmatter validity where present
+(FR-016, adr-0011 — a no-frontmatter document is legal; the v1 pipeline emits
+none), and report<->manifest accounting.
 
 verify reuses `discovery.scan`'s walk + facts, so it configures logging the same
 way scan does; the isolate_logging fixture mirrors tests/test_cli_scan.py.
 """
 
+import json
 import logging
 from collections.abc import Iterator
 from pathlib import Path
@@ -200,3 +202,113 @@ def test_verify_run_id_sidecar__resolves(tmp_path: Path, monkeypatch: pytest.Mon
     result = runner.invoke(app, ["verify", str(corpus), "--run-id", run_id])
 
     assert result.exit_code == 0, result.output
+
+
+VALID_FRONTMATTER = (
+    "---\n"
+    "title: 'Untitled'\n"
+    "docmend:\n"
+    "  id: '01980000-0000-7000-8000-000000000001'\n"
+    "  schema_version: '1.0'\n"
+    "source:\n"
+    "  original_path: 'synthetic/example.txt'\n"
+    "  hash: 'sha256:" + "a" * 64 + "'\n"
+    "output:\n"
+    "  hash: 'sha256:" + "b" * 64 + "'\n"
+    "---\n"
+    "body\n"
+)
+
+
+def test_verify_valid_frontmatter__exit_0(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """FR-016/adr-0011: a present, schema-valid frontmatter block passes."""
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "doc.md").write_text(VALID_FRONTMATTER, encoding="utf-8")
+
+    result = runner.invoke(app, ["verify", str(corpus)])
+    assert result.exit_code == 0, result.output
+
+
+def test_verify_invalid_frontmatter__exit_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FR-014 seeded-defect class 'invalid frontmatter': a present block that
+    fails the DR-005 schema is a finding, exit 1."""
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "doc.md").write_text(
+        "---\ntitle: 'Untitled'\ninvented_field: true\n---\nbody\n", encoding="utf-8"
+    )
+
+    result = runner.invoke(app, ["verify", str(corpus)])
+    assert result.exit_code == 1, result.output
+    assert "[frontmatter]" in result.output
+
+
+def test_verify_frontmatter_scoped_to_md(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A `---` opener in a non-.md file is body text, never a metadata claim."""
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "notes.txt").write_bytes(b"---\nnot: frontmatter\n---\nbody\n")
+
+    result = runner.invoke(app, ["verify", str(corpus)])
+    assert result.exit_code == 0, result.output
+
+
+def test_verify_report_without_manifest__exit_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--report is a cross-artifact check; alone it has nothing to reconcile."""
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "doc.md").write_bytes(b"clean\n")
+
+    result = runner.invoke(app, ["verify", str(corpus), "--report", "r.json"])
+    assert result.exit_code == 2, result.output
+
+
+def test_verify_run_id__reconciles_report_sidecar_exit_0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OQ-034 sidecar: --run-id pulls in the run's report when present and the
+    clean report↔manifest accounting passes."""
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "doc.txt").write_bytes(b"already clean\n")
+    manifest = _apply_corpus(corpus, tmp_path)
+    run_id = manifest.name.removeprefix("docmend-").removesuffix("-manifest.jsonl")
+    assert (tmp_path / ".docmend" / f"docmend-{run_id}-report.json").is_file()
+
+    result = runner.invoke(app, ["verify", str(corpus), "--run-id", run_id])
+    assert result.exit_code == 0, result.output
+
+
+def test_verify_report_manifest_accounting_drift__exit_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FR-014 'skipped-file accounting': a report whose applied outcomes do not
+    match the manifest's applied records is a finding, exit 1."""
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "doc.txt").write_bytes(b"already clean\n")
+    manifest = _apply_corpus(corpus, tmp_path)
+    run_id = manifest.name.removeprefix("docmend-").removesuffix("-manifest.jsonl")
+    report_path = tmp_path / ".docmend" / f"docmend-{run_id}-report.json"
+    doctored = json.loads(report_path.read_text(encoding="utf-8"))
+    # Drop the applied outcome and keep totals consistent with the outcome list,
+    # so read_report's intra-report rule passes and only the CROSS-artifact
+    # accounting can catch the drift.
+    doctored["outcomes"] = []
+    doctored["totals"]["applied"] = 0
+    report_path.write_text(json.dumps(doctored), encoding="utf-8")
+
+    result = runner.invoke(app, ["verify", str(corpus), "--run-id", run_id])
+    assert result.exit_code == 1, result.output
+    assert "[accounting]" in result.output

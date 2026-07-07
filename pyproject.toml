@@ -75,6 +75,9 @@ failOnWarnings = true
 minversion = "9.0"
 testpaths = ["tests"]
 addopts = ["-ra", "--strict-markers", "--strict-config"]
+markers = [
+    "slow: opt-in long-running tests (NFR-001 scale run; also gated on DOCMEND_SCALE=1)",
+]
 
 [tool.coverage.run]
 branch = true

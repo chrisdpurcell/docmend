@@ -2,8 +2,8 @@
 
 Cross-file contract:
 - The run-ID minted by :func:`new_run_id` is THE per-run correlation key: it names
-  the log file, is bound into every log line, and must be the same identifier the
-  DR-001..DR-004 artifacts record (§18.5) when those land in MS-1+.
+  the log file, is bound into every log line, and is the same identifier the
+  DR-001..DR-004 artifacts record (§18.5).
 - Two sinks with deliberately decoupled levels (OQ-017): the console renderer on
   stderr follows ``--verbose``/``--quiet``, while the per-run JSON Lines file is
   always DEBUG-floored — a quiet run must still be diagnosable after the fact

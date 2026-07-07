@@ -8,6 +8,6 @@ imports in CI, and an autouse fixture in tests/unit/transform/ blocks
 open/os.open/io.FileIO at runtime. Both were wired at MS-0, before any
 transform code existed, so no transform has ever been written outside them.
 
-Transforms land in MS-2 (encoding decode/encode, newline normalization,
-whitespace transforms — FR-007..FR-009).
+The transforms: encoding decode/encode, newline normalization, and the
+whitespace quartet (FR-007..FR-009), dispatched per file class (adr-0016).
 """

@@ -220,3 +220,7 @@ __marimo__/
 # import-linter cache (tests run lint-imports --no-cache; guard manual runs)
 .import_linter_cache/
 .docmend/
+
+# Claude Code agent worktrees (session-local; excluded for every clone, not
+# just this one via .git/info/exclude)
+.claude/worktrees/

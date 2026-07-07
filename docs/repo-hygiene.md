@@ -49,5 +49,3 @@ The following may be deleted:
 ### `TODO.md`
 
 - Move completed tasks from the user-tracked and agent-tracked sections to the completed section.
-
-### `deep-research/` and `docs/deep-research/`

@@ -1,16 +1,17 @@
 """CLI shell — argument parsing, global flags, dispatch (spec §8.2.3 "CLI shell", IR-005).
 
 Architectural role: this layer is deliberately thin — no domain logic lives here
-(§8.2.3). The pipeline subcommands land milestone by milestone: ``scan`` (IR-001)
-arrived at MS-1; plan/apply/verify/restore (IR-002..IR-004, IR-008) follow per §19.
+(§8.2.3). All five pipeline subcommands are live as of v1.0.0: ``scan`` (IR-001),
+``plan`` (IR-002), ``apply`` (IR-003, incl. FR-013 resume), ``verify`` (IR-004),
+and ``restore`` (IR-008).
 
 Cross-file contracts:
 - ``--verbose``/``--quiet`` are mutually exclusive by IR-005 (a hard usage error,
   exit 2 — not the "quiet wins" fallback the logging research floated; the spec is
   binding). Their level mapping lives in :mod:`docmend.observability`.
 - ``--dry-run``/``-n`` is accepted globally per IR-005 and threaded through
-  :class:`GlobalOptions`; it gains effect when write-capable commands land (MS-3).
-  It can only ever make a run more conservative (NFR-004). ``scan`` is read-only
+  :class:`GlobalOptions`; the write-capable commands (``apply``/``restore``) honor
+  it. It can only ever make a run more conservative (NFR-004). ``scan`` is read-only
   by construction (FR-001), so the flag is a no-op there.
 - Exit codes follow the §18.5 taxonomy: 0 clean, 1 findings (a scan with
   unreadable-file skips, ERR-007), 2 input error (Click usage errors already exit

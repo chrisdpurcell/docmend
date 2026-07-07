@@ -108,12 +108,22 @@ class TestScanFilters:
         assert [record.path for record in inventory.files] == ["b.md"]
         assert inventory.scan_config.include == ["**/*.md"]
 
-    def test_exclude_flag__records_skips(self, corpus: Path) -> None:
-        result = runner.invoke(app, ["scan", str(corpus), "--exclude", "**/sub/**"])
+    def test_exclude_flag__file_pattern_records_skips(self, corpus: Path) -> None:
+        result = runner.invoke(app, ["scan", str(corpus), "--exclude", "**/c.txt"])
         assert result.exit_code == 0
         artifact = next(Path(".docmend").glob("docmend-run_*-inventory.json"))
         inventory = read_inventory(artifact)
         assert [record.path for record in inventory.skipped] == ["sub/c.txt"]
+
+    def test_exclude_flag__directory_pattern_prunes(self, corpus: Path) -> None:
+        """Directory excludes prune at the walk: no files and no per-file skip
+        records beneath the excluded directory (FR-012 selection unchanged)."""
+        result = runner.invoke(app, ["scan", str(corpus), "--exclude", "**/sub/**"])
+        assert result.exit_code == 0
+        artifact = next(Path(".docmend").glob("docmend-run_*-inventory.json"))
+        inventory = read_inventory(artifact)
+        assert all(not record.path.startswith("sub/") for record in inventory.files)
+        assert inventory.skipped == []
 
 
 class TestScanExitCodes:

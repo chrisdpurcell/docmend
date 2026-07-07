@@ -182,22 +182,56 @@ class TestFilters:
         assert inventory.totals.skipped == 0
 
     def test_exclude_records_skip_with_reason(self, corpus: Path) -> None:
-        """spec: FR-012 / DR-001 — an include match that is excluded is a recorded skip."""
+        """spec: FR-012 / DR-001 — an include match excluded by a *file-level*
+        pattern is a recorded skip (directory-pattern excludes prune instead)."""
         config = DocmendConfig(
-            paths=PathsConfig(include=["**/*.txt"], exclude=["**/sub/**"]),
+            paths=PathsConfig(include=["**/*.txt"], exclude=["**/nested.txt"]),
         )
         inventory = run_scan(corpus, config)
         skipped = {record.path: record.reason for record in inventory.skipped}
         assert skipped == {"sub/nested.txt": "excluded"}
+        assert all(record.path != "sub/nested.txt" for record in inventory.files)
+
+    def test_excluded_directory__pruned_without_per_file_records(self, corpus: Path) -> None:
+        """A directory-pattern exclude prunes the subtree at the walk: nothing
+        beneath is selected *or* recorded as a per-file skip. Selection is
+        unchanged (pathspec dir-prefix semantics already excluded the files);
+        only the skip noise and the descent cost go away."""
+        config = DocmendConfig(
+            paths=PathsConfig(include=["**/*.txt"], exclude=["**/sub/**"]),
+        )
+        inventory = run_scan(corpus, config)
         assert all(not record.path.startswith("sub/") for record in inventory.files)
+        assert all(not record.path.startswith("sub/") for record in inventory.skipped)
 
     def test_default_excludes__hide_tool_and_vcs_dirs(self, corpus: Path) -> None:
         (corpus / ".git").mkdir()
         (corpus / ".git" / "notes.txt").write_text("x\n")
+        (corpus / ".git" / "objects").mkdir()
+        (corpus / ".git" / "objects" / "deep.txt").write_text("x\n")
+        (corpus / ".venv").mkdir()
+        (corpus / ".venv" / "cfg.txt").write_text("x\n")
+        (corpus / "node_modules").mkdir()
+        (corpus / "node_modules" / "pkg").mkdir()
+        (corpus / "node_modules" / "pkg" / "readme.txt").write_text("x\n")
         (corpus / ".docmend").mkdir()
         (corpus / ".docmend" / "old-inventory.json").write_text("{}\n")
         inventory = run_scan(corpus)
-        assert {record.path for record in inventory.skipped} == {".git/notes.txt"}
+        hidden = (".git/", ".venv/", "node_modules/", ".docmend/")
+        assert all(not record.path.startswith(hidden) for record in inventory.files)
+        assert all(not record.path.startswith(hidden) for record in inventory.skipped)
+
+    def test_excluded_directory__unreadable_child_never_visited(self, corpus: Path) -> None:
+        """Pruning means the walk never enters an excluded directory, so an
+        unreadable subdirectory inside it cannot surface as ERR-007 noise."""
+        sealed = corpus / ".git" / "sealed"
+        sealed.mkdir(parents=True)
+        sealed.chmod(0o000)
+        try:
+            inventory = run_scan(corpus)
+        finally:
+            sealed.chmod(0o755)
+        assert all(record.reason != "unreadable" for record in inventory.skipped)
 
     def test_filters_apply_to_single_file_path(self, corpus: Path) -> None:
         """spec: FR-012 / NFR-006 — the same filters govern a single-file PATH."""

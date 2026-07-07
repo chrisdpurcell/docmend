@@ -377,9 +377,20 @@ def scan(
             # (followlinks=False); record them like any other symlink (EC-008).
             for dirname in list(dirnames):
                 sub = base / dirname
+                rel = sub.relative_to(root).as_posix()
+                # Excluded directories are pruned at the walk (the trailing "/"
+                # marks a directory for pathspec, so "**/.git/**" matches
+                # ".git/" itself). Selection is unchanged — gitignore
+                # dir-prefix semantics already excluded every file beneath at
+                # the per-file check — but the descent cost and the per-file
+                # "excluded" skip records for the subtree disappear. Matches
+                # git's own rule that a negation pattern cannot re-include a
+                # file whose parent directory is excluded.
+                if exclude.match_file(rel + "/"):
+                    dirnames.remove(dirname)
+                    continue
                 if sub.is_symlink():
                     dirnames.remove(dirname)
-                    rel = sub.relative_to(root).as_posix()
                     if not exclude.match_file(rel):
                         _record_symlink(state, sub, rel)
             for filename in sorted(filenames):

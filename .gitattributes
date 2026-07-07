@@ -1,0 +1,3 @@
+# Weird-document corpus fixtures are byte-exact test inputs (spec §17.2):
+# never EOL-translated, never diffed as text by tooling that would touch bytes.
+tests/fixtures/weird_documents/** -text

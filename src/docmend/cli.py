@@ -20,6 +20,7 @@ Cross-file contracts:
   the artifact path). The default excludes make ``.docmend/`` invisible to scans.
 """
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,9 +28,10 @@ from typing import Annotated
 
 import typer
 
-from docmend import __version__, artifacts, discovery
+from docmend import __version__, artifacts, discovery, planning
 from docmend.config import ConfigError, DocmendConfig, PathsConfig, load_config
 from docmend.observability import configure_logging, get_logger, new_run_id
+from docmend.plan import ArtifactRef
 
 #: Default per-run artifact/log directory, created in the invoking directory
 #: (proposed OQ-034; the run-ID-keyed names inside it are the OQ-006 sidecar
@@ -188,4 +190,116 @@ def scan(
     )
     if reasons.unreadable:
         # Findings, not failure: the scan completed but not everything was readable.
+        raise typer.Exit(1)
+
+
+@app.command()
+def plan(
+    ctx: typer.Context,
+    path: Annotated[
+        Path | None,
+        typer.Argument(
+            help="File or directory to plan over (shorthand: scans first, IR-002).",
+        ),
+    ] = None,
+    inventory_path: Annotated[
+        Path | None,
+        typer.Option("--inventory", help="Existing inventory artifact to consume (IR-002)."),
+    ] = None,
+    out: Annotated[
+        Path | None,
+        typer.Option(
+            "--out", help="Write the plan to FILE (default: .docmend/docmend-<run-id>-plan.json)."
+        ),
+    ] = None,
+    config_path: Annotated[
+        Path | None,
+        typer.Option("--config", help="TOML config file (default: ./docmend.toml when present)."),
+    ] = None,
+    include: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--include", help="Replace paths.include (repeatable; replaces, never appends)."
+        ),
+    ] = None,
+    exclude: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--exclude", help="Replace paths.exclude (repeatable; replaces, never appends)."
+        ),
+    ] = None,
+    fail_on_low_confidence: Annotated[
+        bool,
+        typer.Option(
+            "--fail-on-low-confidence-encoding",
+            help="Exit 1 when any file skips on the FR-007 encoding gates (AW-003).",
+        ),
+    ] = False,
+) -> None:
+    """Produce a reviewable DR-002 plan from an inventory (FR-002, IR-002).
+
+    Exit codes (§18.5): 0 clean; 1 findings (unreadable/changed-since-scan
+    skips, collision under the fail policy, or encoding-gate skips under
+    --fail-on-low-confidence-encoding); 2 input errors (bad config, ERR-008).
+    """
+    opts = _global_options(ctx)
+    if (path is None) == (inventory_path is None):
+        # IR-002: exactly one of the two source forms — neither or both is a usage error.
+        raise typer.BadParameter("provide exactly one of PATH or --inventory")
+    config = _load_effective_config(config_path, include, exclude)
+
+    now = datetime.now(UTC)
+    run_id = new_run_id(now)
+    artifact_dir = Path(ARTIFACT_DIR_NAME)
+    configure_logging(
+        run_id=run_id, command="plan", log_dir=artifact_dir, verbose=opts.verbose, quiet=opts.quiet
+    )
+    log = get_logger(__name__)
+
+    if path is not None:
+        if not path.exists():
+            typer.echo(f"error: {path}: no such file or directory", err=True)
+            raise typer.Exit(2)
+        log.info("plan starting (scan shorthand)", path=str(path))
+        inventory = discovery.scan(path, config, run_id=run_id, generated_at=now.isoformat())
+        # Resolved to absolute: inventory_ref.path must stay valid outside this
+        # invocation's CWD, unlike out_path (echoed, never round-tripped) below.
+        inventory_artifact = (artifact_dir / f"docmend-{run_id}-inventory.json").resolve()
+        artifacts.write_inventory(inventory, inventory_artifact)
+    else:
+        assert inventory_path is not None
+        log.info("plan starting", inventory=str(inventory_path))
+        try:
+            inventory = artifacts.read_inventory(inventory_path)
+        except artifacts.ArtifactError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from exc
+        inventory_artifact = inventory_path.resolve()
+
+    inventory_ref = ArtifactRef(
+        path=str(inventory_artifact),
+        run_id=inventory.run_id,
+        sha256=artifacts.sha256_of_file(inventory_artifact),
+    )
+    result = planning.build_plan(
+        inventory, config, run_id=run_id, generated_at=now.isoformat(), inventory_ref=inventory_ref
+    )
+    out_path = out if out is not None else artifact_dir / f"docmend-{run_id}-plan.json"
+    artifacts.write_plan(result, out_path)
+
+    reasons = Counter(skip.reason for skip in result.skips)
+    typer.echo(f"plan: {out_path}")
+    typer.echo(
+        f"actions: {result.totals.actions}  skips: {result.totals.skips}"
+        + (f"  ({', '.join(f'{r} {n}' for r, n in sorted(reasons.items()))})" if reasons else "")
+    )
+
+    findings = reasons.get("unreadable", 0) + reasons.get("changed-since-scan", 0)
+    if config.rename.on_collision == "fail":
+        findings += reasons.get("collision", 0)
+    if fail_on_low_confidence:
+        findings += reasons.get("low-confidence-encoding", 0) + reasons.get(
+            "below-non-ascii-floor", 0
+        )
+    if findings:
         raise typer.Exit(1)

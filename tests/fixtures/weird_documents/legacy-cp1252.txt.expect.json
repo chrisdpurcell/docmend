@@ -1,0 +1,17 @@
+{
+  "anomaly": "legacy-encoding-decode-equivalent",
+  "spec_refs": [
+    "FR-007",
+    "FR-015"
+  ],
+  "expect": {
+    "disposition": "action",
+    "operations": [
+      "reencode",
+      "normalize_newlines",
+      "trim_trailing_whitespace",
+      "rename"
+    ],
+    "target_path": "legacy-cp1252.md"
+  }
+}

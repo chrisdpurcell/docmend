@@ -1,0 +1,11 @@
+{
+  "anomaly": "nul-bytes",
+  "spec_refs": [
+    "EC-004",
+    "FR-015"
+  ],
+  "expect": {
+    "disposition": "skip",
+    "reason": "nul-bytes"
+  }
+}

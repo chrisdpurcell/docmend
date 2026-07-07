@@ -2,109 +2,20 @@
 
 Covers the MS-1 exit criteria: a valid inventory from a synthetic corpus,
 provably read-only scanning, and working include/exclude filters.
-
-The seeded recipe→bytes corpus generator below follows adr-0015's architecture
-in miniature (pure recipe rendering, disk materialization isolated in a thin
-adapter). It lives here while discovery is its only consumer; when MS-2's
-weird-document fixtures need it too, promote it to a shared location.
 """
 
 import hashlib
 import os
-from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
 
 import pytest
-from faker import Faker
 from hypothesis import given
 from hypothesis import strategies as st
 
-from docmend.config import DocmendConfig, PathsConfig
+from corpus import CORPUS_RECIPES, GENERATED_AT, RUN_ID, materialize, seeded_faker
+from docmend.config import DocmendConfig, EncodingConfig, PathsConfig
 from docmend.discovery import NewlineCensus, classify_file, scan
-from docmend.inventory import Inventory, NewlineStyle
-
-RUN_ID = "run_20260706T000000Z_abc123"
-GENERATED_AT = datetime(2026, 7, 6, tzinfo=UTC).isoformat()
-
-type RecipeEncoding = Literal["utf-8", "utf-8-sig", "windows-1252", "utf-16-le-bom", "binaryish"]
-
-
-@dataclass(frozen=True)
-class FileRecipe:
-    """Pure description of one synthetic corpus file (adr-0015: recipe -> bytes)."""
-
-    path: str
-    encoding: RecipeEncoding
-    newline: NewlineStyle
-    sentences: int = 3
-
-    @property
-    def expected_bom(self) -> str | None:
-        return {"utf-8-sig": "utf-8", "utf-16-le-bom": "utf-16-le"}.get(self.encoding)
-
-    @property
-    def expected_utf8_valid(self) -> bool:
-        # NUL bytes are perfectly valid UTF-8 — that is exactly why FR-015 keys
-        # binary suspicion on the nul_bytes fact, not on decode failure.
-        return self.encoding in ("utf-8", "utf-8-sig", "binaryish")
-
-
-_EOL: dict[NewlineStyle, str] = {"lf": "\n", "crlf": "\r\n", "cr": "\r", "none": "", "mixed": ""}
-
-
-def render(recipe: FileRecipe, faker: Faker) -> bytes:
-    """Pure recipe -> bytes. Faker filler is provably synthetic (adr-0015, C-002)."""
-    lines = [faker.sentence() for _ in range(recipe.sentences)]
-    if recipe.encoding == "windows-1252":
-        lines = [f"café naïve — {line}" for line in lines]
-    if recipe.newline == "mixed":
-        text = "".join(line + ("\n" if i % 2 else "\r\n") for i, line in enumerate(lines))
-    elif recipe.newline == "none":
-        text = " ".join(lines)
-    else:
-        eol = _EOL[recipe.newline]
-        text = eol.join(lines) + eol
-    match recipe.encoding:
-        case "utf-8" | "utf-8-sig":
-            return text.encode(recipe.encoding)
-        case "windows-1252":
-            return text.replace("—", "-").encode("cp1252")
-        case "utf-16-le-bom":
-            return b"\xff\xfe" + text.encode("utf-16-le")
-        case "binaryish":
-            return b"\x00\x01" + text.encode("utf-8") + b"\x00"
-
-
-def materialize(root: Path, recipes: list[FileRecipe], faker: Faker) -> None:
-    """Thin disk adapter — the only place generator output touches the filesystem."""
-    for recipe in recipes:
-        target = root / recipe.path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(render(recipe, faker))
-
-
-def seeded_faker() -> Faker:
-    faker = Faker()
-    faker.seed_instance(20260706)
-    return faker
-
-
-CORPUS_RECIPES = [
-    FileRecipe("plain.txt", "utf-8", "lf"),
-    FileRecipe("dos.txt", "utf-8", "crlf"),
-    FileRecipe("mac.txt", "utf-8", "cr"),
-    FileRecipe("mixed.txt", "utf-8", "mixed"),
-    FileRecipe("one-line.txt", "utf-8", "none"),
-    FileRecipe("bom.txt", "utf-8-sig", "lf"),
-    FileRecipe("legacy.txt", "windows-1252", "crlf"),
-    FileRecipe("utf16.txt", "utf-16-le-bom", "lf"),
-    FileRecipe("sub/nested.txt", "utf-8", "lf"),
-    FileRecipe("notes.md", "utf-8", "lf"),
-    FileRecipe("page.html", "utf-8", "crlf"),
-    FileRecipe("nulls.txt", "binaryish", "lf"),
-]
+from docmend.inventory import Inventory
 
 
 @pytest.fixture
@@ -159,9 +70,11 @@ class TestClassification:
             if recipe.expected_bom:
                 assert facts.detected is not None and facts.detected.method == "bom"
             elif recipe.encoding == "windows-1252":
-                # Legacy detection is the MS-2 charset-normalizer rung; the
-                # deterministic rungs must leave it undecided, never guess.
-                assert facts.detected is None
+                # Legacy detection is the MS-2 charset-normalizer rung (this
+                # task): the deterministic rungs hand off, and the rung fills
+                # in the verdict at scan time.
+                assert facts.detected is not None
+                assert facts.detected.method == "charset-normalizer"
                 assert records[recipe.path].non_ascii_bytes > 0
 
     def test_nul_bytes_flagged(self, corpus: Path) -> None:
@@ -191,6 +104,73 @@ class TestClassification:
             DocmendConfig(paths=PathsConfig(include=["**/*.TXT"])),
         )
         assert inventory.files[0].suffix == ".TXT"
+
+    def test_legacy_detection__populates_inventory_at_scan(self, corpus: Path) -> None:
+        """DR-001 legacy rung (MS-2): charset-normalizer fills encoding.detected."""
+        inventory = run_scan(corpus)
+        legacy = {f.path: f for f in inventory.files}["legacy.txt"]
+        assert legacy.encoding.detected is not None
+        assert legacy.encoding.detected.method == "charset-normalizer"
+
+    def test_legacy_detection__skipped_for_bom_utf8_and_nul_files(self, corpus: Path) -> None:
+        inventory = run_scan(corpus)
+        by_path = {f.path: f for f in inventory.files}
+        assert by_path["bom.txt"].encoding.detected is not None
+        assert by_path["bom.txt"].encoding.detected.method == "bom"
+        assert by_path["plain.txt"].encoding.detected is not None
+        assert by_path["plain.txt"].encoding.detected.method == "utf8-strict"
+        # nulls.txt (corpus "binaryish") never reaches the legacy detector
+        # either: NUL and 0x01 are valid single-byte UTF-8 code points (EC-006),
+        # so it is already utf8-strict-valid before the charset-normalizer gate
+        # (which additionally excludes it on nul_bytes) is even checked.
+        assert by_path["nulls.txt"].encoding.detected is not None
+        assert by_path["nulls.txt"].encoding.detected.method == "utf8-strict"
+
+    def test_legacy_detection__no_candidate_leaves_detected_none(self, tmp_path: Path) -> None:
+        """A file that reaches the gate but the detector can't call at all
+        (binary-suspect, not merely a failure) leaves encoding.detected unset."""
+        (tmp_path / "blob.txt").write_bytes(bytes(range(0x80, 0x100)) * 8)
+        inventory = run_scan(tmp_path)
+        assert inventory.files[0].encoding.detected is None
+
+    def test_legacy_detection__disabled_by_config(self, corpus: Path) -> None:
+        config = DocmendConfig(encoding=EncodingConfig(detect=False))
+        inventory = run_scan(corpus, config)
+        legacy = {f.path: f for f in inventory.files}["legacy.txt"]
+        assert legacy.encoding.detected is None
+
+    def test_legacy_detection__nul_bearing_file_skips_charset_normalizer(
+        self, tmp_path: Path
+    ) -> None:
+        """The `not record.nul_bytes` gate clause (adr-0009 gate order) has no
+        other test where it is the deciding reason detection is skipped:
+        nulls.txt in the corpus never reaches the gate at all, because NUL is
+        already a valid UTF-8 code point (EC-006) and utf8_valid short-circuits
+        first. This fixture is BOM-less, non-UTF-8-valid (0xE9 followed by a
+        non-continuation byte), and NUL-bearing, so it clears the BOM and
+        utf8_valid clauses and is stopped by the NUL clause specifically."""
+        (tmp_path / "nul.txt").write_bytes(b"caf\xe9 text\x00more \xe9\xe8 here")
+        record = run_scan(tmp_path).files[0]
+        assert record.nul_bytes is True
+        assert record.encoding.utf8_valid is False
+        assert record.encoding.bom is None
+        assert record.encoding.detected is None
+
+    def test_legacy_detection__detector_failure_is_an_unreadable_skip(
+        self, corpus: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ERR-007: a detect_legacy OSError is skipped the same way as an
+        unreadable file during classification, not raised through the scan."""
+
+        def _boom(path: Path) -> None:
+            raise OSError("simulated detector failure")
+
+        monkeypatch.setattr("docmend.detection.detect_legacy", _boom)
+        inventory = run_scan(corpus)
+        skipped = {record.path: record for record in inventory.skipped}
+        assert skipped["legacy.txt"].reason == "unreadable"
+        assert "simulated detector failure" in (skipped["legacy.txt"].detail or "")
+        assert "legacy.txt" not in {f.path for f in inventory.files}
 
 
 class TestFilters:

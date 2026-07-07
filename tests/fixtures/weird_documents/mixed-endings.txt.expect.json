@@ -1,0 +1,14 @@
+{
+  "anomaly": "mixed-newlines",
+  "spec_refs": [
+    "EC-006"
+  ],
+  "expect": {
+    "disposition": "action",
+    "operations": [
+      "normalize_newlines",
+      "rename"
+    ],
+    "target_path": "mixed-endings.md"
+  }
+}

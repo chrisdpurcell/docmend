@@ -1,0 +1,15 @@
+{
+  "anomaly": "excess-blank-lines",
+  "spec_refs": [
+    "FR-009",
+    "adr-0016"
+  ],
+  "expect": {
+    "disposition": "action",
+    "operations": [
+      "collapse_blank_lines",
+      "rename"
+    ],
+    "target_path": "padded-legacy.md"
+  }
+}

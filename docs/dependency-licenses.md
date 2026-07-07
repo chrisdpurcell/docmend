@@ -35,12 +35,17 @@ Spec §16 requires an OSS-license compatibility check "at MS-0 when dependencies
 | python-dateutil (via arrow) | BSD-3-Clause OR Apache-2.0 (dual) | ✅ |
 | fqdn (format-nongpl extra) | MPL-2.0 | ✅ Same file-level weak-copyleft analysis as pathspec: unmodified dependency, no obligation on MIT code; in the CI allowlist. |
 
+## Runtime closure additions (installed at MS-2)
+
+| Package | License | Compatible with MIT distribution |
+| --- | --- | --- |
+| charset-normalizer | MIT | ✅ FR-007 legacy encoding detection rung (adr-0009); no transitive dependencies. |
+
 ## Approved-but-not-yet-added runtime deps (§8.6; pre-cleared for their milestone)
 
-| Package            | License | Note                             |
-| ------------------ | ------- | -------------------------------- |
-| charset-normalizer | MIT     | MS-2 (FR-007)                    |
-| ruamel.yaml        | MIT     | Frontmatter work (OQ-009/OQ-022) |
+| Package     | License | Note                             |
+| ----------- | ------- | -------------------------------- |
+| ruamel.yaml | MIT     | Frontmatter work (OQ-009/OQ-022) |
 
 ## Dev group (never distributed — §8.6 dev table)
 

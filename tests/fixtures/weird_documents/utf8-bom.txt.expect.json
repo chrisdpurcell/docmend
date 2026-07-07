@@ -1,0 +1,14 @@
+{
+  "anomaly": "utf8-bom",
+  "spec_refs": [
+    "EC-007"
+  ],
+  "expect": {
+    "disposition": "action",
+    "operations": [
+      "reencode",
+      "rename"
+    ],
+    "target_path": "utf8-bom.md"
+  }
+}

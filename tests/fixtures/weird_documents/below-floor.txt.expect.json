@@ -1,0 +1,11 @@
+{
+  "anomaly": "below-non-ascii-floor",
+  "spec_refs": [
+    "FR-007",
+    "adr-0009"
+  ],
+  "expect": {
+    "disposition": "skip",
+    "reason": "below-non-ascii-floor"
+  }
+}

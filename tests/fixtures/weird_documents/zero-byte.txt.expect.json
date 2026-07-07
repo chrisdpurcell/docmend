@@ -1,0 +1,14 @@
+{
+  "anomaly": "empty-file",
+  "spec_refs": [
+    "EC-009"
+  ],
+  "expect": {
+    "disposition": "action",
+    "operations": [
+      "ensure_final_newline",
+      "rename"
+    ],
+    "target_path": "zero-byte.md"
+  }
+}

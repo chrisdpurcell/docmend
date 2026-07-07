@@ -12,5 +12,13 @@
 	// `ignores` excludes agent-authored session state and placeholder templates —
 	// not authored prose held to the body-style bar. `docs/handoff.md` is regenerated
 	// session state; `*.template.md` carries intentional {placeholder} scaffolding.
-	"ignores": ["docs/handoff.md", "**/*.template.md"]
+	// `tests/fixtures/weird_documents/` is byte-exact corpus test data (spec §17.2),
+	// not documentation — same rationale as its .gitattributes -text and
+	// .prettierignore entries; its generated .md fixtures must never be held to
+	// (or reformatted toward) prose rules.
+	"ignores": [
+		"docs/handoff.md",
+		"**/*.template.md",
+		"tests/fixtures/weird_documents/**"
+	]
 }

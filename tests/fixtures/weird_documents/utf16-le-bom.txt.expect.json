@@ -1,0 +1,16 @@
+{
+  "anomaly": "utf16-bom-crlf",
+  "spec_refs": [
+    "EC-010",
+    "OQ-026"
+  ],
+  "expect": {
+    "disposition": "action",
+    "operations": [
+      "reencode",
+      "normalize_newlines",
+      "rename"
+    ],
+    "target_path": "utf16-le-bom.md"
+  }
+}

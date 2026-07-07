@@ -1,0 +1,14 @@
+{
+  "anomaly": "markup-crlf-and-blank-runs",
+  "spec_refs": [
+    "OQ-025",
+    "adr-0016"
+  ],
+  "expect": {
+    "disposition": "action",
+    "operations": [
+      "normalize_newlines"
+    ],
+    "target_path": null
+  }
+}

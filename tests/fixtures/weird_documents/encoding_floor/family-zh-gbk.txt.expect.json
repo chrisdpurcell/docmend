@@ -1,0 +1,23 @@
+{
+  "anomaly": "family-equivalent-decode",
+  "spec_refs": [
+    "FR-007",
+    "adr-0009"
+  ],
+  "expect": {
+    "disposition": "action",
+    "operations": [
+      "reencode",
+      "ensure_final_newline",
+      "rename"
+    ],
+    "target_path": "family-zh-gbk.md"
+  },
+  "family": {
+    "expected_text": "\u56e0\u4e3a\u63a7\u5236\u4fe1\u606f\u540c\u65f6\u4ed6\u4eec\u5176\u4ed6.\n\u62a5\u544a\u5730\u65b9\u6709\u9650.\u7f51\u7ad9\u51fa\u6765\u7f51\u4e0a.\u90a3\u4e2a\u4e00\u4e9b\u624b\u673a\u5f53\u7136\u4e4b\u540e\u5979\u7684\u5e94\u7528.\n\u4e16\u754c\u9700\u8981\u5f71\u54cd\u6d4f\u89c8\u4f5c\u54c1\u51fa\u6765\u6807\u51c6.\u6ce8",
+    "members": [
+      "gbk",
+      "gb18030"
+    ]
+  }
+}

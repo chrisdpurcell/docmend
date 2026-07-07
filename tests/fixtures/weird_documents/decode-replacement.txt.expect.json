@@ -1,0 +1,10 @@
+{
+  "anomaly": "bom-codec-decode-failure",
+  "spec_refs": [
+    "EC-003"
+  ],
+  "expect": {
+    "disposition": "skip",
+    "reason": "decode-replacement"
+  }
+}

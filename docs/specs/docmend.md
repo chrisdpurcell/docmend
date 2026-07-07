@@ -55,6 +55,7 @@ related:
 | 0.14 | `2026-07-06` | `coding-agent` | **MS-1 Core workflow implemented** (§19 items 1–4). Spec-side changes: §17.3 rows FR-001/IR-001 Complete, FR-012/IR-007/DR-001/NFR-006 Partial, each with named tests; §21 gains OQ-034 (default artifact/log location — Open, non-blocking, proceeding on the `.docmend/` assumption); §18.2 `paths.exclude` default gains `.docmend/`; §3.1 current-state refreshed; §9 records the OQ-004 schema location. Code side (for context): the four artifact JSON Schemas pinned in `src/docmend/schemas/` per `adr-0005-durable-artifact-schema-contract` (plan/report/manifest as v1.0 contracts for MS-2/MS-3), `docmend scan` (discovery layer: read-only walk, FR-012 filters via pathspec, single-pass classification — BOM/strict-UTF-8/ASCII rungs of FR-007, newline census, hard-link groups EC-011, symlink records EC-008, ERR-007 skips), inventory pydantic models + validated atomic artifact IO (`jsonschema` Draft 2020-12 with format assertion, OQ-018); runtime deps pathspec/jsonschema and dev deps hypothesis/pyfakefs/pytest-xdist added per §8.6 (license record extended). |
 | 0.13 | `2026-07-06` | `coding-agent` | **MS-0 Foundation implemented** (§19 items 1–6). Spec-side changes only: §16 license checkbox ticked (record: `docs/dependency-licenses.md`); §17.3 rows IR-005/IR-006/NFR-003/NFR-005 moved to Complete/Partial with named tests; §3.1 current-state sentence refreshed; §17.3 intro no longer claims implementation has not started. Code side (for context, not spec content): `docmend` CLI entry point + IR-005 global flags, §18.2 config loading (strict pydantic models), OQ-017 logging framework + run-ID convention, OQ-033 purity enforcement (import-linter contract + transform-test fixture), runtime deps typer/pydantic/structlog/rich and dev deps import-linter/allpairspy/faker added per §8.6. |
 | 0.12 | `2026-07-06` | `coding-agent` | **Third consistency/drift audit** (multi-agent detect → adversarial-verify → classify, ground-truthed against `validate-specs`). Brought `validate-specs`, `spec lint`, markdownlint, and `check_traceability` all green. Standard conformance: bare uppercase decision tokens in the spec body that tripped `SV-ID-*` are gone — `RQ-`→`OQ-`, bare `adr-00NN` uppercase → lowercase `adr-00NN-…` stems, `gap-NN` cross-refs lowercased; ToC dead anchor via `fix_spec_toc.py` + reindent. Owner decisions: qualified G-002 / §20 Reliability for the FR-005 low-risk no-backup opt-in (reconciling `adr-0014-tool-first-product-scope`); adopted the gap-32 hard-link policy — EC-011, DR-001 shared-inode alias group, §21 OQ-004, `adr-0005-durable-artifact-schema-contract` amendment. Mechanical syncs: §10.4 Failed/Skipped entry conditions widened to ERR-004/ERR-005/ERR-009; §14 concurrency, §18.5 four-code exit taxonomy, and §17.2 ERR-001–ERR-008 range aligned to settled OQ-016/OQ-027 decisions and `adr-0012-verify-semantics-exit-code-taxonomy`; encoding family-aware table single-homed in `adr-0009-encoding-detection-dual-skip-gate`; FR-009 / §18.2 blank-line default de-duplicated; `cleaner.toml`→`docmend.toml`. |
+| 0.15 | `2026-07-06` | `coding-agent` | **MS-2 Domain logic implemented** (§19 items 1–4). Spec-side changes: §17.3 rows FR-002/FR-008/FR-009/FR-015/NFR-005/DR-001/DR-002/IR-002 Complete, FR-007/FR-010/FR-011/FR-012/FR-017/FR-019/NFR-006/IR-007 Partial, each with named tests; §3.1 current-state refreshed (scan **and plan** live; apply/verify land per §19). Code side (for context): the planning layer + `docmend plan` (FR-002, FR-015, DR-002, IR-002) — fact-gate ladder (filters, hard-link, oversize, encoding gates), content pass (decode checks, transform prediction, EC-005 shrink-invariant guard, collisions, C.4 decision provenance, per-action IDs with UUIDv7 identities); pure transforms (FR-007–FR-009) behind the `adr-0016` file-class dispatch and canonical execution order; the `charset-normalizer` legacy detection rung populating the inventory at scan (DR-001, `adr-0009-encoding-detection-dual-skip-gate`); an initial weird-document corpus and regression harness (§17.2), including the three-axis encoding-floor boundary matrix; the OQ-015 MS-2 calibration checkpoint executed — floor stays 20 (`adr-0009` amendment note; full 60-cell tabulation in `docs/handoff/sessions/2026-07.md`); and a pre-implementation plan-schema amendment (still v1.0) adding the `changed-since-scan` skip reason. Deviations audit: the ten design decisions locked by the MS-2 implementation plan were checked against the landed code; none diverged from spec text, so no new `DEV-` row was needed. |
 
 **Spec lifecycle:** This document is **living until `approved`**, then **change-controlled**: post-approval edits require a new revision row and, for scope-affecting changes, re-approval by the owner. Implementation deviations are recorded in the [Deviations Log](#deviations-log), not silently patched into requirements. When replaced, set `status: superseded` and `superseded_by:` in the frontmatter.
 
@@ -233,7 +234,7 @@ Things that are goals eventually but **excluded from this release** to control s
 
 ### 3.1 Current State
 
-The library is a directory tree of more than 100,000 `.txt` and HTML files accumulated over decades, exhibiting every condition listed in §1: mixed encodings and newline styles, broken formatting, garbage text, corruption, non-descriptive names, and undetected near-duplicates. There is no inventory, no metadata, and no naming convention. Existing duplicate-detection tools fail because of noise and drift in the text. No conversion logic exists yet: as of MS-1 (2026-07-06) the repository holds the foundation (build/tooling scaffold, CI, the `docmend` CLI entry point with global flags, strict TOML config loading, the logging framework, the NFR-005 purity enforcement) plus the discovery layer — `docmend scan` produces the DR-001 inventory read-only with FR-012 filters, and the four OQ-004 artifact schemas are pinned; `plan`/`apply`/`verify` land per §19.
+The library is a directory tree of more than 100,000 `.txt` and HTML files accumulated over decades, exhibiting every condition listed in §1: mixed encodings and newline styles, broken formatting, garbage text, corruption, non-descriptive names, and undetected near-duplicates. There is no inventory, no metadata, and no naming convention. Existing duplicate-detection tools fail because of noise and drift in the text. No content mutation exists yet: as of MS-2 (2026-07-06) the repository holds the foundation (build/tooling scaffold, CI, the `docmend` CLI entry point with global flags, strict TOML config loading, the logging framework, the NFR-005 purity enforcement), the discovery layer — `docmend scan` produces the DR-001 inventory read-only with FR-012 filters, and the four OQ-004 artifact schemas are pinned — and the planning layer: `docmend plan` produces the reviewable DR-002 plan (fact-gate ladder, content pass, collisions, C.4 provenance) over the FR-007–FR-009 pure transforms (encoding, newline, whitespace), still without writing to the library; `apply`/`verify` land per §19.
 
 ### 3.2 Target State
 
@@ -830,40 +831,40 @@ The implementer fills this in as the completion evidence ([Appendix B.3](#b3-req
 | Requirement ID | Test / Verification Method | Status |
 | --- | --- | --- |
 | FR-001 | Inventory integration test; corpus-unchanged hash assertion — `tests/test_discovery.py` (read-only mtime+hash snapshot proof, synthetic-corpus classification matrix); `tests/test_cli_scan.py`. | Complete (MS-1) |
-| FR-002 | Planning tests over the §10.3 edge-case corpus. | Not Started |
+| FR-002 | Planning tests over the §10.3 edge-case corpus — `tests/test_planning.py`, `tests/test_weird_corpus.py`. | Complete (MS-2) |
 | FR-003 | Stale-hash apply test. | Not Started |
 | FR-004 | Dry-run default and no-write assertions. | Not Started |
 | FR-005 | Safety-gate refusal tests per missing strategy. | Not Started |
 | FR-006 | Backup + manifest recording and full-restore drill. | Not Started |
-| FR-007 | Encoding fixture matrix incl. below-confidence-threshold and below-non-ASCII-floor skip. | Not Started |
-| FR-008 | Newline fixture matrix (CRLF/CR/mixed). | Not Started |
-| FR-009 | Whitespace transform unit/property tests. | Not Started |
-| FR-010 | Action-typing assertions in plan/report artifacts. | Not Started |
-| FR-011 | Collision policy tests (skip/fail/overwrite). | Not Started |
-| FR-012 | Filter consistency tests across scan/plan/apply. Scan half at MS-1: include/exclude selection, OQ-029 replace semantics, single-file filtering — `tests/test_discovery.py`, `tests/test_cli_scan.py`; plan/apply consistency lands with those commands (MS-2/MS-3). | Partial (MS-1 scan) |
+| FR-007 | Encoding fixture matrix incl. below-confidence-threshold and below-non-ASCII-floor skip — `tests/test_detection.py`, `tests/unit/transform/test_encoding.py`, `tests/test_encoding_floor.py`, `tests/test_planning.py`. | Partial (MS-2 gates + codec; conversion-through-apply lands MS-3) |
+| FR-008 | Newline fixture matrix (CRLF/CR/mixed) — `tests/unit/transform/test_newlines.py` (apply-side fixture matrix reaffirmed at MS-3). | Complete (MS-2) |
+| FR-009 | Whitespace transform unit/property tests — `tests/unit/transform/test_whitespace.py`, `tests/unit/transform/test_dispatch.py`. | Complete (MS-2) |
+| FR-010 | Action-typing assertions in plan/report artifacts — `tests/test_planning.py::TestContentPass::test_rename_only__still_an_action`. | Partial (MS-2 plan typing; report side MS-3) |
+| FR-011 | Collision policy tests (skip/fail/overwrite) — `tests/test_planning.py::TestCollisions`, `tests/test_cli_plan.py`. | Partial (MS-2 plan half; overwrite manifest at MS-3) |
+| FR-012 | Filter consistency tests across scan/plan/apply. Scan half at MS-1: include/exclude selection, OQ-029 replace semantics, single-file filtering — `tests/test_discovery.py`, `tests/test_cli_scan.py`; plan half at MS-2 — `tests/test_planning.py`, `tests/test_cli_plan.py`; apply consistency lands with that command (MS-3). | Partial (MS-1 scan + MS-2 plan) |
 | FR-013 | Kill-and-resume end-to-end test. | Not Started |
 | FR-014 | Verify command seeded-defect tests. | Not Started |
-| FR-015 | Risky-file skip tests over the weird-document corpus. | Not Started |
+| FR-015 | Risky-file skip tests over the weird-document corpus — `tests/test_weird_corpus.py`, `tests/test_planning.py`. | Complete (MS-2) |
 | FR-016 | Frontmatter schema validation tests at plan/apply/verify. | Not Started |
-| FR-017 | Double-apply idempotency test. | Not Started |
+| FR-017 | Double-apply idempotency test. Plan-level no-op half at MS-2 — `tests/test_planning.py::TestContentPass::test_already_clean_file__neither_action_nor_skip`. | Partial (MS-2 plan-level no-op; double-apply at MS-4) |
 | FR-018 | Report schema and count-reconciliation tests. | Not Started |
-| FR-019 | Watchdog-timeout termination test; oversize plan-time skip test. | Not Started |
+| FR-019 | Watchdog-timeout termination test; oversize plan-time skip test — `tests/test_planning.py::TestFactGates::test_oversize_file__skipped_with_reason`. | Partial (MS-2 oversize plan-time guard; watchdog at MS-5) |
 | NFR-001 | 100k-file synthetic corpus run; memory bound assertion. | Not Started |
 | NFR-002 | Kill-during-write atomicity test. | Not Started |
 | NFR-003 | Log content assertions in integration tests. Framework half at MS-0: per-run JSONL field schema, run-ID correlation, DEBUG-floored file sink asserted in `tests/test_observability.py`. | Partial (MS-0 framework) |
 | NFR-004 | Config-default audit test (no mutation out of the box). | Not Started |
-| NFR-005 | Transform purity check (no filesystem access in transform tests). Enforcement wired at MS-0 before transform code exists (OQ-033): import-linter contract run by `tests/test_import_contracts.py`; autouse blocking fixture self-tested in `tests/unit/transform/test_purity_fixture.py`. | Partial (MS-0 enforcement live) |
-| NFR-006 | Single-file end-to-end test with default configuration and the FR-005 low-risk opt-in. Scan leg at MS-1: single-file `PATH` first-class in `tests/test_discovery.py` + `tests/test_cli_scan.py`; the full pipeline journey needs plan/apply/verify (MS-2..MS-4). | Partial (MS-1 scan leg) |
+| NFR-005 | Transform purity check (no filesystem access in transform tests). Enforcement wired at MS-0 before transform code exists (OQ-033): import-linter contract run by `tests/test_import_contracts.py`; autouse blocking fixture self-tested in `tests/unit/transform/test_purity_fixture.py`. Transforms exist and pass both enforcement layers at MS-2 — `tests/unit/transform/`. | Complete (MS-2: transforms exist and pass both enforcement layers) |
+| NFR-006 | Single-file end-to-end test with default configuration and the FR-005 low-risk opt-in. Scan leg at MS-1: single-file `PATH` first-class in `tests/test_discovery.py` + `tests/test_cli_scan.py`; plan leg at MS-2 — `tests/test_cli_plan.py`; the full pipeline journey needs apply/verify (MS-3/MS-4). | Partial (MS-1 scan + MS-2 plan legs) |
 | IR-001 | `scan` CLI test: command exists, exit codes, DR-001 artifact written — `tests/test_cli_scan.py` (exit 0/1/2 taxonomy, `--report`, `--config`, `--include`/`--exclude`). | Complete (MS-1) |
-| IR-002 | `plan` CLI test: inventory reference asserted in the plan; config-error exit. | Not Started |
+| IR-002 | `plan` CLI test: inventory reference asserted in the plan; config-error exit — `tests/test_cli_plan.py`. | Complete (MS-2) |
 | IR-003 | `apply` flag tests: `--write`/`--dry-run` exclusivity, dry-run default, gate refusal exit. | Not Started |
 | IR-004 | `verify` flag/sidecar-discovery tests; proven read-only. | Not Started |
 | IR-005 | Global-flag tests incl. `--version` and `--verbose`/`--quiet` exclusivity — `tests/test_cli.py` (flag surface, exclusivity exit 2, version output); level mapping in `tests/test_observability.py`. `--dry-run` gains effect with write-capable commands (MS-3). | Partial (MS-0 flag surface) |
 | IR-006 | Config strict-validation tests (unknown key, type, enum, range) — `tests/test_config.py`: §18.2 defaults, `./docmend.toml` auto-discovery, each rejection class, reserved `parallel.model` values, no write-enable key. | Complete (MS-0) |
-| IR-007 | Artifact round-trip tests (JSON documents; NDJSON manifest per record). Inventory half at MS-1: write→read→identical model, atomicity, ERR-008 failure modes — `tests/test_inventory_artifact.py`; plan/report/manifest round-trips land with their producers (schemas already pinned and satisfiability-tested in `tests/test_schemas.py`). | Partial (MS-1 inventory) |
+| IR-007 | Artifact round-trip tests (JSON documents; NDJSON manifest per record). Inventory half at MS-1: write→read→identical model, atomicity, ERR-008 failure modes — `tests/test_inventory_artifact.py`; plan half at MS-2 — `tests/test_plan_artifact.py`, `tests/test_schemas.py`; report/manifest round-trips land with their producers (MS-3). | Partial (MS-1 inventory + MS-2 plan) |
 | IR-008 | `restore` drill test: manifest replay restores pre-apply hashes. | Not Started |
-| DR-001 | Inventory schema validation + count-reconciliation tests — `tests/test_inventory_artifact.py`, `tests/test_schemas.py` (pydantic↔schema cross-check), `tests/test_discovery.py` (per-file facts incl. EC-008/EC-011 records). Detected-encoding legacy rung (charset-normalizer) populates at MS-2 with FR-007. | Partial (MS-1; legacy detection pending) |
-| DR-002 | Plan schema validation; per-action ID and source-hash presence tests. | Not Started |
+| DR-001 | Inventory schema validation + count-reconciliation tests — `tests/test_inventory_artifact.py`, `tests/test_schemas.py` (pydantic↔schema cross-check), `tests/test_discovery.py` (per-file facts incl. EC-008/EC-011 records). Detected-encoding legacy rung (charset-normalizer) populates at MS-2 with FR-007 — `tests/test_detection.py`, `tests/test_discovery.py`. | Complete (MS-2: legacy rung populates) |
+| DR-002 | Plan schema validation; per-action ID and source-hash presence tests — `tests/test_plan_artifact.py`, `tests/test_planning.py`. | Complete (MS-2) |
 | DR-003 | Report schema validation; summary-vs-outcome reconciliation tests. | Not Started |
 | DR-004 | Manifest schema validation; mechanical-restorability test. | Not Started |
 | DR-005 | Frontmatter schema validation tests (duplicate keys, format assertion). | Not Started |
@@ -1101,10 +1102,11 @@ Questions may proceed on a recorded **current assumption** unless marked blockin
 
 ## Deviations Log
 
-Maintained by the **implementer** during the build ([Appendix B](#appendix-b-agent-implementation-contract)). Any divergence from this spec is recorded here — never silently patched into requirements text. None yet: implementation has not started.
+Maintained by the **implementer** during the build ([Appendix B](#appendix-b-agent-implementation-contract)). Any divergence from this spec is recorded here — never silently patched into requirements text.
 
-| ID  | Spec Reference | Deviation | Reason | Approved? |
-| --- | -------------- | --------- | ------ | --------- |
+| ID | Spec Reference | Deviation | Reason | Approved? |
+| --- | --- | --- | --- | --- |
+| DEV-001 | EC-011 (§10.3) | Hard-link alias groups receive their skip decision at plan time (every member), not at apply. | The plan is the complete apply worklist; plan-time skip is strictly more conservative and keeps danger detection in the planning layer (§8.1). | Pending owner review (recorded at MS-2 closeout). |
 
 ---
 

@@ -315,11 +315,26 @@ def build_plan(
                     and config.rename.txt_to_md
                 ):
                     candidate = record.path[: -len(record.suffix)] + ".md"
-                    collides = (
-                        candidate in claimed_targets
-                        or candidate in inventory_paths
-                        or (source_root / candidate).exists()
-                    )
+                    if candidate in claimed_targets:
+                        # Plan-internal conflict: an earlier action in this run
+                        # already claims the target. Never policy-overridable —
+                        # `overwrite` licenses clobbering a pre-existing target
+                        # (AW-002), not silently losing another planned action's
+                        # output (G-005). Reason stays "collision" so the CLI's
+                        # `fail`-policy accounting still counts it toward exit 1.
+                        skips.append(
+                            SkipDecision(
+                                path=record.path,
+                                reason="collision",
+                                detail=(
+                                    f"target {candidate} already claimed by an "
+                                    f"earlier action this run"
+                                ),
+                            )
+                        )
+                        log.debug("planned skip", path=record.path, reason="collision")
+                        continue
+                    collides = candidate in inventory_paths or (source_root / candidate).exists()
                     if collides and config.rename.on_collision != "overwrite":
                         skips.append(
                             SkipDecision(

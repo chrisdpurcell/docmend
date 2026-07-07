@@ -12,9 +12,9 @@ strict ``DocmendConfig`` model already own that shape (adr-0005 — models
 conform to schemas, never redefine them twice over).
 """
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, model_serializer
 
 from docmend.inventory import DetectedEncoding, NewlineStyle, RelativePath, RunId, Sha256
 from docmend.transform.dispatch import Operation
@@ -100,7 +100,19 @@ class Plan(_StrictModel):
     generated_at: str
     generated_by: str
     inventory_ref: ArtifactRef
+    source_root: Annotated[str, Field(min_length=1)] | None = None
     config: dict[str, object]
     actions: list[PlanAction]
     skips: list[SkipDecision]
     totals: PlanTotals
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_source_root(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        # `source_root` is OPTIONAL in the schema (1.0-plan compat), not
+        # nullable — a bare `null` fails validation. None means "field
+        # absent" (a pre-1.1 plan or one built without an inventory), so it
+        # must never appear as a JSON key at all, only ever be omitted.
+        data = handler(self)
+        if data.get("source_root") is None:
+            data.pop("source_root", None)
+        return data

@@ -8,11 +8,12 @@ import os
 import uuid
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from corpus import GENERATED_AT, RUN_ID, FileRecipe, materialize, seeded_faker
-from docmend.config import DocmendConfig, EncodingConfig, LimitsConfig, PathsConfig
+from docmend.config import DocmendConfig, EncodingConfig, LimitsConfig, PathsConfig, WriteConfig
 from docmend.discovery import scan
 from docmend.inventory import DetectedEncoding
 from docmend.plan import ArtifactRef, Plan
@@ -204,6 +205,31 @@ class TestPlanShape:
 
         materialize(tmp_path, [FileRecipe("a.txt", "utf-8", "crlf")], seeded_faker())
         validate_artifact("plan", plan_over(tmp_path).model_dump(mode="json"))
+
+    def test_source_root__matches_inventory(self, tmp_path: Path) -> None:
+        """1.1/decision 3: apply resolves files from the plan alone (FR-012)."""
+        materialize(tmp_path, [FileRecipe("a.txt", "utf-8", "crlf")], seeded_faker())
+        inventory = scan(tmp_path, DocmendConfig(), run_id=RUN_ID, generated_at=GENERATED_AT)
+        plan = build_plan(
+            inventory,
+            DocmendConfig(),
+            run_id=RUN_ID,
+            generated_at=GENERATED_AT,
+            inventory_ref=INV_REF,
+            mint_id=fixed_ids(),
+        )
+        assert plan.source_root == inventory.source_root
+
+    def test_relative_backup_dir__pinned_to_planning_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """codex CR-NEW-002: the reviewed snapshot, not apply's cwd, decides the backup home."""
+        materialize(tmp_path, [FileRecipe("a.txt", "utf-8", "crlf")], seeded_faker())
+        monkeypatch.chdir(tmp_path)
+        config = DocmendConfig(write=WriteConfig(backup_dir=Path("backups")))
+        plan = plan_over(tmp_path, config)
+        write_snapshot = cast("dict[str, object]", plan.config["write"])
+        assert write_snapshot["backup_dir"] == str((tmp_path / "backups").resolve())
 
 
 class TestContentPass:

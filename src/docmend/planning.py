@@ -339,11 +339,23 @@ def build_plan(
         log.debug("planned action", path=record.path, operations=ops, target=target)
 
     skips.sort(key=lambda s: s.path)
+    if config.write.backup_dir is not None and not config.write.backup_dir.is_absolute():
+        # The reviewed snapshot, not apply's cwd, decides the backup home
+        # (codex CR-NEW-002): re-resolving a relative path against the
+        # *apply* cwd would silently move backups, or make the gate refuse.
+        config = config.model_copy(
+            update={
+                "write": config.write.model_copy(
+                    update={"backup_dir": config.write.backup_dir.resolve()}
+                )
+            }
+        )
     return Plan(
         run_id=run_id,
         generated_at=generated_at,
         generated_by=f"docmend {__version__}",
         inventory_ref=inventory_ref,
+        source_root=inventory.source_root,
         config=config.model_dump(mode="json"),
         actions=actions,
         skips=skips,

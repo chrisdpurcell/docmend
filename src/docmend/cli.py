@@ -443,11 +443,33 @@ def apply(
             help="Write the report to FILE (default: .docmend/docmend-<run-id>-report.json).",
         ),
     ] = None,
+    resume_manifest: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--resume-manifest",
+            help="Resume (FR-013): reconcile against this prior apply manifest "
+            "(repeatable — pass every manifest of a multiply-interrupted run).",
+        ),
+    ] = None,
+    resume_run_id: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--resume-run-id",
+            help="Resume (FR-013): reconcile against .docmend/docmend-<ID>-manifest.jsonl "
+            "(OQ-034 sidecar convention; repeatable, combinable with --resume-manifest).",
+        ),
+    ] = None,
 ) -> None:
     """Execute a reviewed plan; dry-run by default (FR-004, IR-003).
 
-    Exit codes (§18.5): 0 clean; 1 findings (skips/failures); 2 input error
-    (ERR-006 invalid plan, flag conflicts); 3 safety refusal (gate or lock).
+    Resume (FR-013, adr-0006): --resume-manifest/--resume-run-id reconcile the
+    plan against a prior run's manifest first — recorded-applied actions whose
+    live output still matches skip as `already-applied` (not a finding),
+    changed/missing outputs fail ERR-002, unrecorded actions execute normally.
+
+    Exit codes (§18.5): 0 clean; 1 findings (skips other than already-applied,
+    failures); 2 input error (ERR-006 invalid plan, flag conflicts, unreadable
+    resume manifest); 3 safety refusal (gate or lock).
     """
     opts = _global_options(ctx)
     if write and (dry_run_flag or opts.dry_run):
@@ -491,6 +513,8 @@ def apply(
         typer.echo(f"error: {plan_path}: config snapshot invalid — {exc}", err=True)
         raise typer.Exit(2) from exc
 
+    resume_records = _read_resume_records(resume_manifest, resume_run_id, source_root)
+
     backup_root = backup_dir if backup_dir is not None else config.write.backup_dir
     options = ApplyOptions(
         write=write,
@@ -532,6 +556,7 @@ def apply(
             options=options,
             manifest_path=manifest_path,
             started_at=started_at,
+            resume_records=resume_records,
         )
     finally:
         run_lock.release()
@@ -547,8 +572,51 @@ def apply(
         f"applied: {totals.applied}  would-apply: {totals.would_apply}  "
         f"skipped: {totals.skipped}{detail}  failed: {totals.failed}"
     )
-    if totals.skipped or totals.failed:
+    # FR-013: `already-applied` is reconciliation confirming completed work, not
+    # a reviewable finding — counting it would make a clean resume exit 1 and an
+    # unattended re-invoke loop never converge on success.
+    finding_skips = totals.skipped - reasons.get("already-applied", 0)
+    if finding_skips or totals.failed:
         raise typer.Exit(1)
+
+
+def _read_resume_records(
+    resume_manifest: list[Path] | None,
+    resume_run_id: list[str] | None,
+    source_root: Path,
+) -> list[manifest.ManifestRecord] | None:
+    """Load and sanity-check the FR-013 resume manifests (adr-0006).
+
+    Every record's stamped source_root must match the plan's — a manifest from
+    a different tree can never legitimately reconcile (its action-IDs belong to
+    another plan), and silently re-executing everything would hide the
+    operator's mix-up (ERR-006 posture, exit 2). Pre-1.2 manifests carry no
+    source_root; they load unchecked, protected by the action-ID match itself.
+    """
+    paths = list(resume_manifest or [])
+    paths.extend(
+        Path(ARTIFACT_DIR_NAME) / f"docmend-{rid}-manifest.jsonl" for rid in resume_run_id or []
+    )
+    if not paths:
+        return None
+    root_resolved = str(source_root.resolve())
+    records: list[manifest.ManifestRecord] = []
+    for path in paths:
+        try:
+            loaded = manifest.read_manifest(path)
+        except artifacts.ArtifactError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from exc
+        recorded_root = next((r.source_root for r in loaded if r.source_root is not None), None)
+        if recorded_root is not None and recorded_root != root_resolved:
+            typer.echo(
+                f"error: {path}: manifest source root {recorded_root} does not match "
+                f"the plan's ({root_resolved}) — wrong manifest for this plan (ERR-006)",
+                err=True,
+            )
+            raise typer.Exit(2)
+        records.extend(loaded)
+    return records
 
 
 def _write_refusal_report(

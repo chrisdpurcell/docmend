@@ -20,9 +20,17 @@ type OutcomeStatus = Literal["applied", "would_apply", "skipped", "failed"]
 #: Closed internal vocabulary for the schema's free-string skip_reason
 #: (decision 9): stale hash ERR-002/AW-004, apply-time unreadable ERR-005,
 #: collision AW-002, EC-005 re-check, snapshot-filter enforcement (FR-012),
-#: and the runtime containment belt (§13.5).
+#: the runtime containment belt (§13.5), and resume reconciliation (FR-013,
+#: adr-0006) — `already-applied` is the one skip that is NOT a reviewable
+#: finding (the CLI excludes it from the exit-1 count).
 type ApplySkipReason = Literal[
-    "stale-hash", "unreadable", "collision", "shrink-invariant", "excluded", "containment"
+    "stale-hash",
+    "unreadable",
+    "collision",
+    "shrink-invariant",
+    "excluded",
+    "containment",
+    "already-applied",
 ]
 
 

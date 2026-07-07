@@ -5,6 +5,7 @@ Fact-level tests build inventories via discovery.scan over recipe corpora
 """
 
 import os
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -18,6 +19,7 @@ from docmend.discovery import scan
 from docmend.inventory import DetectedEncoding
 from docmend.plan import ArtifactRef, Plan
 from docmend.planning import build_plan
+from docmend.transform.dispatch import FileClass, Operation, apply_text_transforms
 
 INV_REF = ArtifactRef(path="inventory.json", run_id=RUN_ID, sha256="sha256:" + "0" * 64)
 
@@ -500,3 +502,52 @@ class TestCollisions:
         plan = plan_over(tmp_path)
         ids = [a.docmend_id for a in plan.actions]
         assert len(set(ids)) == len(ids)
+
+
+class TestWatchdog:
+    """FR-019/OQ-028/ERR-009: the content-pass per-file watchdog (DEV-002)."""
+
+    def test_content_pass__slow_transform_recorded_as_timeout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A file whose transform prediction exceeds limits.per_file_timeout is
+        skipped with reason 'timeout' (ERR-009) while the rest of the batch
+        plans normally — the R-007 pathological-transform case."""
+        # Trailing whitespace + .txt makes each file a real action candidate
+        # (trim + txt_to_md rename), so the fast file proves the batch proceeds.
+        (tmp_path / "slow.txt").write_bytes(b"SLOWMARKER body \n")
+        (tmp_path / "fast.txt").write_bytes(b"fast body \n")
+
+        def slow_transforms(
+            text: str,
+            file_class: FileClass,
+            *,
+            trim_trailing_ws: bool,
+            final_newline: bool,
+            collapse_max: int | None,
+            tab_width: int | None,
+        ) -> tuple[str, list[Operation]]:
+            if "SLOWMARKER" in text:
+                time.sleep(5)  # far beyond the 0.05s budget; the alarm fires first
+            # `apply_text_transforms` here is the test-module import (the real
+            # function), not the monkeypatched planning.apply_text_transforms.
+            return apply_text_transforms(
+                text,
+                file_class,
+                trim_trailing_ws=trim_trailing_ws,
+                final_newline=final_newline,
+                collapse_max=collapse_max,
+                tab_width=tab_width,
+            )
+
+        monkeypatch.setattr("docmend.planning.apply_text_transforms", slow_transforms)
+        config = DocmendConfig(limits=LimitsConfig(per_file_timeout=0.05))
+        plan = plan_over(tmp_path, config)
+
+        reasons = {skip.path: skip.reason for skip in plan.skips}
+        assert reasons.get("slow.txt") == "timeout"
+        # The fast file was unaffected: it produced a normal action, and its
+        # path is never among the skips.
+        assert "fast.txt" not in reasons
+        assert "fast.txt" in {action.path for action in plan.actions}
+        assert "slow.txt" not in {action.path for action in plan.actions}

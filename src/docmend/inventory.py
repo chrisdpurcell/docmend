@@ -19,12 +19,15 @@ from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
-INVENTORY_SCHEMA_VERSION = "1.1"
+INVENTORY_SCHEMA_VERSION = "1.2"
 
 type NewlineStyle = Literal["lf", "crlf", "cr", "mixed", "none"]
 type BomKind = Literal["utf-8", "utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"]
 type DetectionMethod = Literal["bom", "utf8-strict", "ascii", "charset-normalizer"]
-type ScanSkipReason = Literal["excluded", "unreadable"]
+# 1.2 (FR-019/OQ-028): a candidate whose classification (including the charset
+# detection rung) exceeds limits.per_file_timeout is recorded as a scan skip
+# with reason "timeout" rather than a partial FileRecord (ERR-009).
+type ScanSkipReason = Literal["excluded", "unreadable", "timeout"]
 
 type RunId = Annotated[str, Field(pattern=r"^run_\d{8}T\d{6}Z_[0-9a-f]{6}$")]
 type Sha256 = Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
@@ -108,6 +111,9 @@ class ScanConfigRecord(_StrictModel):
 class SkippedByReason(_StrictModel):
     excluded: Annotated[int, Field(ge=0)] = 0
     unreadable: Annotated[int, Field(ge=0)] = 0
+    # 1.2 (FR-019): the watchdog-skip counter, so totals.skipped keeps
+    # reconciling exactly with the per-reason breakdown (DR-001).
+    timeout: Annotated[int, Field(ge=0)] = 0
 
 
 class InventoryTotals(_StrictModel):

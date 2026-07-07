@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler
 from docmend.inventory import DetectedEncoding, NewlineStyle, RelativePath, RunId, Sha256
 from docmend.transform.dispatch import Operation
 
-PLAN_SCHEMA_VERSION = "1.1"
+PLAN_SCHEMA_VERSION = "1.2"
 
 type ActionId = Annotated[str, Field(pattern=r"^run_\d{8}T\d{6}Z_[0-9a-f]{6}/a\d+$")]
 type DocmendId = Annotated[
@@ -41,6 +41,9 @@ type PlanSkipReason = Literal[
     "excluded",
     "unreadable",
     "changed-since-scan",
+    # 1.2 (FR-019/OQ-028): the content pass (read + decode + transform
+    # prediction) exceeded limits.per_file_timeout (ERR-009).
+    "timeout",
 ]
 
 

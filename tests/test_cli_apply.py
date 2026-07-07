@@ -326,3 +326,49 @@ class TestApplyReportAndVerbosity:
         quiet_result = runner.invoke(app, ["-q", "apply", str(plan_path)])
         assert quiet_result.exit_code == 0, quiet_result.output
         assert "apply outcome" not in quiet_result.output
+
+
+class TestApplyLogContent:
+    """NFR-003: a run is diagnosable from its per-run JSONL log alone. The MS-0
+    framework tests (tests/test_observability.py) assert the field schema in
+    isolation; this asserts the log *content* an integration run actually
+    produces — run-ID correlation, per-file outcome events, and level fields."""
+
+    def test_apply_write__jsonl_log_correlates_and_records_per_file_outcomes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        make_corpus(corpus)
+        plan_path = _make_plan(corpus)
+        backup_dir = tmp_path / "backups"
+
+        result = runner.invoke(
+            app, ["apply", str(plan_path), "--write", "--backup-dir", str(backup_dir)]
+        )
+        assert result.exit_code == 0, result.output
+
+        artifact_dir = tmp_path / ".docmend"
+        [report] = list(artifact_dir.glob("docmend-*-report.json"))
+        run_id = report.name.removeprefix("docmend-").removesuffix("-report.json")
+
+        # The per-run JSONL log is named by the SAME run_id as the artifacts —
+        # that filename correlation is what makes a log findable from a report.
+        log_path = artifact_dir / f"docmend-{run_id}.jsonl"
+        assert log_path.is_file()
+        assert (artifact_dir / f"docmend-{run_id}-manifest.jsonl").is_file()
+
+        records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+        assert records, "apply produced no structured log records"
+
+        # run_id is bound into every line, and every line carries a level — the
+        # two structured fields NFR-003/OQ-017 require for after-the-fact triage.
+        assert {record["run_id"] for record in records} == {run_id}
+        assert all("level" in record for record in records)
+
+        # Per-file outcome events: one INFO 'apply outcome' per planned action,
+        # each naming the file and its status — the per-file audit trail.
+        outcomes = [record for record in records if record.get("event") == "apply outcome"]
+        assert {"a.txt", "c.txt"} <= {record["path"] for record in outcomes}
+        assert all(record["level"] == "INFO" for record in outcomes)
+        assert {record["status"] for record in outcomes} == {"applied"}

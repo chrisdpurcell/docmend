@@ -199,8 +199,8 @@
 			"properties": {
 				"path": { "$ref": "#/$defs/relative_path" },
 				"reason": {
-					"description": "'excluded': matched an include pattern but also an exclude pattern. 'unreadable': stat/open/read failed (ERR-007) — these count as findings for the section-18.5 exit-code taxonomy.",
-					"enum": ["excluded", "unreadable"]
+					"description": "'excluded': matched an include pattern but also an exclude pattern. 'unreadable': stat/open/read failed (ERR-007). 'timeout' (1.2): classification exceeded limits.per_file_timeout (FR-019/ERR-009). All count as findings for the section-18.5 exit-code taxonomy.",
+					"enum": ["excluded", "unreadable", "timeout"]
 				},
 				"detail": {
 					"description": "Human-readable cause (e.g. the OS error); null for reasons that need none.",
@@ -249,7 +249,8 @@
 					"additionalProperties": false,
 					"properties": {
 						"excluded": { "type": "integer", "minimum": 0 },
-						"unreadable": { "type": "integer", "minimum": 0 }
+						"unreadable": { "type": "integer", "minimum": 0 },
+						"timeout": { "type": "integer", "minimum": 0 }
 					}
 				},
 				"hard_link_groups": { "type": "integer", "minimum": 0 },

@@ -1,10 +1,10 @@
 """docmend — normalize, repair, and convert legacy .txt/.html documents to Markdown.
 
-MS-0 foundation surface: CLI entry point (docmend.cli), strict TOML configuration
+v1 surface: the scan → plan → apply → verify pipeline plus restore and resume
+(docs/specs/docmend.md §7.3) — CLI shell (docmend.cli), strict TOML configuration
 (docmend.config), structured logging + run-ID conventions (docmend.observability),
-and the empty transform/writer layer packages that anchor the NFR-005 purity
-contract. The pipeline commands land per the spec's milestone ladder
-(docs/specs/docmend.md §19).
+pure transforms (docmend.transform, NFR-005), and the isolated writer layer
+(docmend.writer) with its atomic-write/backup/manifest safety machinery.
 """
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"

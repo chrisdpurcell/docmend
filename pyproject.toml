@@ -1,6 +1,6 @@
 [project]
 name = "docmend"
-version = "0.1.0"
+version = "1.0.0"
 description = "Normalize, repair, and convert large libraries of legacy .txt/.html documents into clean, well-structured Markdown."
 readme = "README.md"
 requires-python = ">=3.14"
@@ -75,6 +75,9 @@ failOnWarnings = true
 minversion = "9.0"
 testpaths = ["tests"]
 addopts = ["-ra", "--strict-markers", "--strict-config"]
+markers = [
+    "slow: opt-in long-running tests (NFR-001 scale run; also gated on DOCMEND_SCALE=1)",
+]
 
 [tool.coverage.run]
 branch = true

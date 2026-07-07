@@ -16,6 +16,7 @@ one skip decision or one action or (no-op) neither — FR-017's plan half.
 """
 
 import hashlib
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -43,6 +44,7 @@ from docmend.transform.dispatch import (
     non_whitespace_count,
 )
 from docmend.transform.encoding import decode_source
+from docmend.watchdog import PerFileTimeoutError, per_file_watchdog
 
 
 def _fact_skip(
@@ -225,118 +227,152 @@ def build_plan(
     source_root = Path(inventory.source_root)
     seq = 0
     for record in pending:
-        result = _read_verified(source_root / record.path, record)
-        if isinstance(result, SkipDecision):
-            skips.append(result)
-            log.debug("planned skip", path=record.path, reason=result.reason)
-            continue
-        data = result
-        enc = record.encoding
-        if record.nul_bytes and enc.bom is None:
-            reason = "utf16-suspect" if _utf16_suspect(data) else "nul-bytes"
-            detail = (
-                "BOM-less interleaved-NUL pattern"
-                if reason == "utf16-suspect"
-                else "NUL bytes present"
-            )
-            skips.append(SkipDecision(path=record.path, reason=reason, detail=detail))
-            log.debug("planned skip", path=record.path, reason=reason)
-            continue
-        decode_encoding = enc.detected.name if enc.detected else "utf-8"
+        # FR-019: the content pass — verified read + decode + transform
+        # prediction — is this layer's unbounded per-file work; catastrophic
+        # regex backtracking in an FR-009 transform (R-007) surfaces here. The
+        # watchdog re-arms per file and never spans the writer (the writer is a
+        # different layer entirely; see docmend.watchdog's scope contract).
+        start = time.monotonic()
         try:
-            text = decode_source(data, bom=enc.bom, encoding_name=decode_encoding)
-        except UnicodeDecodeError as exc:
-            skips.append(
-                SkipDecision(
-                    path=record.path,
-                    reason="decode-replacement",
-                    detail=f"{decode_encoding}: undecodable byte at offset {exc.start}",
+            with per_file_watchdog(config.limits.per_file_timeout):
+                result = _read_verified(source_root / record.path, record)
+                if isinstance(result, SkipDecision):
+                    skips.append(result)
+                    log.debug("planned skip", path=record.path, reason=result.reason)
+                    continue
+                data = result
+                enc = record.encoding
+                if record.nul_bytes and enc.bom is None:
+                    reason = "utf16-suspect" if _utf16_suspect(data) else "nul-bytes"
+                    detail = (
+                        "BOM-less interleaved-NUL pattern"
+                        if reason == "utf16-suspect"
+                        else "NUL bytes present"
+                    )
+                    skips.append(SkipDecision(path=record.path, reason=reason, detail=detail))
+                    log.debug("planned skip", path=record.path, reason=reason)
+                    continue
+                decode_encoding = enc.detected.name if enc.detected else "utf-8"
+                try:
+                    text = decode_source(data, bom=enc.bom, encoding_name=decode_encoding)
+                except UnicodeDecodeError as exc:
+                    skips.append(
+                        SkipDecision(
+                            path=record.path,
+                            reason="decode-replacement",
+                            detail=f"{decode_encoding}: undecodable byte at offset {exc.start}",
+                        )
+                    )
+                    log.debug("planned skip", path=record.path, reason="decode-replacement")
+                    continue
+                except LookupError:
+                    # Theoretical: a detector could in principle name a codec
+                    # Python's registry doesn't have (charset-normalizer's
+                    # candidate names are not currently validated against
+                    # `codecs`). Treated the same as an undecodable file rather
+                    # than propagating — an unrecognized codec name is not this
+                    # file's fault to abort the whole run over.
+                    skips.append(
+                        SkipDecision(
+                            path=record.path,
+                            reason="decode-replacement",
+                            detail=f"unknown codec {decode_encoding!r}",
+                        )
+                    )
+                    log.debug("planned skip", path=record.path, reason="decode-replacement")
+                    continue
+                file_class = classify_suffix(record.suffix)
+                ws = config.whitespace
+                transformed, operations = apply_text_transforms(
+                    text,
+                    file_class,
+                    trim_trailing_ws=ws.trim_trailing,
+                    final_newline=ws.ensure_final_newline,
+                    collapse_max=ws.collapse_blank_lines,
+                    tab_width=ws.tab_width if ws.normalize_tabs else None,
                 )
-            )
-            log.debug("planned skip", path=record.path, reason="decode-replacement")
-            continue
-        except LookupError:
-            # Theoretical: a detector could in principle name a codec Python's
-            # registry doesn't have (charset-normalizer's candidate names are
-            # not currently validated against `codecs`). Treated the same as
-            # an undecodable file rather than propagating — an unrecognized
-            # codec name is not this file's fault to abort the whole run over.
-            skips.append(
-                SkipDecision(
-                    path=record.path,
-                    reason="decode-replacement",
-                    detail=f"unknown codec {decode_encoding!r}",
-                )
-            )
-            log.debug("planned skip", path=record.path, reason="decode-replacement")
-            continue
-        file_class = classify_suffix(record.suffix)
-        ws = config.whitespace
-        transformed, operations = apply_text_transforms(
-            text,
-            file_class,
-            trim_trailing_ws=ws.trim_trailing,
-            final_newline=ws.ensure_final_newline,
-            collapse_max=ws.collapse_blank_lines,
-            tab_width=ws.tab_width if ws.normalize_tabs else None,
-        )
-        ops: list[Operation] = []
-        if enc.bom is not None or decode_encoding != "utf-8":
-            ops.append("reencode")
-        ops.extend(operations)
-        if non_whitespace_count(transformed) < non_whitespace_count(text):
-            # Unreachable with correct transforms (adr-0016's dispatch never
-            # removes non-whitespace content); a hit here means a transform
-            # bug, so it is logged at error level in addition to the skip.
-            log.error("shrink invariant tripped", path=record.path)
-            skips.append(
-                SkipDecision(
-                    path=record.path,
-                    reason="shrink-invariant",
-                    detail="non-whitespace count would decrease",
-                )
-            )
-            continue
-        target: str | None = None
-        if file_class == "text" and record.suffix.lower() == ".txt" and config.rename.txt_to_md:
-            candidate = record.path[: -len(record.suffix)] + ".md"
-            collides = (
-                candidate in claimed_targets
-                or candidate in inventory_paths
-                or (source_root / candidate).exists()
-            )
-            if collides and config.rename.on_collision != "overwrite":
-                skips.append(
-                    SkipDecision(
+                ops: list[Operation] = []
+                if enc.bom is not None or decode_encoding != "utf-8":
+                    ops.append("reencode")
+                ops.extend(operations)
+                if non_whitespace_count(transformed) < non_whitespace_count(text):
+                    # Unreachable with correct transforms (adr-0016's dispatch
+                    # never removes non-whitespace content); a hit here means a
+                    # transform bug, logged at error level besides the skip.
+                    log.error("shrink invariant tripped", path=record.path)
+                    skips.append(
+                        SkipDecision(
+                            path=record.path,
+                            reason="shrink-invariant",
+                            detail="non-whitespace count would decrease",
+                        )
+                    )
+                    continue
+                target: str | None = None
+                if (
+                    file_class == "text"
+                    and record.suffix.lower() == ".txt"
+                    and config.rename.txt_to_md
+                ):
+                    candidate = record.path[: -len(record.suffix)] + ".md"
+                    collides = (
+                        candidate in claimed_targets
+                        or candidate in inventory_paths
+                        or (source_root / candidate).exists()
+                    )
+                    if collides and config.rename.on_collision != "overwrite":
+                        skips.append(
+                            SkipDecision(
+                                path=record.path,
+                                reason="collision",
+                                detail=(
+                                    f"target {candidate} exists "
+                                    f"(policy {config.rename.on_collision})"
+                                ),
+                            )
+                        )
+                        log.debug("planned skip", path=record.path, reason="collision")
+                        continue
+                    target = candidate
+                    ops.append("rename")
+                if not ops:
+                    continue  # no-op: neither action nor skip (FR-017 plan half)
+                if target is not None:
+                    claimed_targets.add(target)
+                seq += 1
+                actions.append(
+                    PlanAction(
+                        action_id=f"{run_id}/a{seq}",
+                        docmend_id=str(mint_id()),
                         path=record.path,
-                        reason="collision",
-                        detail=f"target {candidate} exists (policy {config.rename.on_collision})",
+                        source_sha256=record.sha256,
+                        source_size_bytes=record.size_bytes,
+                        operations=ops,
+                        target_path=target,
+                        provenance=ActionProvenance(
+                            detected_encoding=enc.detected, newline_style=record.newline_style
+                        ),
                     )
                 )
-                log.debug("planned skip", path=record.path, reason="collision")
-                continue
-            target = candidate
-            ops.append("rename")
-        if not ops:
-            continue  # no-op: neither action nor skip (FR-017 plan half)
-        if target is not None:
-            claimed_targets.add(target)
-        seq += 1
-        actions.append(
-            PlanAction(
-                action_id=f"{run_id}/a{seq}",
-                docmend_id=str(mint_id()),
-                path=record.path,
-                source_sha256=record.sha256,
-                source_size_bytes=record.size_bytes,
-                operations=ops,
-                target_path=target,
-                provenance=ActionProvenance(
-                    detected_encoding=enc.detected, newline_style=record.newline_style
-                ),
+                log.debug("planned action", path=record.path, operations=ops, target=target)
+        except PerFileTimeoutError:
+            # FR-019/ERR-009: bound the per-file content work; record the
+            # timeout with path + elapsed and let the batch continue.
+            elapsed = time.monotonic() - start
+            skips.append(
+                SkipDecision(
+                    path=record.path,
+                    reason="timeout",
+                    detail=f"exceeded {config.limits.per_file_timeout}s (elapsed {elapsed:.2f}s)",
+                )
             )
-        )
-        log.debug("planned action", path=record.path, operations=ops, target=target)
+            log.warning(
+                "content pass timed out",
+                path=record.path,
+                elapsed=round(elapsed, 3),
+                err="ERR-009",
+            )
+            continue
 
     skips.sort(key=lambda s: s.path)
     if config.write.backup_dir is not None and not config.write.backup_dir.is_absolute():

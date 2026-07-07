@@ -11,10 +11,10 @@ This is the human-facing completion summary for docmend. Agents maintain it so t
 ## Current State
 
 - **Post-release maintenance mode.** `dev` → PR → `main` continues for bug fixes and post-v1 features; the release path is tag-triggered (`release.yml`).
-- **Alignment hardening complete (PR #18)**: the 2026-07-07 cross-repo review (with `doc-proc-scripts`) fixed both P0 safety findings — same-run rename collisions could merge under `overwrite`, and a hard kill inside `rename_and_rewrite`'s window left unmanifested mutations (now covered by manifest 1.3 write-ahead intent records + resume reconciliation) — plus scan-time excluded-dir pruning and release-workflow pinning. Spec rev 0.24; **adr-0018** (repository boundary) accepted by the owner with the sibling ADR confirmed; the temporary `ALIGNMENT_HANDOFF.md` is deleted.
+- **v1.0.2 released (2026-07-07)**: ships the cross-repo alignment hardening — both P0 safety findings fixed (same-run rename collisions could merge under `overwrite`; a hard kill inside `rename_and_rewrite`'s window left unmanifested mutations, now covered by manifest 1.3 write-ahead intent records + resume reconciliation) — plus scan-time excluded-dir pruning, release-workflow pinning, and a pre-release two-agent doc-drift sweep (spec rev 0.25). **adr-0018** (repository boundary) accepted with the sibling ADR confirmed; the temporary `ALIGNMENT_HANDOFF.md` is deleted.
 - **The next substantive step is the owner's**: the §18.4 staged real-library rollout (scan → plan review → filtered apply → widen) and weird-corpus expansion from real scan findings (adr-0015 anonymization procedure). Tracked in `TODO.md`.
-- Spec is **`status: approved`** (owner, 2026-07-07; rev 0.24) — change-controlled: edits need a revision row; scope changes need owner re-approval. The decision backlog is empty.
-- 617 tests + an opt-in 100k scale test (`DOCMEND_SCALE=1`), 97% coverage.
+- Spec is **`status: approved`** (owner, 2026-07-07; rev 0.25) — change-controlled: edits need a revision row; scope changes need owner re-approval. The decision backlog is empty.
+- 619 tests + an opt-in 100k scale test (`DOCMEND_SCALE=1`), 97% coverage.
 
 ## Recent Changes
 

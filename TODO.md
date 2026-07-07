@@ -10,13 +10,13 @@ _None outstanding._
 
 <instruction> Agents summarize outstanding work from `docs/handoff/state.md`, `docs/handoff/architecture.md`, `docs/handoff/specs-plans.md`, bug records, plans, and session notes here. The purpose is to provide convenience and transparency to the human user. </instruction>
 
-- [ ] **Owner: cross-repo alignment wrap-up (2026-07-07):** review spec rev 0.24 (FR-011 same-run collision invariant, DR-004 intent record) and accept `docs/adr/adr-0018-doc-processing-repository-boundary.md` (`proposed` → `accepted`); confirm the sibling `doc-proc-scripts` boundary ADR cross-references it. The alignment fixes sit on `dev` (6 commits) awaiting the `dev` → `main` PR; once both ADRs are accepted, delete `ALIGNMENT_HANDOFF.md` from both repos.
 - [ ] **Owner: first real-library run (§18.4 staged rollout, post-v1.0.0):** scan the real library read-only → review the plan/skip pile from reports → apply a filtered subset → widen. Expand the weird-document corpus from real scan findings via the adr-0015 anonymization procedure before the first wide apply. The tool side is released; these steps need the real corpus only the owner has.
 
 ## Completed Tasks
 
 <instruction> Agents should move completed tasks from both the user and agent sections to here. This space is not for agent tracking or handoff purposes; it is a user convenience and these will be deleted by the user once reviewed. </instruction>
 
+- [x] **Owner: cross-repo alignment wrap-up (2026-07-07):** spec rev 0.24 reviewed; adr-0018 accepted; sibling `doc-proc-scripts` boundary ADR confirmed; `ALIGNMENT_HANDOFF.md` deleted from this repo (sibling deletes its own).
 - [x] **Cross-repo alignment safety hardening (2026-07-07, on `dev`, spec rev 0.24):** both review P0s fixed with TDD — (1) same-run rename targets can no longer merge under `rename.on_collision="overwrite"` (plan-internal claims always skip; FR-011 amended); (2) the `rename_and_rewrite` hard-kill window is closed via manifest 1.2→1.3 write-ahead `intent` records + resume reconciliation (complete/adopt/re-execute/ERR-002; adr-0006 amended; restore/verify unaffected). Plus: scan prunes excluded directories (quieter inventories, faster walks), `release.yml` setup-uv SHA-pinned, v1.0.1 doc drift fixed, `fix_spec_toc.py` over-matching lookahead fixed, adr-0018 boundary ADR drafted (proposed). 617 tests, 97% coverage, full gate green.
 - [x] **Owner sign-off received (2026-07-07, post-release):** OQ-034 (`.docmend/` artifact location), OQ-035 (preservation CLI surface/risk tiers), OQ-036 (run-lock location/mechanism) — all resolved as implemented (RQ-034..036); Deviations DEV-001 + DEV-002 approved. Spec §21 rows Resolved, §17.1 DoD and §13.6 hardening checklists ticked.
 

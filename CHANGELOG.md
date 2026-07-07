@@ -4,7 +4,7 @@ All notable changes to docmend are recorded here. The format follows [Keep a Cha
 
 ## [Unreleased]
 
-Safety hardening from the 2026-07-07 cross-repo alignment review, ahead of broad real-library mutation. The repository boundary with the workstation-side tooling is recorded in `docs/adr/adr-0018-doc-processing-repository-boundary.md` (proposed).
+Safety hardening from the 2026-07-07 cross-repo alignment review, ahead of broad real-library mutation. The repository boundary with the workstation-side tooling is recorded in `docs/adr/adr-0018-doc-processing-repository-boundary.md` (accepted 2026-07-07).
 
 ### Fixed
 

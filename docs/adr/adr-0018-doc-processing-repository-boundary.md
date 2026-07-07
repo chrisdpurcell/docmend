@@ -4,10 +4,10 @@ id: 'adr-0018-docmend-doc-processing-repository-boundary'
 title: 'ADR 0018: Doc Processing repository boundary'
 description: 'docmend is the standalone batch-normalization product; doc-proc-scripts is the workstation/orchestration/privacy layer that consumes it as one downstream — the boundary, non-goals, safety contract, and wrapper expectations are recorded here and mirrored by a sibling ADR in doc-proc-scripts.'
 doc_type: 'adr'
-status: 'proposed'
+status: 'accepted'
 created: '2026-07-07'
 updated: '2026-07-07'
-reviewed: null
+reviewed: '2026-07-07'
 owner: 'chrisdpurcell'
 consumer: 'agent'
 tags:
@@ -112,5 +112,5 @@ The temporary root `ALIGNMENT_HANDOFF.md` files in both repositories are deleted
 
 - Sibling record: `doc-proc-scripts` `docs/adr/` boundary ADR (same title scheme), which either cross-references this ADR or states that it mirrors the accepted boundary decision.
 - Origin: 2026-07-07 cross-repo alignment review (temporary coordination doc; findings triaged in this repo as the same-run collision split, intent-record interruption evidence, discovery pruning, release-workflow pinning, and version-drift fixes).
-- Decision owner: `chrisdpurcell` (accepts by flipping `status` to `accepted`).
+- Decision owner: `chrisdpurcell` — accepted 2026-07-07, with the sibling `doc-proc-scripts` boundary ADR confirmed as cross-referencing this record.
 - Revisit if corpus-profile privacy abstraction is delegated into `docmend`, if HTML article extraction is brought into mechanical scope (adr-0016 revision), or if a second downstream consumer appears with conflicting wrapper needs.

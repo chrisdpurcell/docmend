@@ -62,7 +62,7 @@ npx prettier --check .
 npx markdownlint-cli2 "**/*.md"
 ```
 
-**Why:** CI enforces markdownlint (`lint-markdown.yml`) but _not_ Prettier — Prettier is a local/pre-commit nicety. A Prettier miss won't fail CI; a markdownlint miss will. Keep both clean anyway.
+**Why:** CI enforces markdownlint (`lint-markdown.yml`) but _not_ Prettier — Prettier is a local/pre-commit nicety. A Prettier miss won't fail CI; a markdownlint miss will. Keep both clean anyway. The `.prettierignore` excludes `tests/fixtures/weird_documents/` because those fixtures are byte-exact test data whose whitespace and line endings must never be reformatted.
 
 **Sources:** `.markdownlint.json`, `.markdownlint-cli2.jsonc`, `.prettierrc.json`; Markdown Tooling Standard (project-standards).
 

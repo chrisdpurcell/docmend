@@ -2,7 +2,17 @@
 
 Python tool to normalize, fix, convert, manage, and maintain large libraries of text and markdown documents.
 
-> **Status:** domain logic (MS-2) implemented. The design is complete (see [`docs/specs/docmend.md`](docs/specs/docmend.md)); `docmend scan PATH` produces a structured, schema-validated inventory of a file or directory tree — read-only, with include/exclude filters — and the four run-artifact JSON Schemas are pinned in `src/docmend/schemas/`. `docmend plan` now turns that inventory into a reviewable plan of encoding/newline/whitespace transforms, renames, and risk-classified skips — still read-only, no writes. `apply`/`verify` land in later milestones — the tool cannot modify documents yet.
+> **Status:** writer layer (MS-3) implemented. The design is complete (see [`docs/specs/docmend.md`](docs/specs/docmend.md)); `docmend scan PATH` produces a structured, schema-validated inventory of a file or directory tree — read-only, with include/exclude filters — and the four run-artifact JSON Schemas are pinned in `src/docmend/schemas/`. `docmend plan` turns that inventory into a reviewable plan of encoding/newline/whitespace transforms, renames, and risk-classified skips — still read-only, no writes. `docmend apply` now executes a reviewed plan (dry-run by default, gated writes, atomic mutation, a reversible manifest) and `docmend restore` undoes an apply run. `verify` lands in a later milestone.
+
+## Commands
+
+### `docmend apply PLAN`
+
+Execute a reviewed plan. **Dry-run by default** — nothing is written until you pass `--write` (FR-004/OQ-014). A writing run is gated (exit 3 on refusal): a content-changing rewrite needs a byte-preserving strategy — tool backups (`--backup-dir PATH` or `write.backup_dir`), a declared strategy (`--preserved-by git|external`), or, for a single-action plan only, the explicit `--allow-no-backup` low-risk opt-in. Every mutation is recorded in an append-only manifest (`.docmend/docmend-<run-id>-manifest.jsonl`); the report (`--report FILE` to relocate) records every outcome. Exit codes: 0 clean, 1 findings (skips/failures), 2 input error, 3 safety refusal.
+
+### `docmend restore [--manifest FILE | --run-id ID]`
+
+Undo an apply run by replaying its manifest newest-first. Dry-run by default; `--write` performs the restore; `--id DOCMEND_ID` limits it to specific documents. A file modified since apply is skipped, never clobbered.
 
 ## Contributing / workflow
 

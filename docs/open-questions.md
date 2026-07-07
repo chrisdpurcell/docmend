@@ -7,7 +7,7 @@
   - _open question_ (`OQ-###`) is a decision still to be made — the primary unit of this document.
   - _resolved question_ (`RQ-###`, already settled) lives in the companion file [`resolved-questions.md`](resolved-questions.md).
 - **Priority scale:** open questions carry a `P0 blocker` / `P1 near-blocker` / `P2 decision` label; the gap-analysis-sourced ones also carry a High / Medium / Low gap-analysis priority. The full ranked register with downstream-impact analysis lives in [`gap-analysis.md`](gap-analysis.md).
-- **Status:** OQ-001..033 are settled — see [`resolved-questions.md`](resolved-questions.md), RQ-001..033. **One open question:** OQ-034 (non-blocking; implementation proceeding on its recorded assumption per the spec's Appendix B rules).
+- **Status:** OQ-001..033 are settled — see [`resolved-questions.md`](resolved-questions.md), RQ-001..033. **Three open questions:** OQ-034, OQ-035, OQ-036 (all non-blocking; implementation proceeding on their recorded assumptions per the spec's Appendix B rules).
 
 ## Table of Contents
 
@@ -33,6 +33,38 @@
 
 - Alternatives considered: bare files in the CWD (clutters, and a second run doubles it); alongside the scanned root (pollutes the library being processed — worst option given FR-001's read-only posture, though only the _tool's_ directory, never library files, would be written); XDG state dir (`~/.local/state/docmend/` — survives anywhere but hides the artifacts the operator is supposed to review; the plan file is a review surface, D-006).
 - A future `artifacts.dir` config key could make this configurable; deliberately **not** added now — §18.2 is spec-governed and the flag override suffices for v1.
+
+#### My Comments
+
+(none yet — owner block, agent does not edit)
+
+### OQ-035 — FR-005 CLI surface and risk tiers (`P2 decision`, non-blocking)
+
+**Raised:** 2026-07-06 (MS-3 implementation) **Owner:** owner **Needed by:** MS-4 (before verify/resume harden the surface) **Spec:** §21 OQ-035; touches FR-005, G-002
+
+**The unresolved decision:** how are the git/external preservation strategies declared on the CLI, what exactly qualifies as a "low-risk single-file operation," and how is an overwrite-clobbered target preserved (G-002)?
+
+**Current assumption (implementation proceeds on this per Appendix B):** `--backup-dir` activates tool backups; `--preserved-by git|external` declares an external byte-preserving strategy (an operator assertion, not verified); `--allow-no-backup` is the low-risk opt-in, valid only for single-action plans. An action counts as a content rewrite iff any of its operations is not a rename; rename-only runs under the skip/fail collision policy need no preservation strategy (the manifest alone suffices). A run that would overwrite an existing target requires an active strategy, and tool backups additionally copy the clobbered target (manifest schema 1.1 `overwritten_*` fields).
+
+#### Agent notes
+
+- Landed via the adversarial plan audit that produced the MS-3 implementation plan; the gate (`tests/test_gate.py`) enforces the refusal set mechanically.
+
+#### My Comments
+
+(none yet — owner block, agent does not edit)
+
+### OQ-036 — run-level lock location and mechanism (`P2 decision`, non-blocking)
+
+**Raised:** 2026-07-06 (MS-3 implementation) **Owner:** owner **Needed by:** MS-4 **Spec:** §21 OQ-036; touches OQ-027, AW-005
+
+**The unresolved decision:** the spec mandates the run-level lock this heading resolves for but not its home or mechanism (the lock requirement itself was settled as OQ-027).
+
+**Current assumption (implementation proceeds on this per Appendix B):** `flock(2)` on a lock file under `$XDG_STATE_HOME/docmend/locks/` (default `~/.local/state/…`), named by the sha256 hash of the resolved source root, `.lock` suffixed — kernel-owned, so a crashed holder can never leave a stale lock and no stale-detection/unlink races exist. Holder JSON (`run_id`/`pid`/`command`/`started_at`) is written only to populate the refusal message; a live holder refuses with exit 3 (AW-005). `plan` warns and proceeds if the state directory is uncreatable (stays read-only-safe); `apply`/`restore` refuse. Single-machine semantics (A-003-adjacent: local POSIX filesystem per A-001).
+
+#### Agent notes
+
+- Landed via the adversarial plan audit that produced the MS-3 implementation plan.
 
 #### My Comments
 

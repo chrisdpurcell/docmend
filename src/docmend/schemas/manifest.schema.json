@@ -86,6 +86,10 @@
 		"overwritten_backup_path": {
 			"description": "1.1 (OQ-035): verified backup of the clobbered target when tool backups were enabled; null otherwise.",
 			"type": ["string", "null"]
+		},
+		"source_root": {
+			"description": "1.2 (OQ-036): absolute resolved source root of the apply run. `docmend restore` keys its run-lock on this so it contends with a concurrent apply on the same tree (AW-005). Optional, not required: null/absent in pre-1.2 manifests and in restore's own inverse manifest.",
+			"type": ["string", "null"]
 		}
 	},
 	"$defs": {

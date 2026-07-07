@@ -94,6 +94,23 @@ def test_dry_run_default__writes_nothing_reports_would_apply(tmp_path: Path) -> 
     assert report.totals.applied == report.totals.skipped == report.totals.failed == 0
 
 
+def test_write__records_carry_resolved_source_root(tmp_path: Path) -> None:
+    """Manifest 1.2 (OQ-036): every record carries the apply run's resolved source
+    root so `docmend restore` can key its lock on it (closes the AW-005 gap)."""
+    root = tmp_path / "root"
+    materialize(root, [FileRecipe("a.txt", "utf-8", "crlf")], seeded_faker())
+    config = DocmendConfig()
+    plan = _plan_for(root, config)
+
+    _execute(plan, config, tmp_path, write=True)
+
+    records = read_manifest(tmp_path / "manifest.jsonl")
+    assert records
+    assert plan.source_root is not None
+    resolved = str(Path(plan.source_root).resolve())
+    assert all(record.source_root == resolved for record in records)
+
+
 def test_write_rewrite_in_place__utf8_lf_and_manifest(tmp_path: Path) -> None:
     """FR-006, FR-008, NFR-002, DR-004: in-place rewrite, verified backup, manifest record."""
     root = tmp_path / "root"

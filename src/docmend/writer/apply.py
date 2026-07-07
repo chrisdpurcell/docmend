@@ -408,7 +408,11 @@ def execute_plan(
     outcomes: list[ApplyOutcome] = []
     manifest: ManifestWriter | None = None
     if options.write and plan.actions:
-        manifest = ManifestWriter(manifest_path, run_id=run_id, now=now)
+        # source_root stamped onto every record (OQ-036) — restore keys its lock
+        # on it, so it must match plan/apply's key: the RESOLVED root.
+        manifest = ManifestWriter(
+            manifest_path, run_id=run_id, source_root=str(root_resolved), now=now
+        )
     try:
         abort = False
         for action in plan.actions:

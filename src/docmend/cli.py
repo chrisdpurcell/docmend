@@ -374,6 +374,24 @@ def _acquire_run_lock_strict(source_root: Path, *, run_id: str, command: str) ->
         raise typer.Exit(3) from exc
 
 
+def _restore_lock_root(records: list[manifest.ManifestRecord]) -> Path:
+    """The tree `docmend restore` locks (OQ-036, AW-005).
+
+    A 1.2 manifest stamps the apply run's resolved source_root on every record;
+    key the lock on THAT so restore contends with a concurrent apply/plan on the
+    same tree — even when every mutated file lives in a subdirectory whose
+    commonpath narrows below the source root (the gap the old commonpath key left
+    open: a restore keyed on the narrower path slipped past an apply's root lock).
+    A pre-1.2 manifest carries no source_root: fall back to the commonpath of
+    original paths, preserving the legacy behavior for older manifests.
+    """
+    recorded = records[0].source_root
+    if recorded is not None:
+        return Path(recorded)  # already the resolved source root written at apply
+    root = Path(os.path.commonpath([r.original_path for r in records]))
+    return root if root.is_dir() else root.parent
+
+
 class PreservedBy(StrEnum):
     """FR-005 declared byte-preserving strategies external to docmend's own backups."""
 
@@ -607,15 +625,12 @@ def restore(
         typer.echo("nothing to restore: manifest holds no records")
         return
 
-    # KNOWN GAP (OQ-036, MS-4 fix pending): this keys the lock on the
-    # commonpath of the manifest's own original paths, whereas plan/apply key
-    # on the resolved source_root. When every mutated file shares a
-    # subdirectory, commonpath narrows below source_root and the two keys
-    # diverge, leaving an AW-005 mutual-exclusion gap between a concurrent
-    # apply and restore. Not fixed here — see docs/open-questions.md § OQ-036.
-    root = Path(os.path.commonpath([r.original_path for r in records]))
+    # OQ-036 (fixed MS-4): key on the manifest's recorded source_root so restore
+    # contends with a concurrent apply/plan on the same tree even when the
+    # mutated files nest in a subdirectory (falls back to commonpath for pre-1.2
+    # manifests). See `_restore_lock_root`.
     run_lock = _acquire_run_lock_strict(
-        root if root.is_dir() else root.parent, run_id=run_id, command="restore"
+        _restore_lock_root(records), run_id=run_id, command="restore"
     )
     try:
         outcomes = run_restore(

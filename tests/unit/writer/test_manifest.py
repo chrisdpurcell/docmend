@@ -130,3 +130,36 @@ def test_overwrite_fields__round_trip(tmp_path: Path) -> None:
     with ManifestWriter(path, run_id=RUN_ID) as writer:
         written = writer.append(record)
     assert read_manifest(path)[0] == written
+
+
+def test_source_root__stamped_by_writer_and_round_trips(tmp_path: Path) -> None:
+    """Manifest 1.2 (OQ-036): the writer stamps the apply run's source_root onto
+    every record — a run-level constant, stamped like seq/recorded_at — so restore
+    can key its lock on it (closes the commonpath-divergence gap, AW-005)."""
+    path = tmp_path / "manifest.jsonl"
+    with ManifestWriter(path, run_id=RUN_ID, source_root="/corpus/root") as writer:
+        written = writer.append(_record(1))
+    assert written.source_root == "/corpus/root"
+    assert read_manifest(path)[0].source_root == "/corpus/root"
+
+
+def test_source_root__unset_writer_leaves_none(tmp_path: Path) -> None:
+    """A writer without a source_root (e.g. restore's inverse manifest) leaves the
+    field None — it is optional, not required."""
+    path = tmp_path / "manifest.jsonl"
+    with ManifestWriter(path, run_id=RUN_ID) as writer:
+        written = writer.append(_record(1))
+    assert written.source_root is None
+    assert read_manifest(path)[0].source_root is None
+
+
+def test_pre_1_2_record_missing_source_root_key__still_reads(tmp_path: Path) -> None:
+    """Backward compat: a manifest written by the 1.1 writer has no source_root key
+    at all; the 1.2 reader must accept it (schema optional, model defaults None)."""
+    path = tmp_path / "manifest.jsonl"
+    with ManifestWriter(path, run_id=RUN_ID) as writer:
+        writer.append(_record(1))
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    del doc["source_root"]  # simulate a genuine pre-1.2 on-disk record
+    path.write_text(json.dumps(doc) + "\n", encoding="utf-8")
+    assert read_manifest(path)[0].source_root is None

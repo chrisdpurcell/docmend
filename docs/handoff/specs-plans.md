@@ -7,4 +7,4 @@ This repo does not use the default `docs/superpowers/{specs,plans}/` locations �
 | Spec | `docs/specs/docmend.md` (SPEC-VHHB, `full` profile) | Project Specification Standard location (project-standards), `status: draft`. CI-validated (`.github/workflows/validate-specs.yml`). |
 | Decision backlog | `docs/open-questions.md` / `docs/resolved-questions.md` | Companion OQ-/RQ- tracking for the spec's §21 open questions — a spec-standard concept, not part of the handoff system. |
 | ADRs | `docs/adr/` | ADR Standard (project-standards), authored from `docs/adr/adr.template.md`. |
-| Plans | none yet | Default location if any are created: `docs/superpowers/plans/`. |
+| Plans | `docs/superpowers/plans/` | `2026-07-06-ms2-domain-logic.md` (MS-2, executed and merged via PR #7; retained until the MS-0..5 ladder completes per `docs/repo-hygiene.md`). |

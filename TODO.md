@@ -10,13 +10,13 @@ _None outstanding._
 
 <instruction> Agents summarize outstanding work from `docs/handoff/state.md`, `docs/handoff/architecture.md`, `docs/handoff/specs-plans.md`, bug records, plans, and session notes here. The purpose is to provide convenience and transparency to the human user. </instruction>
 
-- [ ] **OQ-034 owner decision (raised at MS-1, non-blocking, wanted by MS-3):** default artifact/log location. Implementation proceeds on the recorded assumption — `./.docmend/` in the invoking directory, run-ID-keyed filenames, `--report` override, `.docmend/` in default excludes. Confirm or redirect in `docs/open-questions.md` § OQ-034.
-- [ ] **OQ-035/OQ-036 owner sign-off (raised at MS-3, non-blocking, wanted by MS-4):** preservation CLI surface + risk tiers; run-lock location.
 - [ ] **Owner: first real-library run (§18.4 staged rollout, post-v1.0.0):** scan the real library read-only → review the plan/skip pile from reports → apply a filtered subset → widen. Expand the weird-document corpus from real scan findings via the adr-0015 anonymization procedure before the first wide apply. The tool side is released; these steps need the real corpus only the owner has.
 
 ## Completed Tasks
 
 <instruction> Agents should move completed tasks from both the user and agent sections to here. This space is not for agent tracking or handoff purposes; it is a user convenience and these will be deleted by the user once reviewed. </instruction>
+
+- [x] **Owner sign-off received (2026-07-07, post-release):** OQ-034 (`.docmend/` artifact location), OQ-035 (preservation CLI surface/risk tiers), OQ-036 (run-lock location/mechanism) — all resolved as implemented (RQ-034..036); Deviations DEV-001 + DEV-002 approved. Spec §21 rows Resolved, §17.1 DoD and §13.6 hardening checklists ticked.
 
 - [x] **MS-5 complete — v1.0.0 released (2026-07-07, spec rev 0.20, PR #11):** 100k seeded scale test (NFR-001: 358 s, 477 MiB peak, opt-in `DOCMEND_SCALE=1`); FR-019 per-file SIGALRM watchdog at scan + plan (`timeout` skip reasons, inventory/plan schemas 1.2, DEV-002 records the in-process realization for owner review); NFR-003 log-content integration test; DR-005 frontmatter schema + verify wiring (FR-014/FR-016 Complete, gap-56 closed); §18.7 docs (README command/config/safety reference, restore + resume runbooks); release workflow (tag → `uv build` → GitHub Release) + version 1.0.0 + CHANGELOG. §17.3 matrix fully Complete. 598 tests, 97% coverage.
 - [x] **MS-4 complete — resume + idempotency + NFR-006 journey (2026-07-07, spec rev 0.18):** `docmend apply --resume-run-id/--resume-manifest` (repeatable) reconciles the plan against prior manifest records per adr-0006 — already-applied skip (not an exit-1 finding), ERR-002 on changed/missing outputs, wrong-tree manifest refused exit 2 via the 1.2 `source_root` cross-check; kill-and-resume e2e proves corpus + union-of-manifests identical to an uninterrupted control. FR-017 closed in all three duplicate shapes (`tests/test_idempotency.py`). NFR-006 single-file journey now runs scan → plan → apply `--write` → verify. §17.3 FR-013/FR-017/NFR-006 Complete. 559 tests, 97% coverage.

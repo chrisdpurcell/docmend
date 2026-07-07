@@ -41,7 +41,7 @@ from docmend.restore import run_restore
 from docmend.verify import check_content, check_frontmatter, reconcile_manifest, reconcile_report
 from docmend.writer import manifest
 from docmend.writer.apply import execute_plan
-from docmend.writer.gate import ApplyOptions, evaluate_gate
+from docmend.writer.gate import ApplyOptions, evaluate_gate, is_content_rewrite
 
 #: Default per-run artifact/log directory, created in the invoking directory
 #: (proposed OQ-034; the run-ID-keyed names inside it are the OQ-006 sidecar
@@ -549,6 +549,25 @@ def apply(
                     log.error("gate refusal", predicate=refusal.predicate, detail=refusal.message)
                 _write_refusal_report(plan_ref, run_id, started_at, report_path)
                 raise typer.Exit(3)
+            # Issue #15 (partial-undo trap): when the gate passes WITHOUT tool
+            # backups, this run's manifest records content mutations as hashes
+            # only, so `docmend restore` can undo its renames but not its
+            # rewrites. Say so at apply time — restore time is too late.
+            content_rewrites = sum(1 for a in plan.actions if is_content_rewrite(a))
+            if options.backup_root is None and content_rewrites:
+                typer.echo(
+                    f"warning: no tool backups for this run — `docmend restore` will be able "
+                    f"to undo only its pure renames; its {content_rewrites} action(s) with "
+                    "content rewrites (including any rename+rewrite) cannot be undone from "
+                    "the manifest. Content recovery relies on whatever preservation "
+                    "satisfied the gate (FR-005: --preserved-by / --allow-no-backup)",
+                    err=True,
+                )
+                log.warning(
+                    "restore capability for this run is renames-only",
+                    content_rewrites=content_rewrites,
+                    preserved_by=options.preserved_by,
+                )
         result = execute_plan(
             plan,
             config,
@@ -697,6 +716,26 @@ def restore(
     if not records:
         typer.echo("nothing to restore: manifest holds no records")
         return
+
+    # Issue #15 (suggestion 2, artifact-derived): state the run's restore
+    # capability UP FRONT — derivable from the manifest alone (an applied
+    # non-rename record with no backup_path has no recoverable bytes), so the
+    # operator and wrapper scripts learn it before any per-row skip appears.
+    unrestorable = sum(
+        1
+        for r in records
+        if r.result == "applied" and r.operation != "rename" and r.backup_path is None
+    )
+    if unrestorable:
+        # Wording states only what the manifest proves: a null backup_path. It
+        # cannot know WHICH FR-005 strategy satisfied the gate (--preserved-by
+        # git|external and --allow-no-backup all record the same shape).
+        typer.echo(
+            f"restore capability: renames-only — {unrestorable} content mutation(s) in this "
+            "manifest have no tool backup and cannot be undone from it; recover that "
+            "content from whatever preservation covered the apply run (FR-005: a "
+            "git/external declaration or the low-risk opt-in)"
+        )
 
     # OQ-036 (fixed MS-4): key on the manifest's recorded source_root so restore
     # contends with a concurrent apply/plan on the same tree even when the

@@ -47,8 +47,17 @@ def _sha(data: bytes) -> str:
 
 def _verified_backup(record: ManifestRecord) -> bytes | RestoreOutcome:
     if record.backup_path is None:
+        # Issue #15 (suggestion 4): name where recovery actually lives, so the
+        # operator discovering this at restore time knows the next step.
         return RestoreOutcome(
-            record.action_id, record.docmend_id, record.original_path, "skipped", "no-backup"
+            record.action_id,
+            record.docmend_id,
+            record.original_path,
+            "skipped",
+            "no-backup: the apply run took no tool backup for this content mutation "
+            "(the FR-005 gate was satisfied without --backup-dir) — recover these "
+            "bytes from whatever preservation covered that run (e.g. git, an "
+            "external snapshot, or other backups)",
         )
     try:
         data = Path(record.backup_path).read_bytes()

@@ -372,3 +372,68 @@ class TestApplyLogContent:
         assert {"a.txt", "c.txt"} <= {record["path"] for record in outcomes}
         assert all(record["level"] == "INFO" for record in outcomes)
         assert {record["status"] for record in outcomes} == {"applied"}
+
+
+class TestPartialUndoWarning:
+    """Issue #15: an apply that satisfies the gate WITHOUT tool backups leaves a
+    manifest that can undo renames but not content rewrites — the operator must
+    hear that at apply time, not discover it at restore time."""
+
+    def test_write_with_external_preservation__warns_renames_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        make_corpus(corpus)  # a.txt/c.txt: CRLF -> LF content rewrites
+        plan_path = _make_plan(corpus)
+
+        result = runner.invoke(
+            app, ["apply", str(plan_path), "--write", "--preserved-by", "external"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "undo only its pure renames" in result.output
+        assert "2 action(s) with" in result.output
+
+    def test_write_with_backup_dir__no_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        make_corpus(corpus)
+        plan_path = _make_plan(corpus)
+
+        result = runner.invoke(
+            app, ["apply", str(plan_path), "--write", "--backup-dir", str(tmp_path / "backups")]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "pure renames" not in result.output
+
+    def test_rename_only_run__no_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rename-only manifest IS fully restorable without backups — warning
+        there would be noise."""
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "clean.txt").write_bytes(b"already clean\n")  # rename-only action
+        plan_path = _make_plan(corpus)
+
+        result = runner.invoke(app, ["apply", str(plan_path), "--write"])
+
+        assert result.exit_code == 0, result.output
+        assert "pure renames" not in result.output
+
+    def test_dry_run__no_warning(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Dry runs mutate nothing and record nothing — nothing to warn about."""
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        make_corpus(corpus)
+        plan_path = _make_plan(corpus)
+
+        result = runner.invoke(app, ["apply", str(plan_path)])
+
+        assert result.exit_code == 0, result.output
+        assert "pure renames" not in result.output

@@ -12,7 +12,7 @@ This is the human-facing completion summary for docmend. Agents maintain it so t
 
 - **Post-release maintenance mode.** `dev` → PR → `main` continues for bug fixes and post-v1 features; the release path is tag-triggered (`release.yml`).
 - **The next substantive step is the owner's**: the §18.4 staged real-library rollout (scan → plan review → filtered apply → widen) and weird-corpus expansion from real scan findings (adr-0015 anonymization procedure). Tracked in `TODO.md`.
-- Owner sign-off wanted, all non-blocking: OQ-034 (`.docmend/` artifact location), OQ-035 (preservation CLI surface/risk tiers), OQ-036 (run-lock location/mechanism), DEV-001 (plan-time hard-link skip), DEV-002 (in-process watchdog realization).
+- Owner sign-off received (2026-07-07): OQ-034..036 resolved as implemented (RQ-034..036); DEV-001/DEV-002 approved. The decision backlog is empty.
 - Spec remains `status: draft` — moving it to `approved` (which makes it change-controlled) is an owner decision now that v1 shipped.
 - 598 tests + an opt-in 100k scale test (`DOCMEND_SCALE=1`), 97% coverage.
 

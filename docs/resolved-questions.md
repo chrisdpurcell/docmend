@@ -345,6 +345,22 @@ _Owner decision (from the OQ-024 AskUserQuestion, 2026-07-06): binding requireme
 
 _Owner decisions (from the two OQ-025..033 AskUserQuestion rounds, 2026-07-06): all recommended options adopted; GAP-49 and GAP-52 confirmed individually after a detailed walkthrough of their research reports (adopt in full / both layers)._
 
+### RQ-034 / RQ-035 / RQ-036 — post-release owner sign-off on the three implementation-assumption questions
+
+**Resolved:** 2026-07-07 (owner, post-v1.0.0 review) **Raised:** OQ-034 at MS-1, OQ-035/OQ-036 at MS-3 **Spec:** §21 rows OQ-034..036 (now Resolved)
+
+All three proceeded through v1.0.0 on their recorded assumptions (spec Appendix B); the owner signed off on the shipped behavior as-is — the assumptions are now the decisions:
+
+| RQ | Decision (assumption adopted verbatim) |
+| --- | --- |
+| RQ-034 | Run artifacts + per-run log default to a `.docmend/` directory in the **invoking directory**, run-ID-keyed (`docmend-{run-id}-inventory.json` / `-plan` / `-report` / `-manifest.jsonl` / `.jsonl` log); explicit flags override per artifact; `.docmend/` sits in the §18.2 default excludes; the naming is the OQ-006 sidecar-discovery convention `verify`/`restore`/resume consume. |
+| RQ-035 | FR-005 CLI surface: `--backup-dir` activates tool backups; `--preserved-by git\|external` declares an external byte-preserving strategy (operator assertion); `--allow-no-backup` is the low-risk opt-in, single-action plans only; content rewrite ⟺ any operation ≠ rename; rename-only runs need no strategy; overwrite-collision runs require an active strategy and tool backups also copy the clobbered target (manifest `overwritten_*`). |
+| RQ-036 | Run lock: `flock(2)` under `$XDG_STATE_HOME/docmend/locks/`, keyed by sha256 of the resolved source root — kernel-owned, no stale-lock states; holder JSON only feeds the refusal message; `plan` degrades to warn-and-proceed when the state dir is uncreatable, `apply`/`restore` refuse (AW-005). The MS-4 lock-key fix (manifest 1.2 `source_root`, restore rekey) is part of the signed-off shape. |
+
+#### My Comments
+
+_Owner sign-off, 2026-07-07: all three confirmed as implemented (same review approved Deviations Log entries DEV-001 and DEV-002)._
+
 ## How to use this document
 
 - Keep only settled docmend decisions here.

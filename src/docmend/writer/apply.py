@@ -242,10 +242,11 @@ def _execute_action(
         try:
             target_bytes = target.read_bytes()
         except OSError as exc:
-            return (
-                _failed(action, "ERR-003", f"{target}: unreadable for overwrite backup ({exc})"),
-                False,
+            outcome = _failed(
+                action, "ERR-003", f"{target}: unreadable for overwrite backup ({exc})"
             )
+            _record(manifest, action, kind, source, target, None, None, None, None, run_id, outcome)
+            return outcome, False
         overwritten_sha = _sha(target_bytes)
         if options.backup_root is not None:
             try:
@@ -257,7 +258,21 @@ def _execute_action(
                     expected_sha256=overwritten_sha,
                 )
             except BackupError as exc:
-                return _failed(action, "ERR-004", str(exc)), False
+                outcome = _failed(action, "ERR-004", str(exc))
+                _record(
+                    manifest,
+                    action,
+                    kind,
+                    source,
+                    target,
+                    None,
+                    None,
+                    overwritten_sha,
+                    None,
+                    run_id,
+                    outcome,
+                )
+                return outcome, False
 
     backup_path: Path | None = None
     if options.backup_root is not None:

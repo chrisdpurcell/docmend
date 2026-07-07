@@ -287,6 +287,70 @@ def test_collision_policies__skip_fail_overwrite(tmp_path: Path) -> None:
     assert _sha(Path(ow_record.overwritten_backup_path).read_bytes()) == old_target_sha
 
 
+def test_overwrite_target_unreadable__failed_recorded_in_manifest(tmp_path: Path) -> None:
+    """FR-011, FR-018, DR-003, DR-004: an unreadable overwrite target fails, with a matching
+    manifest record — the pre-mutation ERR-003 branch must not skip DR-004's reconciliation."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "a.txt").write_bytes(b"clean\n")
+    config = DocmendConfig(rename=RenameConfig(on_collision="overwrite"))
+    plan = _plan_for(root, config)
+    original_bytes = (root / "a.txt").read_bytes()
+
+    # Live collision whose target is a directory: target.exists() is True (so
+    # the overwrite policy clobbers), but target.read_bytes() raises OSError.
+    (root / "a.md").mkdir()
+
+    report = _execute(plan, config, tmp_path, write=True, backup_root=tmp_path / "backups")
+
+    outcome = report.outcomes[0]
+    assert outcome.status == "failed"
+    assert outcome.error is not None
+    assert outcome.error.error_class == "ERR-003"
+    assert report.totals.failed == 1
+    assert (root / "a.txt").read_bytes() == original_bytes
+
+    records = read_manifest(tmp_path / "manifest.jsonl")
+    assert len(records) == 1
+    assert records[0].result == "failed"
+
+
+def test_overwrite_target_backup_failure__failed_recorded_in_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FR-011, FR-018, DR-003, DR-004: a failed overwrite-target backup fails, with a matching
+    manifest record — the pre-mutation ERR-004 branch must not skip DR-004's reconciliation."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "a.txt").write_bytes(b"clean\n")
+    config = DocmendConfig(rename=RenameConfig(on_collision="overwrite"))
+    plan = _plan_for(root, config)
+    original_bytes = (root / "a.txt").read_bytes()
+    (root / "a.md").write_bytes(b"old target content\n")
+    original_target_bytes = (root / "a.md").read_bytes()
+
+    def _boom(*_a: object, **_kw: object) -> Path:
+        raise BackupError("simulated overwrite-target backup failure")
+
+    monkeypatch.setattr(
+        apply_module, "backup_file", _boom
+    )  # first call is the overwritten-target backup
+
+    report = _execute(plan, config, tmp_path, write=True, backup_root=tmp_path / "backups")
+
+    outcome = report.outcomes[0]
+    assert outcome.status == "failed"
+    assert outcome.error is not None
+    assert outcome.error.error_class == "ERR-004"
+    assert report.totals.failed == 1
+    assert (root / "a.txt").read_bytes() == original_bytes
+    assert (root / "a.md").read_bytes() == original_target_bytes
+
+    records = read_manifest(tmp_path / "manifest.jsonl")
+    assert len(records) == 1
+    assert records[0].result == "failed"
+
+
 def test_backup_failure__aborts_before_original_touched(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

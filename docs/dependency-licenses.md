@@ -53,4 +53,4 @@ pytest (MIT), coverage (Apache-2.0), ruff (MIT), basedpyright (MIT), pip-audit (
 
 ## Verdict
 
-No copyleft in the runtime closure; every license present or pre-approved is on the CI `dependency-review` allowlist. The §16 checklist item is satisfied for MS-0. Re-run this check whenever a new §8.6 dependency is actually added (the CI gate enforces it on every PR regardless).
+No copyleft in the runtime closure; every license present or pre-approved is on the CI `dependency-review` allowlist. The §16 checklist item is satisfied for MS-0, and remains satisfied through the MS-1 (pathspec, jsonschema + `format-nongpl` closure) and MS-2 (charset-normalizer) additions above. Re-run this check whenever a new §8.6 dependency is actually added (the CI gate enforces it on every PR regardless).

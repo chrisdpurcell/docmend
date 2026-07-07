@@ -40,3 +40,25 @@ def test_builtin_open__blocks_pyc_without_pycache() -> None:
     # A path like "leak.pyc" should raise RuntimeError from the guard.
     with pytest.raises(RuntimeError, match=BLOCKED):
         open("leak.pyc", "rb")  # noqa: PTH123, SIM115 — the call must raise, nothing to manage
+
+
+def test_builtin_open__blocks_pycache_write_mode() -> None:
+    # A write to a .pyc path is never legitimate application behavior (bytecode
+    # caching is collection-time, not execution-time, per the fixture's note),
+    # so the read-only allowance must not extend to "wb".
+    with pytest.raises(RuntimeError, match=BLOCKED):
+        open("/tmp/__pycache__/test.cpython-314.pyc", "wb")  # noqa: PTH123, SIM115
+
+
+def test_builtin_open__allows_pycache_file_via_file_kwarg() -> None:
+    # The path can arrive as the `file=` keyword instead of positionally; the
+    # allowance must recognize it there too, not just in args[0].
+    with pytest.raises(FileNotFoundError):
+        open(file="/tmp/__pycache__/test.cpython-314.pyc", mode="rb")  # noqa: PTH123, SIM115
+
+
+def test_builtin_open__blocks_non_pycache_via_file_kwarg() -> None:
+    # A non-.pyc path passed as `file=` must still hit the guard, not slip
+    # through simply because it bypassed the positional-arg check.
+    with pytest.raises(RuntimeError, match=BLOCKED):
+        open(file="leak.txt")  # noqa: PTH123, SIM115

@@ -37,6 +37,7 @@ from docmend.observability import configure_logging, get_logger, new_run_id
 from docmend.plan import PLAN_SCHEMA_VERSION, ArtifactRef
 from docmend.report import Report, ReportTotals
 from docmend.restore import run_restore
+from docmend.verify import check_content, check_frontmatter, reconcile_manifest, reconcile_report
 from docmend.writer import manifest
 from docmend.writer.apply import execute_plan
 from docmend.writer.gate import ApplyOptions, evaluate_gate
@@ -374,6 +375,24 @@ def _acquire_run_lock_strict(source_root: Path, *, run_id: str, command: str) ->
         raise typer.Exit(3) from exc
 
 
+def _restore_lock_root(records: list[manifest.ManifestRecord]) -> Path:
+    """The tree `docmend restore` locks (OQ-036, AW-005).
+
+    A 1.2 manifest stamps the apply run's resolved source_root on every record;
+    key the lock on THAT so restore contends with a concurrent apply/plan on the
+    same tree — even when every mutated file lives in a subdirectory whose
+    commonpath narrows below the source root (the gap the old commonpath key left
+    open: a restore keyed on the narrower path slipped past an apply's root lock).
+    A pre-1.2 manifest carries no source_root: fall back to the commonpath of
+    original paths, preserving the legacy behavior for older manifests.
+    """
+    recorded = records[0].source_root
+    if recorded is not None:
+        return Path(recorded)  # already the resolved source root written at apply
+    root = Path(os.path.commonpath([r.original_path for r in records]))
+    return root if root.is_dir() else root.parent
+
+
 class PreservedBy(StrEnum):
     """FR-005 declared byte-preserving strategies external to docmend's own backups."""
 
@@ -424,11 +443,33 @@ def apply(
             help="Write the report to FILE (default: .docmend/docmend-<run-id>-report.json).",
         ),
     ] = None,
+    resume_manifest: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--resume-manifest",
+            help="Resume (FR-013): reconcile against this prior apply manifest "
+            "(repeatable — pass every manifest of a multiply-interrupted run).",
+        ),
+    ] = None,
+    resume_run_id: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--resume-run-id",
+            help="Resume (FR-013): reconcile against .docmend/docmend-<ID>-manifest.jsonl "
+            "(OQ-034 sidecar convention; repeatable, combinable with --resume-manifest).",
+        ),
+    ] = None,
 ) -> None:
     """Execute a reviewed plan; dry-run by default (FR-004, IR-003).
 
-    Exit codes (§18.5): 0 clean; 1 findings (skips/failures); 2 input error
-    (ERR-006 invalid plan, flag conflicts); 3 safety refusal (gate or lock).
+    Resume (FR-013, adr-0006): --resume-manifest/--resume-run-id reconcile the
+    plan against a prior run's manifest first — recorded-applied actions whose
+    live output still matches skip as `already-applied` (not a finding),
+    changed/missing outputs fail ERR-002, unrecorded actions execute normally.
+
+    Exit codes (§18.5): 0 clean; 1 findings (skips other than already-applied,
+    failures); 2 input error (ERR-006 invalid plan, flag conflicts, unreadable
+    resume manifest); 3 safety refusal (gate or lock).
     """
     opts = _global_options(ctx)
     if write and (dry_run_flag or opts.dry_run):
@@ -472,6 +513,8 @@ def apply(
         typer.echo(f"error: {plan_path}: config snapshot invalid — {exc}", err=True)
         raise typer.Exit(2) from exc
 
+    resume_records = _read_resume_records(resume_manifest, resume_run_id, source_root)
+
     backup_root = backup_dir if backup_dir is not None else config.write.backup_dir
     options = ApplyOptions(
         write=write,
@@ -513,6 +556,7 @@ def apply(
             options=options,
             manifest_path=manifest_path,
             started_at=started_at,
+            resume_records=resume_records,
         )
     finally:
         run_lock.release()
@@ -520,7 +564,10 @@ def apply(
     artifacts.write_report(result, report_path)
     totals = result.totals
     typer.echo(f"report: {report_path}")
-    if write and (totals.applied or totals.failed):
+    # exists() and not just the counts: resume reconciliation can fail actions
+    # read-only (ERR-002) without a single mutation, and the lazy-opening
+    # ManifestWriter then never created the file (PR #10 review).
+    if write and (totals.applied or totals.failed) and manifest_path.exists():
         typer.echo(f"manifest: {manifest_path}")
     reasons = Counter(o.skip_reason for o in result.outcomes if o.skip_reason is not None)
     detail = f" ({', '.join(f'{r} {n}' for r, n in sorted(reasons.items()))})" if reasons else ""
@@ -528,8 +575,51 @@ def apply(
         f"applied: {totals.applied}  would-apply: {totals.would_apply}  "
         f"skipped: {totals.skipped}{detail}  failed: {totals.failed}"
     )
-    if totals.skipped or totals.failed:
+    # FR-013: `already-applied` is reconciliation confirming completed work, not
+    # a reviewable finding — counting it would make a clean resume exit 1 and an
+    # unattended re-invoke loop never converge on success.
+    finding_skips = totals.skipped - reasons.get("already-applied", 0)
+    if finding_skips or totals.failed:
         raise typer.Exit(1)
+
+
+def _read_resume_records(
+    resume_manifest: list[Path] | None,
+    resume_run_id: list[str] | None,
+    source_root: Path,
+) -> list[manifest.ManifestRecord] | None:
+    """Load and sanity-check the FR-013 resume manifests (adr-0006).
+
+    Every record's stamped source_root must match the plan's — a manifest from
+    a different tree can never legitimately reconcile (its action-IDs belong to
+    another plan), and silently re-executing everything would hide the
+    operator's mix-up (ERR-006 posture, exit 2). Pre-1.2 manifests carry no
+    source_root; they load unchecked, protected by the action-ID match itself.
+    """
+    paths = list(resume_manifest or [])
+    paths.extend(
+        Path(ARTIFACT_DIR_NAME) / f"docmend-{rid}-manifest.jsonl" for rid in resume_run_id or []
+    )
+    if not paths:
+        return None
+    root_resolved = str(source_root.resolve())
+    records: list[manifest.ManifestRecord] = []
+    for path in paths:
+        try:
+            loaded = manifest.read_manifest(path)
+        except artifacts.ArtifactError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from exc
+        recorded_root = next((r.source_root for r in loaded if r.source_root is not None), None)
+        if recorded_root is not None and recorded_root != root_resolved:
+            typer.echo(
+                f"error: {path}: manifest source root {recorded_root} does not match "
+                f"the plan's ({root_resolved}) — wrong manifest for this plan (ERR-006)",
+                err=True,
+            )
+            raise typer.Exit(2)
+        records.extend(loaded)
+    return records
 
 
 def _write_refusal_report(
@@ -607,15 +697,12 @@ def restore(
         typer.echo("nothing to restore: manifest holds no records")
         return
 
-    # KNOWN GAP (OQ-036, MS-4 fix pending): this keys the lock on the
-    # commonpath of the manifest's own original paths, whereas plan/apply key
-    # on the resolved source_root. When every mutated file shares a
-    # subdirectory, commonpath narrows below source_root and the two keys
-    # diverge, leaving an AW-005 mutual-exclusion gap between a concurrent
-    # apply and restore. Not fixed here — see docs/open-questions.md § OQ-036.
-    root = Path(os.path.commonpath([r.original_path for r in records]))
+    # OQ-036 (fixed MS-4): key on the manifest's recorded source_root so restore
+    # contends with a concurrent apply/plan on the same tree even when the
+    # mutated files nest in a subdirectory (falls back to commonpath for pre-1.2
+    # manifests). See `_restore_lock_root`.
     run_lock = _acquire_run_lock_strict(
-        root if root.is_dir() else root.parent, run_id=run_id, command="restore"
+        _restore_lock_root(records), run_id=run_id, command="restore"
     )
     try:
         outcomes = run_restore(
@@ -634,4 +721,105 @@ def restore(
         f"skipped: {counts.get('skipped', 0)}  failed: {counts.get('failed', 0)}"
     )
     if counts.get("skipped", 0) or counts.get("failed", 0):
+        raise typer.Exit(1)
+
+
+@app.command()
+def verify(
+    ctx: typer.Context,
+    path: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            help="Converted file or directory tree to verify; a single file is first-class (NFR-006).",
+        ),
+    ],
+    manifest_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--manifest", help="Reconcile against this manifest (DR-004 NDJSON); optional."
+        ),
+    ] = None,
+    run_id_arg: Annotated[
+        str | None,
+        typer.Option(
+            "--run-id",
+            help="Reconcile against .docmend/docmend-<ID>-manifest.jsonl (OQ-034 sidecar convention; "
+            "the run's report is reconciled too when its sidecar exists).",
+        ),
+    ] = None,
+    report_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--report",
+            help="Reconcile report↔manifest accounting against this DR-003 report "
+            "(requires a manifest via --manifest or --run-id).",
+        ),
+    ] = None,
+    config_path: Annotated[
+        Path | None,
+        typer.Option("--config", help="TOML config file (default: ./docmend.toml when present)."),
+    ] = None,
+) -> None:
+    """Verify converted output read-only against the FR-014 checks (IR-004, adr-0012).
+
+    Read-only: reuses `scan`'s walk + facts, mutates nothing, writes no manifest.
+    Content checks (UTF-8 decodability, LF-only) and frontmatter-where-present
+    validation (FR-016, adr-0011) always run over PATH; manifest reconciliation
+    runs when a manifest is supplied (flag or sidecar), and report↔manifest
+    accounting when a report is too. Exit codes (adr-0012): 0 clean; 1 findings
+    (bad encoding, CRLF, invalid frontmatter, hash mismatch, accounting drift);
+    2 input error (bad flags, unreadable/invalid artifact).
+    """
+    opts = _global_options(ctx)
+    config = _load_effective_config(config_path, None, None)
+    if manifest_path is not None and run_id_arg is not None:
+        raise typer.BadParameter("provide at most one of --manifest or --run-id")
+    if report_path is not None and manifest_path is None and run_id_arg is None:
+        # Accounting is a CROSS-artifact check: a report alone has its internal
+        # totals rule enforced at read time; without a manifest there is nothing
+        # to reconcile it against.
+        raise typer.BadParameter("--report requires a manifest (--manifest or --run-id)")
+    if run_id_arg is not None:
+        manifest_path = Path(ARTIFACT_DIR_NAME) / f"docmend-{run_id_arg}-manifest.jsonl"
+        if report_path is None:
+            # Sidecar convention: reconcile the run's report too when present;
+            # absence is legal (the operator may have relocated it via --report).
+            sidecar_report = Path(ARTIFACT_DIR_NAME) / f"docmend-{run_id_arg}-report.json"
+            if sidecar_report.is_file():
+                report_path = sidecar_report
+    now = datetime.now(UTC)
+    run_id = new_run_id(now)
+    artifact_dir = Path(ARTIFACT_DIR_NAME)
+    configure_logging(
+        run_id=run_id,
+        command="verify",
+        log_dir=artifact_dir,
+        verbose=opts.verbose,
+        quiet=opts.quiet,
+    )
+    log = get_logger(__name__)
+    log.info("verify starting", path=str(path))
+    inventory = discovery.scan(path, config, run_id=run_id, generated_at=now.isoformat())
+    findings = check_content(inventory) + check_frontmatter(inventory)
+    if manifest_path is not None:
+        try:
+            records = manifest.read_manifest(manifest_path)
+        except artifacts.ArtifactError as exc:
+            # Unreadable/corrupt input artifact is an invocation error, not a
+            # finding (adr-0012 exit 2), mirroring restore's read_manifest guard.
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from exc
+        findings = findings + reconcile_manifest(records)
+        if report_path is not None:
+            try:
+                run_report = artifacts.read_report(report_path)
+            except artifacts.ArtifactError as exc:
+                typer.echo(f"error: {exc}", err=True)
+                raise typer.Exit(2) from exc
+            findings = findings + reconcile_report(run_report, records)
+    for finding in findings:
+        typer.echo(f"finding [{finding.check}] {finding.path}: {finding.detail}")
+    typer.echo(f"verify: {inventory.totals.files} files checked, {len(findings)} findings")
+    if findings:
         raise typer.Exit(1)

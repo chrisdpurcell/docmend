@@ -1,13 +1,14 @@
 # Artifact JSON Schemas
 
-The four hand-authored JSON Schemas here are the **durable external contract** for docmend's run artifacts (spec DR-001..DR-004, IR-007; canonical decision: `docs/adr/adr-0005-durable-artifact-schema-contract.md`). They were pinned at MS-1, before any code froze their shapes, and the direction of authority is fixed: **code and internal pydantic models conform to these files, never the reverse.** The internal models' emitted JSON Schema is cross-checked against these in tests, but the checked-in files are the contract.
+The hand-authored JSON Schemas here are the **durable external contract** for docmend's run artifacts (spec DR-001..DR-004, IR-007; canonical decision: `docs/adr/adr-0005-durable-artifact-schema-contract.md`) plus the product-frontmatter contract (DR-005, `adr-0011`). The four artifact schemas were pinned at MS-1, before any code froze their shapes, and the direction of authority is fixed: **code and internal pydantic models conform to these files, never the reverse.** The internal models' emitted JSON Schema is cross-checked against these in tests, but the checked-in files are the contract.
 
 | Schema | Artifact | Representation | Producing command | Current version |
 | --- | --- | --- | --- | --- |
 | `inventory.schema.json` | DR-001 inventory | single JSON document | `scan` (MS-1) | 1.1 (MS-3: `encoding.detect` provenance, path-containment patterns) |
 | `plan.schema.json` | DR-002 plan | single JSON document | `plan` (MS-2) | 1.1 (MS-3: optional `source_root`, path-containment patterns) |
 | `report.schema.json` | DR-003 apply report | single JSON document | `apply` (MS-3) | 1.0 |
-| `manifest.schema.json` | DR-004 manifest — schema covers **one NDJSON line** | JSON Lines, append-only | `apply` (MS-3) | 1.1 (MS-3: `overwritten_*` overwrite-preservation fields) |
+| `manifest.schema.json` | DR-004 manifest — schema covers **one NDJSON line** | JSON Lines, append-only | `apply` (MS-3) | 1.2 (MS-4: writer-stamped `source_root`; MS-3: `overwritten_*` overwrite-preservation fields) |
+| `frontmatter.schema.json` | DR-005 product frontmatter — validates the parsed YAML block of a converted document | YAML frontmatter, validated **where present** (`adr-0011`) | none in v1 (emission is a deferred OQ-009 seam); consumed by `verify` (MS-5) | 1.0 |
 
 Conventions (adr-0005):
 
@@ -17,6 +18,6 @@ Conventions (adr-0005):
 - **Identity fields**: `run_id` on every artifact; `action_id` (`<run_id>/a<seq>`) on plan/report/manifest records; `docmend_id` (UUIDv7, adr-0008) on plan actions and manifest records.
 - The manifest is NDJSON because a single JSON document cannot be appended crash-safely; one record is appended and fsynced per mutation, during the run, never only at the end (spec 12.3).
 
-The schemas live **inside the package** (`src/docmend/schemas/`) rather than at the repo root so the installed wheel carries them — runtime artifact validation loads them via `importlib.resources`, which must work from any install, not just a repo checkout. (Spec DR-005's `schemas/frontmatter.schema.json` is an illustrative path, and that schema will live here too when it lands at MS-5.)
+The schemas live **inside the package** (`src/docmend/schemas/`) rather than at the repo root so the installed wheel carries them — runtime artifact validation loads them via `importlib.resources`, which must work from any install, not just a repo checkout. (Spec DR-005's `schemas/frontmatter.schema.json` is an illustrative path; the schema landed here at MS-5 for exactly that wheel-carrying reason.)
 
 These artifacts are produced on the operator's machine and contain real library paths — they are never committed (spec 13.4); only the schemas live in this public repo.

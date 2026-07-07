@@ -35,9 +35,18 @@ from docmend.inventory import Inventory
 from docmend.plan import Plan
 from docmend.report import Report
 
-type ArtifactKind = Literal["inventory", "plan", "report", "manifest"]
+# "frontmatter" is the product-document schema (DR-005, adr-0011), not a run
+# artifact — it rides the same registry so its validator is compiled once and
+# works from an installed wheel like the other four.
+type ArtifactKind = Literal["inventory", "plan", "report", "manifest", "frontmatter"]
 
-ARTIFACT_KINDS: tuple[ArtifactKind, ...] = ("inventory", "plan", "report", "manifest")
+ARTIFACT_KINDS: tuple[ArtifactKind, ...] = (
+    "inventory",
+    "plan",
+    "report",
+    "manifest",
+    "frontmatter",
+)
 
 
 class ArtifactError(Exception):

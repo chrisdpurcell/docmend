@@ -41,11 +41,11 @@ Spec §16 requires an OSS-license compatibility check "at MS-0 when dependencies
 | --- | --- | --- |
 | charset-normalizer | MIT | ✅ FR-007 legacy encoding detection rung (adr-0009); no transitive dependencies. |
 
-## Approved-but-not-yet-added runtime deps (§8.6; pre-cleared for their milestone)
+## Runtime closure additions (installed at MS-5)
 
-| Package     | License | Note                             |
-| ----------- | ------- | -------------------------------- |
-| ruamel.yaml | MIT     | Frontmatter work (OQ-009/OQ-022) |
+| Package | License | Compatible with MIT distribution |
+| --- | --- | --- |
+| ruamel.yaml | MIT | ✅ Frontmatter codec (OQ-022, adr-0011): duplicate-key rejection + timestamp-string preservation for `verify`'s FR-016 where-present validation. Pure-Python wheel on 3.14 (no `ruamel.yaml.clib` in the closure). Pre-cleared in the former "approved-but-not-yet-added" table since MS-0. |
 
 ## Dev group (never distributed — §8.6 dev table)
 
@@ -53,4 +53,4 @@ pytest (MIT), coverage (Apache-2.0), ruff (MIT), basedpyright (MIT), pip-audit (
 
 ## Verdict
 
-No copyleft in the runtime closure; every license present or pre-approved is on the CI `dependency-review` allowlist. The §16 checklist item is satisfied for MS-0, and remains satisfied through the MS-1 (pathspec, jsonschema + `format-nongpl` closure) and MS-2 (charset-normalizer) additions above. Re-run this check whenever a new §8.6 dependency is actually added (the CI gate enforces it on every PR regardless).
+No copyleft in the runtime closure; every license present or pre-approved is on the CI `dependency-review` allowlist. The §16 checklist item is satisfied for MS-0, and remains satisfied through the MS-1 (pathspec, jsonschema + `format-nongpl` closure), MS-2 (charset-normalizer), and MS-5 (ruamel.yaml) additions above. Re-run this check whenever a new §8.6 dependency is actually added (the CI gate enforces it on every PR regardless).

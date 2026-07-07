@@ -770,6 +770,56 @@ class TestRestoreCliWrites:
         assert (corpus / "b.md").exists()  # untouched by the filtered-out record
 
 
+def _lock_record(*, source_root: str | None, original_path: str) -> ManifestRecord:
+    return ManifestRecord(
+        run_id=RESTORE_RUN_ID,
+        action_id=f"{RESTORE_RUN_ID}/a1",
+        docmend_id="01980000-0000-7000-8000-000000000001",
+        seq=1,
+        recorded_at="2026-07-06T02:00:00+00:00",
+        operation="rewrite",
+        original_path=original_path,
+        target_path=original_path,
+        backup_path=None,
+        before_sha256="sha256:" + "a" * 64,
+        after_sha256="sha256:" + "b" * 64,
+        result="applied",
+        error=None,
+        source_root=source_root,
+    )
+
+
+class TestRestoreLockKey:
+    """OQ-036: restore's lock key derivation (`_restore_lock_root`)."""
+
+    def test_prefers_recorded_source_root_over_commonpath(self, tmp_path: Path) -> None:
+        """With a 1.2 source_root recorded, restore keys on IT — not the commonpath
+        of original paths, which narrows below the root when every mutated file
+        shares a subdirectory (the AW-005 divergence gap)."""
+        from docmend.cli import _restore_lock_root  # pyright: ignore[reportPrivateUsage]
+
+        root = tmp_path / "root"
+        (root / "sub").mkdir(parents=True)
+        record = _lock_record(source_root=str(root), original_path=str(root / "sub" / "a.txt"))
+
+        assert _restore_lock_root([record]) == root
+        assert _restore_lock_root([record]) != root / "sub"  # the pre-fix commonpath key
+
+    def test_legacy_manifest_without_source_root__falls_back_to_commonpath(
+        self, tmp_path: Path
+    ) -> None:
+        """A pre-1.2 manifest has no source_root; the old commonpath behavior is
+        retained so legacy manifests still lock and restore correctly."""
+        from docmend.cli import _restore_lock_root  # pyright: ignore[reportPrivateUsage]
+
+        base = tmp_path / "a" / "b"
+        base.mkdir(parents=True)
+        r1 = _lock_record(source_root=None, original_path=str(base / "x.txt"))
+        r2 = _lock_record(source_root=None, original_path=str(base / "y.txt"))
+
+        assert _restore_lock_root([r1, r2]) == base
+
+
 class TestRestoreCliLock:
     def test_restore_locked_root__exit_3(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -783,6 +833,29 @@ class TestRestoreCliLock:
         _apply_cli(plan_path)
         manifest_path = _manifest_path(tmp_path)
         held = lock.acquire(corpus, run_id="run_20260706T000000Z_00004c", command="restore")
+        try:
+            result = runner.invoke(app, ["restore", "--manifest", str(manifest_path), "--write"])
+            assert result.exit_code == 3, result.output
+        finally:
+            held.release()
+
+    def test_restore_locked_source_root__nested_files__exit_3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OQ-036 regression: when every mutated file lives in a SUBDIRECTORY (so
+        the manifest's commonpath narrows below the source root), a live lock on
+        the source root must STILL refuse restore. Pre-fix, restore keyed on the
+        nested commonpath and slipped past this lock (exit 0)."""
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        nested = corpus / "nested"
+        nested.mkdir(parents=True)
+        (nested / "deep.txt").write_bytes(b"already clean\n")
+        plan_path = _make_plan_cli(corpus)
+        _apply_cli(plan_path)
+        manifest_path = _manifest_path(tmp_path)
+        # Lock what a concurrent apply holds — the source root, not the nested dir.
+        held = lock.acquire(corpus, run_id="run_20260706T000000Z_00004c", command="apply")
         try:
             result = runner.invoke(app, ["restore", "--manifest", str(manifest_path), "--write"])
             assert result.exit_code == 3, result.output

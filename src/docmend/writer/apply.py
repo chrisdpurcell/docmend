@@ -169,6 +169,33 @@ def _record(
     )
 
 
+def _reconcile_completed(action: PlanAction, record: ManifestRecord) -> ApplyOutcome:
+    """The adr-0006 resume decision for an action a prior manifest records as
+    applied: skip `already-applied` when the live output still matches the
+    recorded after-hash; otherwise fail ERR-002 — the file changed (or
+    vanished) since docmend applied it, and resume must surface external
+    interference, never silently proceed past it. Read-only by construction,
+    so it is safe in dry-run resume too (NFR-004)."""
+    final_path = Path(record.target_path)
+    try:
+        data = final_path.read_bytes()
+    except OSError as exc:
+        return _failed(
+            action,
+            "ERR-002",
+            f"{final_path}: recorded applied in {record.run_id} but output is "
+            f"missing/unreadable on resume ({exc.strerror or exc})",
+        )
+    if record.after_sha256 is None or _sha(data) != record.after_sha256:
+        return _failed(
+            action,
+            "ERR-002",
+            f"{final_path}: output no longer matches the after-hash recorded in "
+            f"{record.run_id} (changed since apply; resume reconciliation)",
+        )
+    return _skip(action, "already-applied")
+
+
 def _execute_action(
     action: PlanAction,
     source_root: Path,
@@ -397,6 +424,7 @@ def execute_plan(
     manifest_path: Path,
     started_at: str,
     now: Callable[[], str] = lambda: datetime.now(UTC).isoformat(),
+    resume_records: list[ManifestRecord] | None = None,
 ) -> Report:
     log = get_logger(__name__)
     assert plan.source_root is not None  # CLI refused earlier (ERR-006)
@@ -405,27 +433,46 @@ def execute_plan(
     include = PathSpec.from_lines(GitIgnoreSpecPattern, config.paths.include)
     exclude = PathSpec.from_lines(GitIgnoreSpecPattern, config.paths.exclude)
 
+    # FR-013 (adr-0006): actions a prior run's manifest records as applied are
+    # reconciled read-only instead of executed; the LATEST applied record per
+    # action wins (an apply→restore→apply chain can record one action twice).
+    # Sorted by (recorded_at, seq) rather than caller order so a multi-resume
+    # chain passed out of flag order cannot let a stale record win and raise a
+    # spurious ERR-002 (PR #10 review).
+    completed: dict[str, ManifestRecord] = {}
+    for record in sorted(resume_records or [], key=lambda r: (r.recorded_at, r.seq)):
+        if record.result == "applied":
+            completed[record.action_id] = record
+
     outcomes: list[ApplyOutcome] = []
     manifest: ManifestWriter | None = None
     if options.write and plan.actions:
-        manifest = ManifestWriter(manifest_path, run_id=run_id, now=now)
+        # source_root stamped onto every record (OQ-036) — restore keys its lock
+        # on it, so it must match plan/apply's key: the RESOLVED root.
+        manifest = ManifestWriter(
+            manifest_path, run_id=run_id, source_root=str(root_resolved), now=now
+        )
     try:
         abort = False
         for action in plan.actions:
             if abort:
                 break
-            outcome, abort = _execute_action(
-                action,
-                source_root,
-                root_resolved,
-                config,
-                options,
-                include,
-                exclude,
-                manifest,
-                run_id,
-                log,
-            )
+            prior = completed.get(action.action_id)
+            if prior is not None:
+                outcome = _reconcile_completed(action, prior)
+            else:
+                outcome, abort = _execute_action(
+                    action,
+                    source_root,
+                    root_resolved,
+                    config,
+                    options,
+                    include,
+                    exclude,
+                    manifest,
+                    run_id,
+                    log,
+                )
             outcomes.append(outcome)
             log.info(
                 "apply outcome",

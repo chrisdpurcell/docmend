@@ -13,6 +13,7 @@ dependencies = [
     "pathspec>=1.1.1",
     "pydantic>=2.12",
     "rich>=15.0.0",
+    "ruamel-yaml>=0.18",
     "structlog>=26.1.0",
     "typer>=0.26.8",
 ]

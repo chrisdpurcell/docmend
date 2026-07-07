@@ -29,7 +29,7 @@ from docmend.plan import ActionId, DocmendId
 from docmend.report import ErrorInfo
 from docmend.writer.atomic import fsync_dir
 
-MANIFEST_SCHEMA_VERSION = "1.1"
+MANIFEST_SCHEMA_VERSION = "1.2"
 
 type ManifestOperation = Literal["rename", "rewrite", "rename_and_rewrite"]
 
@@ -60,6 +60,13 @@ class ManifestRecord(BaseModel):
     error: ErrorInfo | None
     overwritten_sha256: Sha256 | None = None
     overwritten_backup_path: str | None = None
+    # 1.2 (OQ-036): the apply run's resolved source root, writer-stamped like
+    # seq/recorded_at (a run-level constant, not per-action). `docmend restore`
+    # keys its run-lock on this so it contends with a concurrent apply on the
+    # same tree — closing the AW-005 gap where restore's old commonpath key
+    # narrowed below source_root. None in pre-1.2 manifests and in restore's own
+    # inverse manifest (which is never used to re-key a lock).
+    source_root: str | None = None
 
 
 class ManifestWriter:
@@ -70,10 +77,14 @@ class ManifestWriter:
         path: Path,
         *,
         run_id: str,
+        source_root: str | None = None,
         now: Callable[[], str] = lambda: datetime.now(UTC).isoformat(),
     ) -> None:
         self._path = path
         self._run_id = run_id
+        # Run-level constant stamped onto every record (OQ-036); None for
+        # writers with no single source root, e.g. restore's inverse manifest.
+        self._source_root = source_root
         self._now = now
         self._seq = 0
         # Lazy-open on first append: a write run in which every action skips
@@ -101,7 +112,10 @@ class ManifestWriter:
             # (codex CR-NEW-005), so the first append also fsyncs the parent.
             fsync_dir(self._path.parent)
         self._seq += 1
-        stamped = record.model_copy(update={"seq": self._seq, "recorded_at": self._now()})
+        update: dict[str, object] = {"seq": self._seq, "recorded_at": self._now()}
+        if self._source_root is not None:
+            update["source_root"] = self._source_root
+        stamped = record.model_copy(update=update)
         document = stamped.model_dump(mode="json")
         # Self-check before disk, mirroring write_inventory/write_plan.
         validate_artifact("manifest", document)

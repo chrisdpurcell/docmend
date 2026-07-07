@@ -68,15 +68,17 @@ def test_restore_drill__manifest_replay_reproduces_original_corpus(drill_corpus:
 def test_single_file_journey__scan_plan_apply_with_defaults(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """NFR-006/G-006: one file, default configuration, only the FR-005 low-risk
-    opt-in — no config file, no backup infrastructure (apply leg; verify closes
-    the journey at MS-4)."""
+    """NFR-006/G-006 acceptance: the full scan → plan → apply --write → verify
+    journey over ONE file, default configuration, only the FR-005 low-risk
+    opt-in — no config file, no backup infrastructure, no parallelism."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     single = tmp_path / "letter.txt"
     single.write_bytes(b"hello\r\nworld")
 
-    planned = runner.invoke(app, ["plan", str(single), "--out", "plan.json"])
+    scanned = runner.invoke(app, ["scan", str(single), "--report", "inventory.json"])
+    assert scanned.exit_code == 0, scanned.output
+    planned = runner.invoke(app, ["plan", "--inventory", "inventory.json", "--out", "plan.json"])
     assert planned.exit_code == 0, planned.output
     applied = runner.invoke(app, ["apply", "plan.json", "--write", "--allow-no-backup"])
     assert applied.exit_code == 0, applied.output
@@ -84,6 +86,13 @@ def test_single_file_journey__scan_plan_apply_with_defaults(
     converted = tmp_path / "letter.md"
     assert converted.read_bytes() == b"hello\nworld\n"
     assert not single.exists()
+
+    # Verify leg (MS-4): content checks over the single converted file PLUS
+    # manifest reconciliation against the apply run, via the run-ID sidecar.
+    run_id = _artifact(r"manifest: \.docmend/docmend-(\S+)-manifest\.jsonl", applied.output)
+    verified = runner.invoke(app, ["verify", str(converted), "--run-id", str(run_id)])
+    assert verified.exit_code == 0, verified.output
+    assert "1 files checked, 0 findings" in verified.output
 
 
 def test_drill_relative_backup_dir__restore_from_other_cwd(

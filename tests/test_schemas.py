@@ -31,6 +31,7 @@ from docmend.artifacts import (
 from docmend.config import DocmendConfig
 from docmend.inventory import Inventory
 from docmend.plan import Plan, PlanSkipReason
+from docmend.report import Report
 from docmend.transform.dispatch import Operation
 
 RUN_ID = "run_20260706T000000Z_abc123"
@@ -268,6 +269,20 @@ class TestPydanticCrossCheck:
         }
 
         emitted = cast("dict[str, object]", Plan.model_json_schema(by_alias=True))
+        model: dict[str, tuple[set[str], set[str]]] = {}
+        _object_shapes(emitted, emitted, "", model)
+
+        assert set(hand) == set(model), "object paths differ between schema and model"
+        for path, (hand_props, hand_required) in hand.items():
+            model_props, model_required = model[path]
+            assert hand_props == model_props, f"property names differ at {path!r}"
+            assert model_required <= hand_required, f"model over-requires at {path!r}"
+
+    def test_report_model__matches_hand_authored_schema(self) -> None:
+        hand: dict[str, tuple[set[str], set[str]]] = {}
+        _object_shapes(load_schema("report"), load_schema("report"), "", hand)
+
+        emitted = cast("dict[str, object]", Report.model_json_schema(by_alias=True))
         model: dict[str, tuple[set[str], set[str]]] = {}
         _object_shapes(emitted, emitted, "", model)
 

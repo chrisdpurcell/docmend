@@ -25,6 +25,7 @@
 | 0015 | Two-corpus test architecture & anonymization | 🟡 2 | RQ-032 | ✅ accepted |
 | 0016 | The mechanical-transform boundary (consolidated) | 🟢 3 | RQ-025/030/031 | ✅ accepted |
 | 0017 | Branch strategy, protection, release process, CI/CD | 🟡 2 | workflow adoption (no RQ; authored 2026-07-06 before MS-0) | ✅ accepted |
+| 0018 | Doc Processing repository boundary | 🟡 2 | 2026-07-07 cross-repo alignment review (no RQ; outside the two original review passes) | ✅ accepted |
 
 ## Tier 1 — write now (foundational; hard to reverse)
 

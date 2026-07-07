@@ -71,4 +71,4 @@ A scan after a full restore should match the pre-apply state (the original inven
 - **Skip: "modified since apply"** — the live file no longer matches the manifest's after-hash. Decide manually: keep the newer content, or move it aside and re-run restore for that ID.
 - **Skip: "no-backup"** — that record's content mutation was never backed up by the tool (external preservation run); the skip detail names the recovery path.
 - **Failed: backup missing** — a content rewrite recorded a backup path that no longer exists. The original bytes are only in your external preservation (git/backup regime) at that point.
-- Restore writes its own inverse manifest under `.docmend/`, so a restore is itself undoable.
+- Restore writes its own inverse manifest under `.docmend/`, so a restore is itself undoable **for its renames**: inverse records carry no backup bytes (`backup_path` is null), so a restore that reversed a content rewrite cannot itself be re-reversed from the inverse manifest — the same renames-only rule above applies to it.

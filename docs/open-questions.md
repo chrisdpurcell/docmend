@@ -19,7 +19,7 @@
 
 ## Open questions
 
-<!-- OQ-001..033 are settled — see resolved-questions.md (RQ-001..033). New decisions get added here as OQ-### per the rules below. -->
+<!-- OQ-001..036 are settled — see resolved-questions.md (RQ-001..036). New decisions get added here as OQ-### per the rules below. -->
 
 ## How to maintain this document
 

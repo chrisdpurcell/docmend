@@ -8,7 +8,7 @@
 
 ## Project
 
-`docmend` is a Python CLI tool (v1.0.1 released 2026-07-07 — the full scan/plan/apply/restore/verify pipeline is live) for normalizing, repairing, and converting a large library (>100k files) of legacy `.txt`/`.html` documents into clean, well-structured Markdown.
+`docmend` is a Python CLI tool (v1.0.2 released 2026-07-07 — the full scan/plan/apply/restore/verify pipeline is live) for normalizing, repairing, and converting a large library (>100k files) of legacy `.txt`/`.html` documents into clean, well-structured Markdown.
 
 Read [`docs/specs/docmend.md`](docs/specs/docmend.md) (SPEC-VHHB, `full` profile, binding Agent Implementation Contract in Appendix B) before proposing any implementation.
 

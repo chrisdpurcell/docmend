@@ -9,4 +9,4 @@ from docmend import __version__
 
 
 def test_version__is_importable__matches_pyproject() -> None:
-    assert __version__ == "1.0.0"
+    assert __version__ == "1.0.1"

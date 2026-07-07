@@ -1,6 +1,6 @@
 [project]
 name = "docmend"
-version = "1.0.0"
+version = "1.0.1"
 description = "Normalize, repair, and convert large libraries of legacy .txt/.html documents into clean, well-structured Markdown."
 readme = "README.md"
 requires-python = ">=3.14"

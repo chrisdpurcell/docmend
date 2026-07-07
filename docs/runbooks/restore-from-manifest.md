@@ -67,6 +67,8 @@ A scan after a full restore should match the pre-apply state (the original inven
 
 ## Failure notes
 
+- **"restore capability: renames-only" (printed up front)** — the apply run satisfied the write gate with a declared external preservation (`--preserved-by` / `--allow-no-backup`) and took no tool backups, so this manifest can undo renames but not content rewrites. Recover content from the declared preservation (git checkout, snapshot, backup). Wrapper scripts can derive the same fact from the manifest: an applied non-rename record with a null `backup_path` has no recoverable bytes.
 - **Skip: "modified since apply"** — the live file no longer matches the manifest's after-hash. Decide manually: keep the newer content, or move it aside and re-run restore for that ID.
+- **Skip: "no-backup"** — that record's content mutation was never backed up by the tool (external preservation run); the skip detail names the recovery path.
 - **Failed: backup missing** — a content rewrite recorded a backup path that no longer exists. The original bytes are only in your external preservation (git/backup regime) at that point.
 - Restore writes its own inverse manifest under `.docmend/`, so a restore is itself undoable.

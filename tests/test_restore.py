@@ -332,7 +332,9 @@ def test_restore_no_backup_record__skipped(tmp_path: Path) -> None:
     )
 
     assert outcomes[0].status == "skipped"
-    assert outcomes[0].detail == "no-backup"
+    assert outcomes[0].detail is not None and outcomes[0].detail.startswith("no-backup")
+    # Issue #15: the detail must point at the declared preservation as the recovery path.
+    assert "preservation" in outcomes[0].detail
 
 
 def test_restore_backup_hash_mismatch__failed_err004(tmp_path: Path) -> None:
@@ -861,3 +863,39 @@ class TestRestoreCliLock:
             assert result.exit_code == 3, result.output
         finally:
             held.release()
+
+
+class TestRestoreCapabilityLine:
+    """Issue #15 (suggestion 2): restore states the run's undo capability UP
+    FRONT, derived from the manifest alone — before any per-row skip appears."""
+
+    def test_external_preservation_manifest__renames_only_stated_on_dry_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "a.txt").write_bytes(b"line one\r\nline two\r\n")  # content rewrite
+        plan_path = _make_plan_cli(corpus)
+        _apply_cli(plan_path, "--preserved-by", "external")
+        manifest_path = _manifest_path(tmp_path)
+
+        result = runner.invoke(app, ["restore", "--manifest", str(manifest_path)])
+
+        assert "restore capability: renames-only — 1 content mutation(s)" in result.output
+        assert "external" in result.output
+
+    def test_tool_backup_manifest__no_capability_line(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "a.txt").write_bytes(b"line one\r\nline two\r\n")
+        plan_path = _make_plan_cli(corpus)
+        _apply_cli(plan_path, "--backup-dir", str(tmp_path / "backups"))
+        manifest_path = _manifest_path(tmp_path)
+
+        result = runner.invoke(app, ["restore", "--manifest", str(manifest_path)])
+
+        assert "renames-only" not in result.output

@@ -7,7 +7,7 @@
   - _open question_ (`OQ-###`) is a decision still to be made — the primary unit of this document.
   - _resolved question_ (`RQ-###`, already settled) lives in the companion file [`resolved-questions.md`](resolved-questions.md).
 - **Priority scale:** open questions carry a `P0 blocker` / `P1 near-blocker` / `P2 decision` label; the gap-analysis-sourced ones also carry a High / Medium / Low gap-analysis priority. The full ranked register with downstream-impact analysis lives in [`gap-analysis.md`](gap-analysis.md).
-- **Status:** OQ-001..033 are settled — see [`resolved-questions.md`](resolved-questions.md), RQ-001..033. **Three open questions:** OQ-034, OQ-035, OQ-036 (all non-blocking; implementation proceeding on their recorded assumptions per the spec's Appendix B rules).
+- **Status:** **No open questions.** OQ-001..036 are all settled — see [`resolved-questions.md`](resolved-questions.md), RQ-001..036 (OQ-034..036 received owner sign-off 2026-07-07, post-v1.0.0). New decisions get added here as OQ-### per the rules below.
 
 ## Table of Contents
 
@@ -20,57 +20,6 @@
 ## Open questions
 
 <!-- OQ-001..033 are settled — see resolved-questions.md (RQ-001..033). New decisions get added here as OQ-### per the rules below. -->
-
-### OQ-034 — default artifact/log output location (`P2 decision`, non-blocking)
-
-**Raised:** 2026-07-06 (MS-1 implementation) **Owner:** owner **Needed by:** MS-3 (before apply multiplies the artifact set) **Spec:** §21 OQ-034; touches IR-001, §18.2 (`paths.exclude` default), §18.5, OQ-006 (sidecar discovery)
-
-**The unresolved decision:** where do run artifacts and the per-run log go when the operator passes no flags? IR-001's `--report` is optional, §18.5 requires an artifact for every run, and no spec section names a default path.
-
-**Current assumption (implementation proceeds on this per Appendix B):** a `.docmend/` directory created in the **invoking directory** (not inside the scanned tree, unless the operator runs from there) holds the per-run log (`docmend-{run-id}.jsonl` — the MS-0 convention unchanged) and run artifacts (`docmend-{run-id}-inventory.json`; later `-plan.json`, `-report.json`, `-manifest.ndjson`). Explicit flags (`--report`, and the future `--out`-family) override per artifact. `.docmend/` is added to the §18.2 default excludes so the tool's own output can never become a scan candidate. The run-ID-keyed sibling naming is deliberately the input `verify`'s OQ-006 sidecar-discovery convention will consume at MS-4.
-
-#### Agent notes
-
-- Alternatives considered: bare files in the CWD (clutters, and a second run doubles it); alongside the scanned root (pollutes the library being processed — worst option given FR-001's read-only posture, though only the _tool's_ directory, never library files, would be written); XDG state dir (`~/.local/state/docmend/` — survives anywhere but hides the artifacts the operator is supposed to review; the plan file is a review surface, D-006).
-- A future `artifacts.dir` config key could make this configurable; deliberately **not** added now — §18.2 is spec-governed and the flag override suffices for v1.
-
-#### My Comments
-
-(none yet — owner block, agent does not edit)
-
-### OQ-035 — FR-005 CLI surface and risk tiers (`P2 decision`, non-blocking)
-
-**Raised:** 2026-07-06 (MS-3 implementation) **Owner:** owner **Needed by:** MS-4 (before verify/resume harden the surface) **Spec:** §21 OQ-035; touches FR-005, G-002
-
-**The unresolved decision:** how are the git/external preservation strategies declared on the CLI, what exactly qualifies as a "low-risk single-file operation," and how is an overwrite-clobbered target preserved (G-002)?
-
-**Current assumption (implementation proceeds on this per Appendix B):** `--backup-dir` activates tool backups; `--preserved-by git|external` declares an external byte-preserving strategy (an operator assertion, not verified); `--allow-no-backup` is the low-risk opt-in, valid only for single-action plans. An action counts as a content rewrite iff any of its operations is not a rename; rename-only runs under the skip/fail collision policy need no preservation strategy (the manifest alone suffices). A run that would overwrite an existing target requires an active strategy, and tool backups additionally copy the clobbered target (manifest schema 1.1 `overwritten_*` fields).
-
-#### Agent notes
-
-- Landed via the adversarial plan audit that produced the MS-3 implementation plan; the gate (`tests/test_gate.py`) enforces the refusal set mechanically.
-
-#### My Comments
-
-(none yet — owner block, agent does not edit)
-
-### OQ-036 — run-level lock location and mechanism (`P2 decision`, non-blocking)
-
-**Raised:** 2026-07-06 (MS-3 implementation) **Owner:** owner **Needed by:** MS-4 **Spec:** §21 OQ-036; touches OQ-027, AW-005
-
-**The unresolved decision:** the spec mandates the run-level lock this heading resolves for but not its home or mechanism (the lock requirement itself was settled as OQ-027).
-
-**Current assumption (implementation proceeds on this per Appendix B):** `flock(2)` on a lock file under `$XDG_STATE_HOME/docmend/locks/` (default `~/.local/state/…`), named by the sha256 hash of the resolved source root, `.lock` suffixed — kernel-owned, so a crashed holder can never leave a stale lock and no stale-detection/unlink races exist. Holder JSON (`run_id`/`pid`/`command`/`started_at`) is written only to populate the refusal message; a live holder refuses with exit 3 (AW-005). `plan` warns and proceeds if the state directory is uncreatable (stays read-only-safe); `apply`/`restore` refuse. Single-machine semantics (A-003-adjacent: local POSIX filesystem per A-001).
-
-#### Agent notes
-
-- Landed via the adversarial plan audit that produced the MS-3 implementation plan.
-- Final MS-3 review (2026-07-07): `restore` keyed its lock on `os.path.commonpath` of the manifest's `original_path`s while `plan`/`apply` key on the resolved `source_root`. When every mutated file shared a subdirectory, `commonpath` narrowed below the source root, so the two keys diverged and AW-005 mutual exclusion between a concurrent `apply` and `restore` had a gap.
-- **Fixed (2026-07-07, MS-4):** manifest schema bumped to 1.2 with an optional `source_root` field, writer-stamped onto every record at apply time (the resolved source root); `restore` now keys its lock on that recorded value via `_restore_lock_root` (`cli.py`), falling back to `commonpath` only for pre-1.2 manifests. Regression coverage: `tests/test_restore.py::TestRestoreLockKey` (key derivation) + `TestRestoreCliLock::test_restore_locked_source_root__nested_files__exit_3` (end-to-end: a lock on the source root now refuses a restore whose files nest in a subdirectory). **The lock _location/mechanism_ decision this OQ heads (flock under `$XDG_STATE_HOME`) remains open pending owner sign-off** — only the lock-key gap is closed.
-
-#### My Comments
-
-(none yet — owner block, agent does not edit)
 
 ## How to maintain this document
 

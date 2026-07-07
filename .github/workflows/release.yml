@@ -18,9 +18,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # setup-uv reads .python-version itself; it has no python-version-file
+      # input (the v1.0.0 run warned on and ignored one).
       - uses: astral-sh/setup-uv@v7
-        with:
-          python-version-file: ".python-version"
 
       - name: Build sdist + wheel
         run: uv build

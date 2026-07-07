@@ -1,0 +1,39 @@
+# Release workflow (adr-0017, wired at MS-5 as planned): pushing a version tag
+# builds the distribution and publishes a GitHub Release with the artifacts
+# attached. PyPI publishing is deliberately out of scope (adr-0017). Additive
+# workflow — not part of the standard-owned check.yml twin (conventions #8).
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version-file: ".python-version"
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Smoke-test the built wheel
+        run: |
+          uv run --isolated --no-project --with dist/*.whl docmend --version
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "docmend $GITHUB_REF_NAME" \
+            --verify-tag \
+            --generate-notes

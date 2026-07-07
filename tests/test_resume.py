@@ -537,6 +537,63 @@ def test_resume_intent_over_unclobbered_target__reexecutes_with_overwrite(
     assert outcome.status == "applied"
 
 
+def test_resume_intent_source_outside_root__refused_err002(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§13.5 containment holds for intent reconciliation: a crafted manifest
+    record whose original_path escapes the plan's source root must never be
+    unlinked, even when both hashes match (PR #18 Copilot finding)."""
+    root = tmp_path / "root"
+    materialize(root, RECIPES, seeded_faker())
+    config = DocmendConfig()
+    plan, first = _interrupted_after_publish(root, config, tmp_path / "manifest.jsonl", monkeypatch)
+    outside = tmp_path / "outside.txt"
+    shutil.copy(Path(first[0].original_path), outside)  # hashes match the record
+    tampered = first[0].model_copy(update={"original_path": str(outside)})
+
+    report = _execute(
+        plan,
+        config,
+        tmp_path / "resume-manifest.jsonl",
+        run_id=RESUME_RUN_ID,
+        resume_records=[tampered],
+    )
+
+    assert outside.exists()  # never unlinked
+    outcome = next(o for o in report.outcomes if o.action_id == tampered.action_id)
+    assert outcome.status == "failed"
+    assert outcome.error is not None and outcome.error.error_class == "ERR-002"
+
+
+def test_resume_intent_target_outside_root__refused_err002(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Symmetric §13.5 guard: a crafted target_path outside the root must not
+    let reconciliation treat the action as published (and remove the real
+    in-root source)."""
+    root = tmp_path / "root"
+    materialize(root, RECIPES, seeded_faker())
+    config = DocmendConfig()
+    plan, first = _interrupted_after_publish(root, config, tmp_path / "manifest.jsonl", monkeypatch)
+    outside = tmp_path / "outside.md"
+    shutil.copy(Path(first[0].target_path), outside)  # matches after_sha256
+    tampered = first[0].model_copy(update={"target_path": str(outside)})
+    source = Path(tampered.original_path)
+
+    report = _execute(
+        plan,
+        config,
+        tmp_path / "resume-manifest.jsonl",
+        run_id=RESUME_RUN_ID,
+        resume_records=[tampered],
+    )
+
+    assert source.exists()  # the real in-root source was not removed
+    outcome = next(o for o in report.outcomes if o.action_id == tampered.action_id)
+    assert outcome.status == "failed"
+    assert outcome.error is not None and outcome.error.error_class == "ERR-002"
+
+
 def test_resume_dry_run_dangling_intent__previews_completion_writes_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

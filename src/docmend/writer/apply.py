@@ -214,6 +214,7 @@ def _record_intent(
 def _reconcile_intent(
     action: PlanAction,
     record: ManifestRecord,
+    root_resolved: Path,
     options: ApplyOptions,
     manifest: ManifestWriter | None,
     run_id: str,
@@ -234,6 +235,18 @@ def _reconcile_intent(
     """
     target = Path(record.target_path)
     source = Path(record.original_path)
+    # §13.5 containment, symmetric with _execute_action: the record's ABSOLUTE
+    # paths come from an operator-supplied manifest, and the completion arm
+    # below unlinks `source` — a crafted/wrong record must never read or
+    # mutate outside the plan's source root (PR #18 review).
+    for candidate in (source, target):
+        if not candidate.resolve().is_relative_to(root_resolved):
+            return _failed(
+                action,
+                "ERR-002",
+                f"{candidate}: intent record path resolves outside the plan's "
+                f"source root; refusing reconciliation",
+            )
     try:
         target_data = target.read_bytes()
     except FileNotFoundError:
@@ -628,7 +641,9 @@ def execute_plan(
                 # Newest evidence wins: a None verdict means the publish never
                 # happened, so the action executes normally below — never via
                 # _reconcile_completed against an older, superseded record.
-                reconciled = _reconcile_intent(action, intent, options, manifest, run_id)
+                reconciled = _reconcile_intent(
+                    action, intent, root_resolved, options, manifest, run_id
+                )
                 if reconciled is not None:
                     outcome = reconciled
                 else:

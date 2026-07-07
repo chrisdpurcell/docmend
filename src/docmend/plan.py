@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from docmend.inventory import DetectedEncoding, NewlineStyle, RelativePath, RunId, Sha256
 from docmend.transform.dispatch import Operation
 
-PLAN_SCHEMA_VERSION = "1.0"
+PLAN_SCHEMA_VERSION = "1.1"
 
 type ActionId = Annotated[str, Field(pattern=r"^run_\d{8}T\d{6}Z_[0-9a-f]{6}/a\d+$")]
 type DocmendId = Annotated[

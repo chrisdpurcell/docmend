@@ -52,7 +52,12 @@
 			"type": "string",
 			"format": "uuid"
 		},
-		"relative_path": { "type": "string", "minLength": 1 },
+		"relative_path": {
+			"description": "POSIX-style path relative to source_root; never absolute, never containing '..' — enforced by pattern since 1.1 (MS-2 final-review hardening).",
+			"type": "string",
+			"minLength": 1,
+			"pattern": "^(?!/)(?!(?:.*/)?\\.\\.(?:/|$)).+$"
+		},
 		"sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
 		"artifact_ref": {
 			"type": "object",

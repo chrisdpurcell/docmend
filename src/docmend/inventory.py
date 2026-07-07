@@ -17,9 +17,9 @@ rung (MS-2, FR-007) could decide.
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
-INVENTORY_SCHEMA_VERSION = "1.0"
+INVENTORY_SCHEMA_VERSION = "1.1"
 
 type NewlineStyle = Literal["lf", "crlf", "cr", "mixed", "none"]
 type BomKind = Literal["utf-8", "utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"]
@@ -28,7 +28,21 @@ type ScanSkipReason = Literal["excluded", "unreadable"]
 
 type RunId = Annotated[str, Field(pattern=r"^run_\d{8}T\d{6}Z_[0-9a-f]{6}$")]
 type Sha256 = Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
-type RelativePath = Annotated[str, Field(min_length=1)]
+
+
+def _contained_relative_path(value: str) -> str:
+    # Containment belt (spec §8.5/§13.5): artifacts are operator-editable JSON,
+    # so a crafted absolute or '..' path must die at read time, not at apply.
+    if value.startswith("/"):
+        msg = "path must be relative to source_root, not absolute"
+        raise ValueError(msg)
+    if ".." in value.split("/"):
+        msg = "path must not contain '..' segments"
+        raise ValueError(msg)
+    return value
+
+
+type RelativePath = Annotated[str, Field(min_length=1), AfterValidator(_contained_relative_path)]
 
 
 class _StrictModel(BaseModel):

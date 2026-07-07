@@ -103,7 +103,7 @@ class TestEnumDriftGuard:
 def _minimal_plan() -> dict[str, object]:
     return {
         "schema": "docmend/plan",
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "run_id": RUN_ID,
         "generated_at": TIMESTAMP,
         "generated_by": "docmend 0.1.0",

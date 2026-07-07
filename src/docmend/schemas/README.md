@@ -7,7 +7,7 @@ The hand-authored JSON Schemas here are the **durable external contract** for do
 | `inventory.schema.json` | DR-001 inventory | single JSON document | `scan` (MS-1) | 1.2 (MS-5: `timeout` scan-skip reason + `skipped_by_reason.timeout` counter, FR-019; MS-3: `encoding.detect` provenance, path-containment patterns) |
 | `plan.schema.json` | DR-002 plan | single JSON document | `plan` (MS-2) | 1.2 (MS-5: `timeout` skip reason, FR-019; MS-3: optional `source_root`, path-containment patterns) |
 | `report.schema.json` | DR-003 apply report | single JSON document | `apply` (MS-3) | 1.0 |
-| `manifest.schema.json` | DR-004 manifest — schema covers **one NDJSON line** | JSON Lines, append-only | `apply` (MS-3) | 1.2 (MS-4: writer-stamped `source_root`; MS-3: `overwritten_*` overwrite-preservation fields) |
+| `manifest.schema.json` | DR-004 manifest — schema covers **one NDJSON line** | JSON Lines, append-only | `apply` (MS-3) | 1.3 (post-v1.0.1 alignment: `result: "intent"` write-ahead record for `rename_and_rewrite` resume reconciliation; MS-4: writer-stamped `source_root`; MS-3: `overwritten_*` overwrite-preservation fields) |
 | `frontmatter.schema.json` | DR-005 product frontmatter — validates the parsed YAML block of a converted document | YAML frontmatter, validated **where present** (`adr-0011`) | none in v1 (emission is a deferred OQ-009 seam); consumed by `verify` (MS-5) | 1.0 |
 
 Conventions (adr-0005):

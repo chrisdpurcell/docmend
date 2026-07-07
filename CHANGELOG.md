@@ -2,7 +2,7 @@
 
 All notable changes to docmend are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.2] - 2026-07-07
 
 Safety hardening from the 2026-07-07 cross-repo alignment review, ahead of broad real-library mutation. The repository boundary with the workstation-side tooling is recorded in `docs/adr/adr-0018-doc-processing-repository-boundary.md` (accepted 2026-07-07).
 
@@ -15,6 +15,7 @@ Safety hardening from the 2026-07-07 cross-repo alignment review, ahead of broad
 
 - Scan prunes excluded directories (`.git/`, `.venv/`, `node_modules/`, `.docmend/`, and any configured directory pattern) from the walk instead of descending and recording a per-file `excluded` skip for everything inside. Selection is unchanged; inventories are quieter and large-tree scans faster. Per-file skip records remain for file-pattern excludes.
 - The release workflow's `setup-uv` action is SHA-pinned like the check workflow's (it publishes artifacts with `contents: write`).
+- Documentation drift sweep: the restore runbook now states that a restore's own inverse manifest is re-reversible for renames only (inverse records carry no backup bytes); schema contract table, ADR backlog, and spec current-state brought up to date.
 
 ## [1.0.1] - 2026-07-07
 
@@ -46,5 +47,6 @@ First release. docmend normalizes, repairs, and converts legacy `.txt`/`.html` d
 - Five pinned JSON Schemas (inventory, plan, report, manifest, frontmatter) ship inside the package as the durable artifact contract.
 - Scale-tested: the seeded 100,000-file synthetic-corpus test completes in about six minutes with peak memory under 500 MiB.
 
+[1.0.2]: https://github.com/chrisdpurcell/docmend/releases/tag/v1.0.2
 [1.0.1]: https://github.com/chrisdpurcell/docmend/releases/tag/v1.0.1
 [1.0.0]: https://github.com/chrisdpurcell/docmend/releases/tag/v1.0.0

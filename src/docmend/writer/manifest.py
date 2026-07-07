@@ -27,27 +27,11 @@ from docmend.inventory import RunId, Sha256
 from docmend.observability import get_logger
 from docmend.plan import ActionId, DocmendId
 from docmend.report import ErrorInfo
+from docmend.writer.atomic import fsync_dir
 
 MANIFEST_SCHEMA_VERSION = "1.1"
 
 type ManifestOperation = Literal["rename", "rewrite", "rename_and_rewrite"]
-
-
-# TODO(Task 6): replace with docmend.writer.atomic.fsync_dir when that module
-# lands — that module owns the atomic-replace machinery this writer will also
-# depend on; until then this minimal copy keeps Task 5 self-contained.
-def fsync_dir(path: Path) -> None:
-    """Fsync a directory's entry table (best-effort — see body for why)."""
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    except OSError:
-        # Some filesystems/platforms reject fsync on a directory descriptor;
-        # the durability of the FILE write already happened, this is best-effort
-        # extra insurance for the directory entry, not a correctness dependency.
-        pass
-    finally:
-        os.close(fd)
 
 
 class ManifestRecord(BaseModel):

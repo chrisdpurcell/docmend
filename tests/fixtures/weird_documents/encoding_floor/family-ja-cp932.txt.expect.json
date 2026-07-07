@@ -1,0 +1,23 @@
+{
+  "anomaly": "family-equivalent-decode",
+  "spec_refs": [
+    "FR-007",
+    "adr-0009"
+  ],
+  "expect": {
+    "disposition": "action",
+    "operations": [
+      "reencode",
+      "ensure_final_newline",
+      "rename"
+    ],
+    "target_path": "family-ja-cp932.md"
+  },
+  "family": {
+    "expected_text": "\u30b8\u30e3\u30e0\u8cde\u8cdb\u3059\u308b\u932f\u899a\u30c0\u30a4\u30e4\u30e2\u30f3\u30c9\u5dee\u5225\u3059\u308b\u61b2\u6cd5\u3002\n\u5f7c\u30bf\u30ef\u30fc\u30d1\u30f3\u3002\u753b\u9762\u7b26\u53f7\u6575\u3002\u9769\u65b0\u30d8\u30a2\u610f\u56f3\u30a4\u30f3\u30c1\u30b3\u30fc\u30ca\u30fc\u30cf\u30f3\u30de\u30fc\u3042\u3063\u305f\u3002\n\u6012\u308a",
+    "members": [
+      "cp932",
+      "shift_jis"
+    ]
+  }
+}

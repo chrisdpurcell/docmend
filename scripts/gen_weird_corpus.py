@@ -26,14 +26,27 @@ from typing import Literal
 from faker import Faker
 
 from docmend.config import DocmendConfig
+from docmend.detection import detect_legacy
 from docmend.discovery import scan
-from docmend.plan import ArtifactRef
+from docmend.plan import ArtifactRef, Plan
 from docmend.planning import build_plan
 
 CORPUS_DIR = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "weird_documents"
+FLOOR_DIR = CORPUS_DIR / "encoding_floor"
 RUN_ID = "run_20260706T000000Z_abc123"
 GENERATED_AT = "2026-07-06T00:00:00+00:00"
 SEED = 20260706
+
+# Encoding-floor matrix (§17.2, adr-0009, RQ-022). Byte-identical across
+# cp1250/cp1252/cp1257 (verified), so every codec charset-normalizer might name
+# for these decodes equivalently — this isolates the non-ASCII byte COUNT as the
+# single variable the floor gates on. French/Spanish diacritics deliberately do
+# NOT round-trip this way; that decode-inequivalence is its own committed fixture
+# (the R-001 residual of the sole-detector design).
+_FLOOR_DIACRITICS = "äöüßÄÖÜé"
+_FLOOR_LENGTHS = (30, 200, 2048)
+_FLOOR_PLACEMENTS = ("start", "spread", "end")
+_FLOOR_DEFAULT = 20  # the adr-0009 default the committed boundaries pin behavior around
 
 type Disposition = Literal["skip", "action", "noop"]
 
@@ -42,17 +55,36 @@ type Disposition = Literal["skip", "action", "noop"]
 class Fixture:
     """One corpus file: its bytes, its sidecar's traceability fields, and the
     disposition the sidecar pins (adr-0015 recipe -> bytes, applied to plan
-    outcomes rather than raw bytes)."""
+    outcomes rather than raw bytes).
+
+    `subdir` places the fixture in a nested corpus directory (the encoding-floor
+    matrix lives under `encoding_floor/`); `detection`/`family` are the optional
+    extra sidecar keys the floor fixtures carry for the detector-level assertions
+    in tests/test_encoding_floor.py (Task 12 contract) — top-level corpus
+    fixtures leave them None and their sidecars stay the plain Task 11 shape.
+    """
 
     name: str
     data: bytes
     anomaly: str
     spec_refs: list[str]
     expect: dict[str, object]
+    subdir: str = ""
+    detection: dict[str, object] | None = None
+    family: dict[str, object] | None = None
 
 
 def _sidecar(fixture: Fixture) -> dict[str, object]:
-    return {"anomaly": fixture.anomaly, "spec_refs": fixture.spec_refs, "expect": fixture.expect}
+    sidecar: dict[str, object] = {
+        "anomaly": fixture.anomaly,
+        "spec_refs": fixture.spec_refs,
+        "expect": fixture.expect,
+    }
+    if fixture.detection is not None:
+        sidecar["detection"] = fixture.detection
+    if fixture.family is not None:
+        sidecar["family"] = fixture.family
+    return sidecar
 
 
 def build_fixtures() -> list[Fixture]:
@@ -360,6 +392,287 @@ def build_fixtures() -> list[Fixture]:
     return fixtures
 
 
+@dataclass(frozen=True)
+class _FloorCell:
+    """A pre-observation floor-matrix cell: synthetic bytes plus the ground-truth
+    cp1252 text they were built from (needed to check decode-equivalence) and the
+    role that decides which invariant the observation must satisfy."""
+
+    name: str
+    data: bytes
+    truth: str
+    anomaly: str
+    spec_refs: list[str]
+    role: Literal["boundary", "clear-skip", "clear-accept", "family", "western"]
+    count: int
+    family_members: tuple[str, ...] = ()
+
+
+def _floor_prose(faker: Faker, total: int) -> list[str]:
+    """ASCII faker prose padded to at least `total` chars with a guaranteed-dense
+    run of letters, so even a 30-byte cell can host up to ~21 injected non-ASCII
+    bytes (the top boundary count) at real alpha positions."""
+    text = ""
+    while sum(c.isalpha() for c in text) < total:
+        text += faker.sentence() + " "
+    return list(text[:total])
+
+
+def _inject_non_ascii(faker: Faker, total: int, count: int, placement: str) -> tuple[bytes, str]:
+    """Place exactly `count` byte-stable diacritics into ASCII prose of `total`
+    chars, clustered at start/end or spread evenly. cp1252 encodes each diacritic
+    as one high byte, so the file's non-ASCII byte count equals `count` exactly."""
+    chars = _floor_prose(faker, total)
+    alpha = [i for i, c in enumerate(chars) if c.isalpha() and c.isascii()]
+    if len(alpha) < count:
+        msg = f"floor cell total={total} count={count}: only {len(alpha)} alpha slots"
+        raise AssertionError(msg)
+    if placement == "start":
+        positions = alpha[:count]
+    elif placement == "end":
+        positions = alpha[-count:]
+    else:
+        step = max(1, len(alpha) // count)
+        positions = alpha[::step][:count]
+    for k, i in enumerate(positions):
+        chars[i] = _FLOOR_DIACRITICS[k % len(_FLOOR_DIACRITICS)]
+    truth = "".join(chars)
+    data = truth.encode("cp1252")
+    non_ascii = sum(1 for b in data if b >= 0x80)
+    if non_ascii != count:
+        msg = f"floor cell total={total} count={count}: produced {non_ascii} non-ASCII bytes"
+        raise AssertionError(msg)
+    return data, truth
+
+
+def _synth_floor_cells() -> list[_FloorCell]:
+    """The committed boundary sets: every (length, placement) at counts 19/20/21,
+    a clear-skip (8) and clear-accept (40) per length that can host them, the two
+    family-equivalence pairs, and the Western family-inequivalence risk marker."""
+    faker = Faker()
+    faker.seed_instance(SEED)
+    cells: list[_FloorCell] = []
+
+    # Three-axis boundary sets (§17.2): length x placement x {19,20,21}. 19 sits
+    # just below the floor (false-skip boundary), 20 at it, 21 just above
+    # (false-accept boundary) — the exact window MS-2 calibrated (RQ-022).
+    for total in _FLOOR_LENGTHS:
+        for placement in _FLOOR_PLACEMENTS:
+            for count in (19, 20, 21):
+                data, truth = _inject_non_ascii(faker, total, count, placement)
+                cells.append(
+                    _FloorCell(
+                        name=f"floor-len{total}-n{count}-{placement}.txt",
+                        data=data,
+                        truth=truth,
+                        anomaly="encoding-floor-boundary",
+                        spec_refs=["FR-007", "adr-0009", "OQ-015"],
+                        role="boundary",
+                        count=count,
+                    )
+                )
+
+    # Clear-skip (8 non-ASCII) per length: unambiguously below the floor.
+    for total in _FLOOR_LENGTHS:
+        data, truth = _inject_non_ascii(faker, total, 8, "spread")
+        cells.append(
+            _FloorCell(
+                name=f"floor-len{total}-n8-spread.txt",
+                data=data,
+                truth=truth,
+                anomaly="encoding-floor-clear-skip",
+                spec_refs=["FR-007", "adr-0009", "OQ-015"],
+                role="clear-skip",
+                count=8,
+            )
+        )
+
+    # Clear-accept (40 non-ASCII) per length that can hold it (a 30-byte file
+    # cannot host 40 non-ASCII bytes; its above-floor behavior is pinned by its
+    # own n20/n21 cells). Spread placement keeps the detection decode-equivalent.
+    for total in _FLOOR_LENGTHS:
+        if total < 40:
+            continue
+        data, truth = _inject_non_ascii(faker, total, 40, "spread")
+        cells.append(
+            _FloorCell(
+                name=f"floor-len{total}-n40-spread.txt",
+                data=data,
+                truth=truth,
+                anomaly="encoding-floor-clear-accept",
+                spec_refs=["FR-007", "adr-0009", "OQ-015"],
+                role="clear-accept",
+                count=40,
+            )
+        )
+
+    # Family-equivalence pairs (§17.2): cp932/Shift_JIS share bytes for common
+    # kana/kanji, GBK/GB18030 for common hanzi — whichever member the detector
+    # names, the decode is identical. Synthetic CJK prose via faker locales (C-002).
+    faker_ja = Faker("ja_JP")
+    faker_ja.seed_instance(SEED)
+    ja_truth = "".join(faker_ja.text() for _ in range(2))[:60]
+    for member in ("cp932", "shift_jis"):
+        data = ja_truth.encode(member)
+        cells.append(
+            _FloorCell(
+                name=f"family-ja-{member.replace('_', '')}.txt",
+                data=data,
+                truth=ja_truth,
+                anomaly="family-equivalent-decode",
+                spec_refs=["FR-007", "adr-0009"],
+                role="family",
+                count=sum(1 for b in data if b >= 0x80),
+                family_members=("cp932", "shift_jis"),
+            )
+        )
+    faker_zh = Faker("zh_CN")
+    faker_zh.seed_instance(SEED)
+    zh_truth = "".join(faker_zh.text() for _ in range(2))[:60]
+    for member in ("gbk", "gb18030"):
+        data = zh_truth.encode(member)
+        cells.append(
+            _FloorCell(
+                name=f"family-zh-{member}.txt",
+                data=data,
+                truth=zh_truth,
+                anomaly="family-equivalent-decode",
+                spec_refs=["FR-007", "adr-0009"],
+                role="family",
+                count=sum(1 for b in data if b >= 0x80),
+                family_members=("gbk", "gb18030"),
+            )
+        )
+
+    # Western family-inequivalence (R-001 residual): cp1252 French/Spanish
+    # diacritics get a CONFIDENT verdict whose decode differs from cp1252 (a real
+    # false-accept the floor cannot catch — the sole-detector design's known
+    # residual, deferred behind the OQ-020 family-aware seam). Pinned as an
+    # observed risk marker, not a correctness pass.
+    faker_fr = Faker("fr_FR")
+    faker_fr.seed_instance(SEED)
+    fr_body = "".join(faker_fr.text() for _ in range(3))
+    fr_truth = (
+        "Café à la crème: naïve garçon, être où ne pas être. "
+        + fr_body.replace("a", "à").replace("e", "ê")
+    )[:250]
+    cells.append(
+        _FloorCell(
+            name="western-cp1252-inequivalent.txt",
+            data=fr_truth.encode("cp1252"),
+            truth=fr_truth,
+            anomaly="western-family-inequivalence",
+            spec_refs=["FR-007", "adr-0009", "R-001", "OQ-020"],
+            role="western",
+            count=sum(1 for b in fr_truth.encode("cp1252") if b >= 0x80),
+        )
+    )
+    return cells
+
+
+def _plan_scratch(root: Path) -> Plan:
+    config = DocmendConfig()
+    inventory = scan(root, config, run_id=RUN_ID, generated_at=GENERATED_AT)
+    ref = ArtifactRef(path="unused.json", run_id=RUN_ID, sha256="sha256:" + "0" * 64)
+    return build_plan(
+        inventory, config, run_id=RUN_ID, generated_at=GENERATED_AT, inventory_ref=ref
+    )
+
+
+def _floor_fixtures() -> list[Fixture]:
+    """Synthesize the floor matrix, then OBSERVE each cell's real plan disposition
+    and detector verdict in a scratch dir before writing. Unlike the top-level
+    corpus (recipe -> intended disposition, verified), the floor sidecars record
+    observed values — but the observation still enforces the invariants that make
+    the matrix meaningful, aborting the run if the floor logic ever regressed:
+      * every sub-floor cell (count < 20) skips — the floor's lower-bound guarantee;
+      * every clear-accept and family cell plans as an action;
+      * family cells decode identically under every listed member and the detected
+        name; the Western cell is a confident verdict whose decode differs.
+    """
+    cells = _synth_floor_cells()
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        for cell in cells:
+            (root / cell.name).write_bytes(cell.data)
+        plan = _plan_scratch(root)
+        actions = {a.path: a for a in plan.actions}
+        skips = {s.path: s for s in plan.skips}
+
+        fixtures: list[Fixture] = []
+        for cell in cells:
+            detected = detect_legacy(root / cell.name)
+            candidate = detected is not None
+            confident = candidate and detected.confidence >= 0.80
+
+            if cell.count < _FLOOR_DEFAULT:
+                assert cell.name in skips, (
+                    f"{cell.name}: sub-floor cell (count {cell.count}) must skip, "
+                    f"got {'action' if cell.name in actions else 'noop'}"
+                )
+            if cell.role in ("clear-accept", "family"):
+                assert cell.name in actions, (
+                    f"{cell.name}: {cell.role} cell must plan an action, got "
+                    f"{'skip: ' + skips[cell.name].reason if cell.name in skips else 'noop'}"
+                )
+
+            if cell.name in skips:
+                expect: dict[str, object] = {
+                    "disposition": "skip",
+                    "reason": skips[cell.name].reason,
+                }
+            elif cell.name in actions:
+                action = actions[cell.name]
+                expect = {
+                    "disposition": "action",
+                    "operations": list(action.operations),
+                    "target_path": action.target_path,
+                }
+            else:
+                expect = {"disposition": "noop"}
+
+            detection: dict[str, object] | None = None
+            family: dict[str, object] | None = None
+            if cell.role == "family":
+                assert detected is not None
+                for member in cell.family_members:
+                    assert cell.data.decode(member) == cell.truth, (
+                        f"{cell.name}: {member} decode diverges from source text"
+                    )
+                assert cell.data.decode(detected.name) == cell.truth, (
+                    f"{cell.name}: detected {detected.name} decode diverges from source text"
+                )
+                family = {"expected_text": cell.truth, "members": list(cell.family_members)}
+            elif cell.role == "western":
+                assert detected is not None and confident, (
+                    f"{cell.name}: Western residual must be a confident verdict"
+                )
+                assert cell.data.decode(detected.name) != cell.truth, (
+                    f"{cell.name}: expected decode-inequivalence, but decode matched source"
+                )
+                detection = {
+                    "candidate": True,
+                    "confident": True,
+                    "decode_matches_source": False,
+                }
+            else:
+                detection = {"candidate": candidate, "confident": confident}
+
+            fixtures.append(
+                Fixture(
+                    name=cell.name,
+                    data=cell.data,
+                    anomaly=cell.anomaly,
+                    spec_refs=cell.spec_refs,
+                    expect=expect,
+                    subdir="encoding_floor",
+                    detection=detection,
+                    family=family,
+                )
+            )
+    return fixtures
+
+
 def _verify(fixtures: list[Fixture]) -> None:
     """Scan + plan the whole assembled corpus in a scratch dir and assert
     every fixture's sidecar expectation holds — before any real file is
@@ -412,15 +725,23 @@ def _verify(fixtures: list[Fixture]) -> None:
                 raise AssertionError(msg)
 
 
+def _write_fixtures(fixtures: list[Fixture]) -> None:
+    for fixture in fixtures:
+        target_dir = CORPUS_DIR / fixture.subdir if fixture.subdir else CORPUS_DIR
+        target_dir.mkdir(parents=True, exist_ok=True)
+        (target_dir / fixture.name).write_bytes(fixture.data)
+        sidecar_path = target_dir / f"{fixture.name}.expect.json"
+        sidecar_path.write_text(json.dumps(_sidecar(fixture), indent=2) + "\n", encoding="utf-8")
+        label = f"{fixture.subdir}/{fixture.name}" if fixture.subdir else fixture.name
+        print(f"wrote {label} ({len(fixture.data)} bytes) + sidecar")
+
+
 def main() -> None:
     fixtures = build_fixtures()
     _verify(fixtures)
-    CORPUS_DIR.mkdir(parents=True, exist_ok=True)
-    for fixture in fixtures:
-        (CORPUS_DIR / fixture.name).write_bytes(fixture.data)
-        sidecar_path = CORPUS_DIR / f"{fixture.name}.expect.json"
-        sidecar_path.write_text(json.dumps(_sidecar(fixture), indent=2) + "\n", encoding="utf-8")
-        print(f"wrote {fixture.name} ({len(fixture.data)} bytes) + sidecar")
+    floor_fixtures = _floor_fixtures()  # observes + self-verifies the floor matrix
+    _write_fixtures(fixtures)
+    _write_fixtures(floor_fixtures)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,16 @@
+{
+  "anomaly": "encoding-floor-clear-skip",
+  "spec_refs": [
+    "FR-007",
+    "adr-0009",
+    "OQ-015"
+  ],
+  "expect": {
+    "disposition": "skip",
+    "reason": "below-non-ascii-floor"
+  },
+  "detection": {
+    "candidate": true,
+    "confident": true
+  }
+}

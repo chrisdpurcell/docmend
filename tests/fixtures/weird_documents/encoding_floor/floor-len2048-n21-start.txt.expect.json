@@ -1,0 +1,21 @@
+{
+  "anomaly": "encoding-floor-boundary",
+  "spec_refs": [
+    "FR-007",
+    "adr-0009",
+    "OQ-015"
+  ],
+  "expect": {
+    "disposition": "action",
+    "operations": [
+      "reencode",
+      "ensure_final_newline",
+      "rename"
+    ],
+    "target_path": "floor-len2048-n21-start.md"
+  },
+  "detection": {
+    "candidate": true,
+    "confident": true
+  }
+}

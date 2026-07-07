@@ -2,7 +2,7 @@
 
 Python tool to normalize, fix, convert, manage, and maintain large libraries of text and markdown documents.
 
-> **Status:** core workflow (MS-1) implemented. The design is complete (see [`docs/specs/docmend.md`](docs/specs/docmend.md)); `docmend scan PATH` produces a structured, schema-validated inventory of a file or directory tree — read-only, with include/exclude filters — and the four run-artifact JSON Schemas are pinned in `src/docmend/schemas/`. The mutating pipeline commands (`plan`/`apply`/`verify`) land in later milestones — the tool cannot modify documents yet.
+> **Status:** domain logic (MS-2) implemented. The design is complete (see [`docs/specs/docmend.md`](docs/specs/docmend.md)); `docmend scan PATH` produces a structured, schema-validated inventory of a file or directory tree — read-only, with include/exclude filters — and the four run-artifact JSON Schemas are pinned in `src/docmend/schemas/`. `docmend plan` now turns that inventory into a reviewable plan of encoding/newline/whitespace transforms, renames, and risk-classified skips — still read-only, no writes. `apply`/`verify` land in later milestones — the tool cannot modify documents yet.
 
 ## Contributing / workflow
 

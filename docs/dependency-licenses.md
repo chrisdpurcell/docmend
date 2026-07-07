@@ -43,9 +43,9 @@ Spec §16 requires an OSS-license compatibility check "at MS-0 when dependencies
 
 ## Approved-but-not-yet-added runtime deps (§8.6; pre-cleared for their milestone)
 
-| Package            | License | Note                             |
-| ------------------ | ------- | -------------------------------- |
-| ruamel.yaml        | MIT     | Frontmatter work (OQ-009/OQ-022) |
+| Package     | License | Note                             |
+| ----------- | ------- | -------------------------------- |
+| ruamel.yaml | MIT     | Frontmatter work (OQ-009/OQ-022) |
 
 ## Dev group (never distributed — §8.6 dev table)
 

@@ -3,8 +3,9 @@
 IR-002 acceptance: PATH shorthand scans-then-plans under one run-ID; --inventory
 consumes an existing DR-001 artifact; exactly one of the two is required. Also
 covered: the DR-002 artifact default path, OQ-029 filter-flag replace semantics,
-and the exit-code taxonomy (1 = findings, 2 = input error) including the
---fail-on-low-confidence-encoding hardening (AW-003).
+the exit-code taxonomy (1 = findings, 2 = input error) including the
+--fail-on-low-confidence-encoding hardening (AW-003), and NFR-006's single-file
+PATH plan leg.
 """
 
 import json
@@ -141,3 +142,18 @@ class TestPlanCommand:
         assert result.exit_code == 0
         document = json.loads((tmp_path / "p.json").read_text())
         assert all(a["path"].endswith(".md") for a in document["actions"])
+
+    def test_single_file_path__first_class(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """NFR-006: a single file is a valid PATH with default config (plan leg)."""
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        make_corpus(corpus)
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["plan", str(corpus / "a.txt")])
+        assert result.exit_code == 0, result.output
+        plans = list((tmp_path / ".docmend").glob("docmend-*-plan.json"))
+        assert len(plans) == 1
+        document = json.loads(plans[0].read_text())
+        assert [action["path"] for action in document["actions"]] == ["a.txt"]

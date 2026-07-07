@@ -238,9 +238,11 @@ def plan(
 ) -> None:
     """Produce a reviewable DR-002 plan from an inventory (FR-002, IR-002).
 
-    Exit codes (§18.5): 0 clean; 1 findings (unreadable/changed-since-scan
+    Exit codes (§18.5): 0 clean; 1 findings (unreadable/changed-since-scan plan
     skips, collision under the fail policy, or encoding-gate skips under
-    --fail-on-low-confidence-encoding); 2 input errors (bad config, ERR-008).
+    --fail-on-low-confidence-encoding — plus, for the PATH shorthand, any
+    unreadable files its own scan step skipped, matching `scan`'s exit
+    behavior over the same tree); 2 input errors (bad config, ERR-008).
     """
     opts = _global_options(ctx)
     if (path is None) == (inventory_path is None):
@@ -295,6 +297,13 @@ def plan(
     )
 
     findings = reasons.get("unreadable", 0) + reasons.get("changed-since-scan", 0)
+    if path is not None:
+        # IR-002: the PATH shorthand's own scan step can skip unreadable files
+        # (ERR-007) that never reach the plan at all — they live in the
+        # inventory, not result.skips — so `plan PATH` must still count them
+        # here, or it would silently exit 0 over a tree `scan PATH` would
+        # have exited 1 on.
+        findings += inventory.totals.skipped_by_reason.unreadable
     if config.rename.on_collision == "fail":
         findings += reasons.get("collision", 0)
     if fail_on_low_confidence:

@@ -4,13 +4,17 @@ Fact-level tests build inventories via discovery.scan over recipe corpora
 (tests/corpus.py) so planning is exercised against real scan output.
 """
 
+import os
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
+
 from corpus import GENERATED_AT, RUN_ID, FileRecipe, materialize, seeded_faker
 from docmend.config import DocmendConfig, EncodingConfig, LimitsConfig, PathsConfig
 from docmend.discovery import scan
+from docmend.inventory import DetectedEncoding
 from docmend.plan import ArtifactRef, Plan
 from docmend.planning import build_plan
 
@@ -62,6 +66,30 @@ class TestFactGates:
         (tmp_path / "link.txt").symlink_to(tmp_path / "real.txt")
         plan = plan_over(tmp_path)
         assert {s.path: s.reason for s in plan.skips}["link.txt"] == "symlink"
+
+    def test_symlink_matching_plan_time_exclude__excluded_not_symlink(self, tmp_path: Path) -> None:
+        """A plan-time exclude covering a symlink relabels its skip reason.
+
+        Without this, every inventory symlink gets the generic "symlink"
+        reason even when it also matches an exclude added between scan and
+        plan — leaving the two skip paths (fact-gate ladder vs. symlink list)
+        disagreeing about why the same kind of filtered path is skipped.
+        """
+        (tmp_path / "real.txt").write_text("x\n")
+        (tmp_path / "link.txt").symlink_to(tmp_path / "real.txt")
+        inventory = scan(tmp_path, DocmendConfig(), run_id=RUN_ID, generated_at=GENERATED_AT)
+        narrowed = DocmendConfig(paths=PathsConfig(exclude=["link.txt"]))
+        plan = build_plan(
+            inventory,
+            narrowed,
+            run_id=RUN_ID,
+            generated_at=GENERATED_AT,
+            inventory_ref=INV_REF,
+            mint_id=fixed_ids(),
+        )
+        skip = {s.path: s for s in plan.skips}["link.txt"]
+        assert skip.reason == "excluded"
+        assert skip.detail == "matched a plan-time exclude pattern"
 
     def test_nul_bytes__skipped(self, tmp_path: Path) -> None:
         """EC-004 / FR-015: NUL-bearing files are risky, skipped with reason."""
@@ -133,7 +161,7 @@ class TestFactGates:
         )
         skip = {s.path: s for s in plan.skips}["excluded.txt"]
         assert skip.reason == "excluded"
-        assert skip.detail is None
+        assert skip.detail == "matched a plan-time exclude pattern"
 
     def test_binary_suspect__skipped(self, tmp_path: Path) -> None:
         """FR-007 gate 0: no encoding candidate at all -> binary-suspect, not a silent pass."""
@@ -282,6 +310,56 @@ class TestContentPass:
         )
         assert {s.path: s.reason for s in plan.skips}["moving.txt"] == "changed-since-scan"
 
+    def test_grown_file__changed_since_scan(self, tmp_path: Path) -> None:
+        """NFR-001: a size mismatch is caught before any read, on a file that grew after scan."""
+        (tmp_path / "growing.txt").write_bytes(b"short\r\n")
+        inventory = scan(tmp_path, DocmendConfig(), run_id=RUN_ID, generated_at=GENERATED_AT)
+        (tmp_path / "growing.txt").write_bytes(b"much longer content now\r\n" * 100)
+        plan = build_plan(
+            inventory,
+            DocmendConfig(),
+            run_id=RUN_ID,
+            generated_at=GENERATED_AT,
+            inventory_ref=INV_REF,
+            mint_id=fixed_ids(),
+        )
+        skip = {s.path: s for s in plan.skips}["growing.txt"]
+        assert skip.reason == "changed-since-scan"
+        assert "size" in (skip.detail or "")
+
+    def test_unknown_codec__decode_replacement_skip(self, tmp_path: Path) -> None:
+        """Theoretical LookupError guard: an unrecognized codec name is skipped like
+        any undecodable file, rather than propagating out of build_plan.
+
+        The doctored inventory record simulates a detector naming a codec
+        Python's registry doesn't have (never observed from charset-normalizer
+        in practice, hence exercising it here rather than via a real corpus
+        recipe).
+        """
+        (tmp_path / "plain.txt").write_bytes(b"plain ascii text here\n")
+        inventory = scan(tmp_path, DocmendConfig(), run_id=RUN_ID, generated_at=GENERATED_AT)
+        record = inventory.files[0]
+        doctored_encoding = record.encoding.model_copy(
+            update={
+                "detected": DetectedEncoding(
+                    name="bogus-codec", confidence=1.0, method="utf8-strict"
+                )
+            }
+        )
+        doctored_record = record.model_copy(update={"encoding": doctored_encoding})
+        doctored_inventory = inventory.model_copy(update={"files": [doctored_record]})
+        plan = build_plan(
+            doctored_inventory,
+            DocmendConfig(),
+            run_id=RUN_ID,
+            generated_at=GENERATED_AT,
+            inventory_ref=INV_REF,
+            mint_id=fixed_ids(),
+        )
+        skip = {s.path: s for s in plan.skips}["plain.txt"]
+        assert skip.reason == "decode-replacement"
+        assert "bogus-codec" in (skip.detail or "")
+
     def test_vanished_file__unreadable_skip(self, tmp_path: Path) -> None:
         """ERR-005 analog: deleted between scan and plan -> skip, batch continues."""
         (tmp_path / "gone.txt").write_bytes(b"here now\r\n")
@@ -298,6 +376,32 @@ class TestContentPass:
         )
         assert {s.path: s.reason for s in plan.skips}["gone.txt"] == "unreadable"
         assert any(a.path == "stays.txt" for a in plan.actions)
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="permission bits do not bind root")
+    def test_permission_revoked_after_scan__unreadable_skip(self, tmp_path: Path) -> None:
+        """ERR-005 analog, same-size case.
+
+        The stale-size fast-fail only catches size changes, so a file that
+        still matches its recorded size but lost read permission must still
+        be caught by the read_bytes() OSError branch, not silently mistaken
+        for a size-stable, readable file.
+        """
+        target = tmp_path / "locked.txt"
+        target.write_bytes(b"here now\r\n")
+        inventory = scan(tmp_path, DocmendConfig(), run_id=RUN_ID, generated_at=GENERATED_AT)
+        target.chmod(0)
+        try:
+            plan = build_plan(
+                inventory,
+                DocmendConfig(),
+                run_id=RUN_ID,
+                generated_at=GENERATED_AT,
+                inventory_ref=INV_REF,
+                mint_id=fixed_ids(),
+            )
+        finally:
+            target.chmod(0o644)
+        assert {s.path: s.reason for s in plan.skips}["locked.txt"] == "unreadable"
 
     def test_zero_byte__handled_mechanically(self, tmp_path: Path) -> None:
         """EC-009: rename + final-newline enforcement; never the shrink heuristic."""

@@ -58,24 +58,35 @@ def _fact_skip(
             path=path, reason="excluded", detail="not matched by plan-time include patterns"
         )
     if exclude.match_file(path):
-        return SkipDecision(path=path, reason="excluded", detail=None)
+        return SkipDecision(
+            path=path, reason="excluded", detail="matched a plan-time exclude pattern"
+        )
     if path in hard_linked:
         return SkipDecision(path=path, reason="hard-link-alias", detail=hard_linked[path])
-    if record.size_bytes > config.limits.max_file_size_mib * 1024 * 1024:
+    limit_bytes = config.limits.max_file_size_mib * 1024 * 1024
+    if record.size_bytes > limit_bytes:
         return SkipDecision(
             path=path,
             reason="oversize",
-            detail=f"{record.size_bytes} bytes > limits.max_file_size_mib {config.limits.max_file_size_mib}",
+            detail=(
+                f"{record.size_bytes} bytes > {config.limits.max_file_size_mib} MiB limit "
+                f"({limit_bytes} bytes)"
+            ),
         )
     # NUL bytes are legal UTF-8 (tests/corpus.py's "binaryish" recipe proves
-    # it), so a NUL-bearing file cannot be judged by the utf8_valid ladder
-    # below at all: Task 6's discovery gating skips encoding detection for
-    # NUL-bearing files (detected is always None for them), so running them
-    # through the confidence/floor gates below would misfire as
-    # binary-suspect. Instead every NUL-bearing file falls through here into
-    # `pending`, where the content pass does the byte-accurate nul-bytes vs
-    # utf16-suspect split (EC-004/EC-010) and, for BOM'd files, decodes
-    # normally since a BOM authoritatively claims the encoding.
+    # it), so this ladder deliberately never runs at all for a NUL-bearing
+    # file (the `not record.nul_bytes` guard below). That makes the ladder
+    # itself indifferent to `detected`'s value for NUL-bearing files — but
+    # for the record: discovery's legacy-detection gate (adr-0009) skips
+    # charset-normalizer specifically for NUL-bearing files, so `detected` is
+    # None only for the no-BOM, non-UTF-8 NUL files that would otherwise
+    # reach this branch. A BOM'd NUL file, or one that is still strictly
+    # UTF-8-valid (NUL is a legal code point), gets `detected` set from the
+    # deterministic rungs regardless of the NUL bytes. Every NUL-bearing file
+    # instead falls through here into `pending`, where the content pass does
+    # the byte-accurate nul-bytes vs utf16-suspect split (EC-004/EC-010) and,
+    # for BOM'd files, decodes normally since a BOM authoritatively claims the
+    # encoding.
     enc = record.encoding
     if not record.nul_bytes and enc.bom is None and not enc.utf8_valid:
         if not config.encoding.detect:
@@ -120,6 +131,21 @@ def _utf16_suspect(data: bytes) -> bool:
 
 def _read_verified(full: Path, record: FileRecord) -> bytes | SkipDecision:
     try:
+        current_size = full.stat().st_size
+    except OSError as exc:
+        return SkipDecision(path=record.path, reason="unreadable", detail=str(exc))
+    if current_size != record.size_bytes:
+        # NFR-001: fail fast on a size mismatch before reading — a file that
+        # grew after scan (e.g. still being written to) must never have its
+        # full, now-larger contents pulled into memory just to compute a hash
+        # that was always going to mismatch. Equal-size changes (same length,
+        # different bytes) still fall through to the read + hash check below.
+        return SkipDecision(
+            path=record.path,
+            reason="changed-since-scan",
+            detail=f"inventory size {record.size_bytes} bytes, now {current_size} bytes",
+        )
+    try:
         data = full.read_bytes()
     except OSError as exc:
         return SkipDecision(path=record.path, reason="unreadable", detail=str(exc))
@@ -152,10 +178,21 @@ def build_plan(
     }
 
     actions: list[PlanAction] = []
-    skips: list[SkipDecision] = [
-        SkipDecision(path=link.path, reason="symlink", detail=f"-> {link.target}")
-        for link in inventory.symlinks
-    ]
+    skips: list[SkipDecision] = []
+    for link in inventory.symlinks:
+        # A plan-time exclude added after the scan can cover a symlink the
+        # inventory already recorded; the more specific "excluded" reason
+        # (matching the fact-gate ladder's own exclude branch above) wins
+        # over the generic "symlink" reason so the two skip paths agree on
+        # why a filtered symlink is never planned for mutation.
+        if exclude.match_file(link.path):
+            skips.append(
+                SkipDecision(
+                    path=link.path, reason="excluded", detail="matched a plan-time exclude pattern"
+                )
+            )
+        else:
+            skips.append(SkipDecision(path=link.path, reason="symlink", detail=f"-> {link.target}"))
     pending: list[FileRecord] = []
     for record in inventory.files:
         decision = _fact_skip(record, hard_linked, config, include, exclude)
@@ -205,6 +242,21 @@ def build_plan(
                     path=record.path,
                     reason="decode-replacement",
                     detail=f"{decode_encoding}: undecodable byte at offset {exc.start}",
+                )
+            )
+            log.debug("planned skip", path=record.path, reason="decode-replacement")
+            continue
+        except LookupError:
+            # Theoretical: a detector could in principle name a codec Python's
+            # registry doesn't have (charset-normalizer's candidate names are
+            # not currently validated against `codecs`). Treated the same as
+            # an undecodable file rather than propagating — an unrecognized
+            # codec name is not this file's fault to abort the whole run over.
+            skips.append(
+                SkipDecision(
+                    path=record.path,
+                    reason="decode-replacement",
+                    detail=f"unknown codec {decode_encoding!r}",
                 )
             )
             log.debug("planned skip", path=record.path, reason="decode-replacement")

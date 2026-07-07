@@ -10,6 +10,7 @@ PATH plan leg.
 
 import json
 import logging
+import os
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -128,6 +129,29 @@ class TestPlanCommand:
         result = runner.invoke(app, ["plan", str(corpus), "--fail-on-low-confidence-encoding"])
         assert result.exit_code == 1
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="permission bits do not bind root")
+    def test_unreadable_file_in_scan_step__path_shorthand_exits_1(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§18.5: the PATH shorthand's own scan step surfaces unreadable findings too.
+
+        `scan corpus` over this same tree exits 1 (test_cli_scan.py's
+        equivalent); `plan corpus` must not silently exit 0 just because the
+        unreadable file lives in the inventory, not plan.skips.
+        """
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        make_corpus(corpus)
+        locked = corpus / "locked.txt"
+        locked.write_text("secret\n")
+        locked.chmod(0)
+        monkeypatch.chdir(tmp_path)
+        try:
+            result = runner.invoke(app, ["plan", str(corpus)])
+        finally:
+            locked.chmod(0o644)
+        assert result.exit_code == 1
+
     def test_filter_flags__replace_config_lists(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -141,7 +165,23 @@ class TestPlanCommand:
         )
         assert result.exit_code == 0
         document = json.loads((tmp_path / "p.json").read_text())
-        assert all(a["path"].endswith(".md") for a in document["actions"])
+        # b.md is a no-op (already clean) so it appears in neither actions nor
+        # skips (FR-017's plan half) — meaning the weaker check this replaces
+        # (every action ends in .md) passed vacuously over an empty list. The
+        # inventory the PATH shorthand itself wrote is the positive proof that
+        # --include replaced, not appended, paths.include: a.txt was never
+        # even discovered.
+        inventory_path = next((tmp_path / ".docmend").glob("docmend-*-inventory.json"))
+        inventory = json.loads(inventory_path.read_text())
+        assert [f["path"] for f in inventory["files"]] == ["b.md"]
+        assert document["actions"] == []
+        assert document["config"]["paths"]["include"] == ["*.md"]
+
+    def test_path_not_exists__exit_2(self, tmp_path: Path) -> None:
+        """§18.5: a PATH that doesn't exist is an input error, not a scan attempt."""
+        result = runner.invoke(app, ["plan", str(tmp_path / "nope")])
+        assert result.exit_code == 2
+        assert "no such file or directory" in result.output
 
     def test_single_file_path__first_class(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

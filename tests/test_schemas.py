@@ -14,6 +14,7 @@ Three layers of protection for the hand-authored schemas:
    reverse).
 """
 
+import typing
 import uuid
 from typing import Any, cast
 
@@ -29,7 +30,8 @@ from docmend.artifacts import (
 )
 from docmend.config import DocmendConfig
 from docmend.inventory import Inventory
-from docmend.plan import Plan
+from docmend.plan import Plan, PlanSkipReason
+from docmend.transform.dispatch import Operation
 
 RUN_ID = "run_20260706T000000Z_abc123"
 ACTION_ID = f"{RUN_ID}/a1"
@@ -74,6 +76,28 @@ class TestSchemaFiles:
         assert "pattern" in properties["schema_version"]
         required = cast("list[str]", schema["required"])
         assert {"schema", "schema_version", "run_id"} <= set(required)
+
+
+class TestEnumDriftGuard:
+    """adr-0005: the Python vocabularies and the plan schema's enums must not drift apart.
+
+    Operation and PlanSkipReason are each single-sourced in Python (dispatch.py,
+    plan.py) and hand-mirrored in plan.schema.json's $defs; nothing else keeps
+    the two in sync if a value is added or renamed on only one side.
+    """
+
+    def test_operation_vocabulary__matches_plan_schema_enum(self) -> None:
+        schema = load_schema("plan")
+        defs = cast("dict[str, dict[str, object]]", schema["$defs"])
+        schema_enum = set(cast("list[str]", defs["operation"]["enum"]))
+        assert set(typing.get_args(Operation.__value__)) == schema_enum
+
+    def test_plan_skip_reason_vocabulary__matches_plan_schema_enum(self) -> None:
+        schema = load_schema("plan")
+        defs = cast("dict[str, dict[str, object]]", schema["$defs"])
+        properties = cast("dict[str, dict[str, object]]", defs["skip_decision"]["properties"])
+        schema_enum = set(cast("list[str]", properties["reason"]["enum"]))
+        assert set(typing.get_args(PlanSkipReason.__value__)) == schema_enum
 
 
 def _minimal_plan() -> dict[str, object]:

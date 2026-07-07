@@ -1,11 +1,13 @@
 """Report artifact round-trip and schema conformance (DR-003, FR-018, IR-007)."""
 
+import json
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from docmend import artifacts
+from docmend.artifacts import ArtifactError
 from docmend.plan import ArtifactRef
 from docmend.report import ApplyOutcome, ErrorInfo, Report, ReportTotals
 
@@ -71,3 +73,39 @@ def test_report_totals_mismatch__rejected_by_writer(tmp_path: Path) -> None:
     )
     with pytest.raises(artifacts.ArtifactError):
         artifacts.write_report(bad, tmp_path / "report.json")
+
+
+class TestReadFailureModes:
+    """ERR-008 family: invalid artifacts refuse loudly, with the cause named (DR-003)."""
+
+    def test_missing_file(self, tmp_path: Path) -> None:
+        """Missing file raises ArtifactError with "cannot read" message."""
+        with pytest.raises(ArtifactError, match="cannot read"):
+            artifacts.read_report(tmp_path / "absent.json")
+
+    def test_not_json(self, tmp_path: Path) -> None:
+        """Invalid JSON raises ArtifactError with "not valid JSON" message."""
+        bad = tmp_path / "bad.json"
+        bad.write_text("{not json")
+        with pytest.raises(ArtifactError, match="not valid JSON"):
+            artifacts.read_report(bad)
+
+    def test_unknown_field_rejected(self, tmp_path: Path) -> None:
+        """adr-0005 strictness: additionalProperties:false rejects drift (DR-003)."""
+        out = tmp_path / "report.json"
+        artifacts.write_report(_report(), out)
+        document = json.loads(out.read_text(encoding="utf-8"))
+        document["surprise"] = True
+        out.write_text(json.dumps(document), encoding="utf-8")
+        with pytest.raises(ArtifactError, match="surprise"):
+            artifacts.read_report(out)
+
+    def test_wrong_schema_kind_rejected(self, tmp_path: Path) -> None:
+        """Wrong schema kind (e.g. docmend/plan) is rejected (DR-003)."""
+        out = tmp_path / "report.json"
+        artifacts.write_report(_report(), out)
+        document = json.loads(out.read_text(encoding="utf-8"))
+        document["schema"] = "docmend/plan"
+        out.write_text(json.dumps(document), encoding="utf-8")
+        with pytest.raises(ArtifactError, match="schema"):
+            artifacts.read_report(out)

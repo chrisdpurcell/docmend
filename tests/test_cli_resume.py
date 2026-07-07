@@ -288,3 +288,37 @@ class TestKillAndResume:
         assert "would-apply: 2" in result.output
         assert "already-applied 1" in result.output
         assert _hashes(corpus) == before
+
+
+def test_resume_reconciliation_failure__no_phantom_manifest_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #10 review: a resume whose only failures come from read-only
+    reconciliation (ERR-002) performs zero mutations, so no manifest file is
+    created — the console must not print a path to a nonexistent manifest."""
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    make_corpus(corpus)
+    plan_path = _make_plan(corpus)
+    result = runner.invoke(app, ["apply", str(plan_path), "--write", "--preserved-by", "external"])
+    assert result.exit_code == 0, result.output
+    run_id = _sole_manifest_run_id(tmp_path / ".docmend")
+    (corpus / "a.md").write_bytes(b"tampered after apply\n")
+
+    result = runner.invoke(
+        app,
+        [
+            "apply",
+            str(plan_path),
+            "--write",
+            "--preserved-by",
+            "external",
+            "--resume-run-id",
+            run_id,
+        ],
+    )
+    assert result.exit_code == 1, result.output
+    assert "failed: 1" in result.output
+    for line in result.output.splitlines():
+        if line.startswith("manifest: "):
+            assert Path(line.removeprefix("manifest: ")).exists(), line

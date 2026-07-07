@@ -14,13 +14,14 @@ This is the human-facing completion summary for docmend. Agents maintain it so t
 
 ## Current State
 
-- The tool can inventory, plan, modify, roll back, and verify: `scan`/`plan`/`apply`/`restore`/`verify` are all live. **MS-4 Unattended operation is in progress.**
-- Spec is `status: draft`, revision 0.17. Three open questions, all non-blocking (implementation proceeding on their recorded assumptions): OQ-034 (default artifact/log location — `./.docmend/`), OQ-035 (preservation CLI surface + risk tiers), OQ-036 (flock run-lock location/mechanism — its apply-vs-restore lock-key gap is now fixed). Owner sign-off wanted.
-- **MS-4 progress:** ✅ OQ-036 lock-key gap closed (manifest schema 1.2 `source_root` + restore lock rekey); ✅ `docmend verify` (FR-014/IR-004 — read-only UTF-8/LF content checks + manifest after-hash reconciliation, 0/1/2 exit taxonomy). Remaining: resume (FR-013), idempotency (FR-017), single-file verify journey (NFR-006), verify report/count reconciliation. Work sits on `dev`, 3 commits ahead of `main`, not yet in a PR.
+- The tool can inventory, plan, modify, roll back, resume, and verify: `scan`/`plan`/`apply`/`restore`/`verify` are all live, and an interrupted apply resumes via `apply --resume-run-id/--resume-manifest`. **MS-4 Unattended operation is complete; MS-5 Production readiness is in progress.**
+- Spec is `status: draft`, revision 0.19. Three open questions, all non-blocking (implementation proceeding on their recorded assumptions): OQ-034 (default artifact/log location — `./.docmend/`), OQ-035 (preservation CLI surface + risk tiers), OQ-036 (flock run-lock location/mechanism — its apply-vs-restore lock-key gap is now fixed). Owner sign-off wanted.
+- **MS-4 delivered (PR #10):** ✅ OQ-036 lock-key gap closed (manifest schema 1.2 `source_root` + restore lock rekey); ✅ `docmend verify` (FR-014/IR-004); ✅ resume (FR-013, adr-0006 reconciliation — already-applied skips, ERR-002 on external interference, kill-and-resume e2e); ✅ idempotency (FR-017, all three duplicate shapes); ✅ NFR-006 single-file scan→plan→apply→verify journey. Also in PR #10: the DR-005 frontmatter contract (`schemas/frontmatter.schema.json` 1.0 + ruamel.yaml codec) with verify validating frontmatter where present, and report↔manifest accounting — FR-014 and FR-016 (v1 scope) now Complete. MS-5 remaining: 100k scale test (NFR-001), §18.7 docs, release wiring (adr-0017) + v1.0.0.
 
 ## Recent Changes
 
-- [2026-07-07] MS-4 (in progress): `docmend verify` (content checks + manifest reconciliation) and the OQ-036 lock-key fix (manifest 1.2 `source_root`); spec rev 0.17; 545 tests.
+- [2026-07-07] MS-4 complete (PR #10): resume (`apply --resume-*`, FR-013/adr-0006), idempotency (FR-017), NFR-006 verify leg; spec rev 0.18; 561 tests.
+- [2026-07-07] MS-4: `docmend verify` (content checks + manifest reconciliation) and the OQ-036 lock-key fix (manifest 1.2 `source_root`); spec rev 0.17; 545 tests.
 - [2026-07-07] MS-3 merged (PR #9 → `main`); a housekeeping pass fixed a `collapse_blank_lines` phantom-blank-line edge case and cleared two false-positive PR review threads (PEP 758 3.14 syntax).
 - [2026-07-07] MS-3: writer layer (atomic writes, backups, manifest, safety gate) + apply/restore commands + flock run lock + restore drill; schemas 1.1; both MS-2 review Importants closed; spec rev 0.16.
 - [2026-07-06] MS-2: plan command + planning layer + pure transforms + charset-normalizer legacy detection + weird-document corpus; RQ-022 calibration checkpoint (floor stays 20); spec rev 0.15.

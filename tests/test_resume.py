@@ -284,3 +284,30 @@ def test_resume_dry_run__previews_remainder_writes_nothing(
     assert not (tmp_path / "resume-manifest.jsonl").exists()
     counts = {(o.status, o.skip_reason) for o in report.outcomes}
     assert counts == {("skipped", "already-applied"), ("would_apply", None)}
+
+
+def test_resume_stale_duplicate_record_out_of_order__newest_wins(tmp_path: Path) -> None:
+    """PR #10 review: an apply→restore→apply chain records one action as
+    applied twice; resume must reconcile against the NEWEST record even when
+    the operator passes the manifests out of order — otherwise the stale
+    record's after-hash raises a spurious ERR-002."""
+    root = tmp_path / "root"
+    materialize(root, RECIPES, seeded_faker())
+    config = DocmendConfig()
+    plan = _plan_for(root, config)
+    _execute(plan, config, tmp_path / "manifest.jsonl")
+    records = read_manifest(tmp_path / "manifest.jsonl")
+    stale = records[0].model_copy(
+        update={"after_sha256": "sha256:" + "f" * 64, "recorded_at": "2020-01-01T00:00:00+00:00"}
+    )
+
+    report = _execute(
+        plan,
+        config,
+        tmp_path / "resume-manifest.jsonl",
+        run_id=RESUME_RUN_ID,
+        resume_records=[*records, stale][::-1],  # stale record deliberately first
+    )
+
+    outcome = next(o for o in report.outcomes if o.action_id == records[0].action_id)
+    assert (outcome.status, outcome.skip_reason) == ("skipped", "already-applied")

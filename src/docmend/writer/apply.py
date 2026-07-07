@@ -434,10 +434,13 @@ def execute_plan(
     exclude = PathSpec.from_lines(GitIgnoreSpecPattern, config.paths.exclude)
 
     # FR-013 (adr-0006): actions a prior run's manifest records as applied are
-    # reconciled read-only instead of executed; latest record per action wins
-    # (a multi-resume chain may record one action's retry after a failure).
+    # reconciled read-only instead of executed; the LATEST applied record per
+    # action wins (an apply→restore→apply chain can record one action twice).
+    # Sorted by (recorded_at, seq) rather than caller order so a multi-resume
+    # chain passed out of flag order cannot let a stale record win and raise a
+    # spurious ERR-002 (PR #10 review).
     completed: dict[str, ManifestRecord] = {}
-    for record in resume_records or []:
+    for record in sorted(resume_records or [], key=lambda r: (r.recorded_at, r.seq)):
         if record.result == "applied":
             completed[record.action_id] = record
 

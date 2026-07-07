@@ -6,14 +6,14 @@ This is the human-facing completion summary for docmend. Agents maintain it so t
 
 - **v1.0.0 released** (2026-07-07): signed tag `v1.0.0`, GitHub Release with sdist + wheel, published by the tag-triggered release workflow. The full milestone ladder MS-0..MS-5 (spec §19) shipped across PRs #5–#11; per-milestone detail lives in `docs/handoff/sessions/2026-07.md` and the spec's revision history.
 - The complete v1 pipeline is live: `scan` (read-only inventory), `plan` (reviewable transform plan), `apply` (dry-run default, gated writes, atomic mutation, reversible manifest, `--resume-*` continuation), `restore` (byte-identical undo), `verify` (content + frontmatter + manifest/report reconciliation). Idempotent re-runs; 100k-file scale-tested (477 MiB peak); per-file watchdog.
-- Governance: four Project Standards adopted (`@v4`), spec SPEC-VHHB at rev 0.20 with a fully Complete §17.3 traceability matrix, ADRs 0001–0017, protected `main` with five required CI checks + dependency-review, Dependabot version updates + vulnerability alerts + automated security fixes enabled.
+- Governance: four Project Standards adopted (`@v4`), spec SPEC-VHHB **approved** (rev 0.23) with a fully Complete §17.3 traceability matrix, ADRs 0001–0017, protected `main` with five required CI checks + dependency-review, Dependabot version updates + vulnerability alerts + automated security fixes enabled.
 
 ## Current State
 
 - **Post-release maintenance mode.** `dev` → PR → `main` continues for bug fixes and post-v1 features; the release path is tag-triggered (`release.yml`).
 - **The next substantive step is the owner's**: the §18.4 staged real-library rollout (scan → plan review → filtered apply → widen) and weird-corpus expansion from real scan findings (adr-0015 anonymization procedure). Tracked in `TODO.md`.
 - Owner sign-off received (2026-07-07): OQ-034..036 resolved as implemented (RQ-034..036); DEV-001/DEV-002 approved. The decision backlog is empty.
-- Spec remains `status: draft` — moving it to `approved` (which makes it change-controlled) is an owner decision now that v1 shipped.
+- Spec is **`status: approved`** (owner, 2026-07-07, rev 0.23) — now change-controlled: edits need a revision row; scope changes need owner re-approval.
 - 598 tests + an opt-in 100k scale test (`DOCMEND_SCALE=1`), 97% coverage.
 
 ## Recent Changes

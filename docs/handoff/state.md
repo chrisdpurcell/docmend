@@ -20,5 +20,5 @@
 
 ## Pointers
 
-- Spec: `docs/specs/docmend.md` (SPEC-VHHB, draft, v0.20)
+- Spec: `docs/specs/docmend.md` (SPEC-VHHB, **approved**, v0.23 — change-controlled)
 - Decisions: `docs/resolved-questions.md` (RQ-001..033) · open: `docs/open-questions.md` (OQ-034..036) · ADRs: `docs/adr/` (0001–0017 + backlog)

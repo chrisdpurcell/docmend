@@ -19,6 +19,7 @@ This is the human-facing completion summary for docmend. Agents maintain it so t
 
 ## Recent Changes
 
+- [2026-07-07] MS-3: writer layer (atomic writes, backups, manifest, safety gate) + apply/restore commands + flock run lock + restore drill; schemas 1.1; both MS-2 review Importants closed; spec rev 0.16; PR #9.
 - [2026-07-06] MS-2: plan command + planning layer + pure transforms + charset-normalizer legacy detection + weird-document corpus; RQ-022 calibration checkpoint (floor stays 20); spec rev 0.15.
 - [2026-07-06] MS-1: scan command + discovery layer + pinned artifact schemas; new OQ-034; dependency-review purl exemption for rfc3987-syntax (false GPL detection, verified MIT).
 - [2026-07-06] MS-0: CLI entry point, strict config, logging framework, purity enforcement; dependency licenses recorded.

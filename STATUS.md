@@ -13,9 +13,9 @@ This is the human-facing completion summary for docmend. Agents maintain it so t
 
 ## Current State
 
-- The tool can inventory and plan but not yet modify: `scan`/`plan` are live; `apply`/`verify`/`restore` land in MS-3/MS-4 per the binding §19 milestone ladder.
-- Spec is `status: draft`, revision 0.15. One open question: OQ-034 (default artifact/log location — non-blocking, implementation proceeding on the `./.docmend/` assumption; owner sign-off wanted by MS-3).
-- Next milestone: **MS-3 User and admin experience** — writer layer (atomic writes, backups, manifest, collision policy, safety gate; FR-003–FR-006/FR-011/NFR-002), `apply` with dry-run default and readable reports, and the restore-from-manifest drill.
+- The tool can inventory, plan, modify, and roll back: `scan`/`plan`/`apply`/`restore` are live; only `verify` remains (MS-4) per the binding §19 milestone ladder.
+- Spec is `status: draft`, revision 0.16. Three open questions, all non-blocking (implementation proceeding on their recorded assumptions): OQ-034 (default artifact/log location — `./.docmend/`), OQ-035 (preservation CLI surface + risk tiers), OQ-036 (flock run-lock location + the documented apply-vs-restore lock-key gap). Owner sign-off wanted by MS-4.
+- Next milestone: **MS-4 Unattended operation** — the resume model (FR-013, adr-0006 reconciliation over the landed seq/fsync/AOF manifest), `verify` (FR-014), idempotency (FR-017), and stale-plan tests. First technical input: manifest schema 1.2 `source_root` field + restore lock rekey (OQ-036 gap).
 
 ## Recent Changes
 

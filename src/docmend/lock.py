@@ -98,6 +98,10 @@ def _read_holder(fd: int) -> str:
     try:
         os.lseek(fd, 0, os.SEEK_SET)
         existing: dict[str, object] = json.loads(os.read(fd, 4096).decode("utf-8"))
+    # PEP 758 (Python 3.14): an unparenthesized multi-type except reads as
+    # `except (OSError, ValueError)` — not the Python 2 `except OSError as ValueError`.
+    # OSError covers the read; ValueError (and its UnicodeDecodeError subclass) covers
+    # a corrupt/non-UTF-8 holder file. Kept unparenthesized deliberately; pre-3.14 reviewers flag it.
     except OSError, ValueError:
         return ""
     return (

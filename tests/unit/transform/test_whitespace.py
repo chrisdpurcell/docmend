@@ -90,6 +90,14 @@ class TestCollapseBlankLines:
         # peel would otherwise turn into a spurious "\n".
         assert collapse_blank_lines("", 3) == ""
 
+    def test_all_blank_with_trailing_newline__zero_max_empties(self) -> None:
+        # Regression (Hypothesis counterexample, 2026-07-07): an all-blank input
+        # with a trailing newline under max 0 must collapse to "", not a phantom
+        # "\n". The trailing-newline peel/reattach must not resurrect a dropped run.
+        assert collapse_blank_lines("\n", 0) == ""
+        assert collapse_blank_lines("\n\n", 0) == ""
+        assert collapse_blank_lines("\t\n", 0) == ""
+
     def test_leading_and_trailing_runs__collapsed(self) -> None:
         assert collapse_blank_lines("\n\n\na\n\n\n", 1) == "\na\n\n"
         # leading: 3 blank lines -> 1; trailing: text ends with newline, so the

@@ -329,6 +329,9 @@ def _execute_action(
                         atomic_write_bytes(target, target_bytes)
                     else:
                         target.unlink()
+                # PEP 758 (Python 3.14): unparenthesized multi-type except reads as
+                # `except (WriteError, OSError)`. Kept unparenthesized deliberately;
+                # pre-3.14 reviewers misread it as the Python 2 bind form.
                 except WriteError, OSError:
                     log.error(
                         "apply residue: target published, source not removed, rollback failed",

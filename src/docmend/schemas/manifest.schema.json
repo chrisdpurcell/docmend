@@ -61,10 +61,13 @@
 		},
 		"before_sha256": { "$ref": "#/$defs/sha256" },
 		"after_sha256": {
-			"description": "Hash of the file as written; equals before_sha256 for a pure rename. Null when result is 'failed' (the original is intact, spec 10.4).",
+			"description": "Hash of the file as written; equals before_sha256 for a pure rename. Null when result is 'failed' (the original is intact, spec 10.4). For result 'intent' (1.3) this is the EXPECTED output hash, recorded before the mutation.",
 			"oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
 		},
-		"result": { "enum": ["applied", "failed"] },
+		"result": {
+			"description": "1.3: 'intent' is the write-ahead record appended before the first mutation of a multi-step action (rename_and_rewrite); a dangling intent (no later applied/failed record for its action_id) is resume's interruption evidence. Restore replays and verify reconciles only 'applied' records.",
+			"enum": ["applied", "failed", "intent"]
+		},
 		"error": {
 			"oneOf": [
 				{ "type": "null" },

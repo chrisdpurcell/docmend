@@ -17,4 +17,4 @@ Ported from `hw-radar`; the decision record is [`../adr/adr-0017-branch-and-ci-c
 
 **Dependabot** (`.github/dependabot.yml`): weekly pip + github-actions, 7-day cooldown, grouped.
 
-**Release: live (`release.yml`, adr-0017, wired at MS-5 as planned).** Signed `vX.Y.Z` tag on `main` → `uv build` (sdist + wheel) → wheel smoke-test → GitHub Release with artifacts attached. No PyPI in v1. First release: `v1.0.0`, 2026-07-07. **Repo security posture:** Dependabot vulnerability alerts + automated security fixes enabled (post-v1.0.0 hygiene pass, 2026-07-07).
+**Release: live (`release.yml`, adr-0017, wired at MS-5 as planned).** Signed `vX.Y.Z` tag on `main` → `uv build` (sdist + wheel) → wheel smoke-test → GitHub Release with artifacts attached. No PyPI in v1. Releases: `v1.0.0` (2026-07-07, first), `v1.0.1` (2026-07-07, issue #15 fix — latest). **Repo security posture:** Dependabot vulnerability alerts + automated security fixes enabled (post-v1.0.0 hygiene pass, 2026-07-07).

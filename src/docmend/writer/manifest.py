@@ -29,7 +29,7 @@ from docmend.plan import ActionId, DocmendId
 from docmend.report import ErrorInfo
 from docmend.writer.atomic import fsync_dir
 
-MANIFEST_SCHEMA_VERSION = "1.2"
+MANIFEST_SCHEMA_VERSION = "1.3"
 
 type ManifestOperation = Literal["rename", "rewrite", "rename_and_rewrite"]
 
@@ -56,7 +56,13 @@ class ManifestRecord(BaseModel):
     backup_path: str | None
     before_sha256: Sha256
     after_sha256: Sha256 | None
-    result: Literal["applied", "failed"]
+    # 1.3: "intent" is the write-ahead record appended BEFORE the first mutation
+    # of a multi-step action (rename_and_rewrite); after_sha256 then holds the
+    # EXPECTED output hash. A dangling intent (no later applied/failed record
+    # for the action) is resume's evidence that a kill landed inside the
+    # publish→unlink→record window. Restore and verify replay/reconcile only
+    # result=="applied" records, so intents are inert to them.
+    result: Literal["applied", "failed", "intent"]
     error: ErrorInfo | None
     overwritten_sha256: Sha256 | None = None
     overwritten_backup_path: str | None = None

@@ -488,6 +488,49 @@ class TestCollisions:
         assert actions["a.TXT"].target_path == "a.md"
         assert skips["a.txt"].reason == "collision"
 
+    def test_case_variant_sources__overwrite_policy_never_merges_same_run_targets(
+        self, tmp_path: Path
+    ) -> None:
+        """A claimed_targets hit is a plan-internal conflict, not an FR-011 collision.
+
+        `on_collision = "overwrite"` licenses clobbering a *pre-existing* target
+        (AW-002). It must not license two actions in the same run planning the
+        same target — that would make the second apply silently destroy the
+        first apply's output, violating G-005.
+        """
+        (tmp_path / "a.TXT").write_bytes(b"one\r\n")
+        (tmp_path / "a.txt").write_bytes(b"two\r\n")
+        from docmend.config import RenameConfig
+
+        config = DocmendConfig(
+            paths=PathsConfig(include=["**/*.txt", "**/*.TXT"]),
+            rename=RenameConfig(on_collision="overwrite"),
+        )
+        plan = plan_over(tmp_path, config)
+        actions = {a.path: a for a in plan.actions}
+        skips = {s.path: s for s in plan.skips}
+        assert len(actions) == 1 and len(skips) == 1
+        assert actions["a.TXT"].target_path == "a.md"
+        assert skips["a.txt"].reason == "collision"
+        assert "this run" in (skips["a.txt"].detail or "")
+
+    def test_case_variant_sources__fail_policy_second_claims_collision(
+        self, tmp_path: Path
+    ) -> None:
+        """Under `fail` the same-run collider is a plan skip (the CLI turns the
+        collision count into exit 1); the plan artifact itself matches skip."""
+        (tmp_path / "a.TXT").write_bytes(b"one\r\n")
+        (tmp_path / "a.txt").write_bytes(b"two\r\n")
+        from docmend.config import RenameConfig
+
+        config = DocmendConfig(
+            paths=PathsConfig(include=["**/*.txt", "**/*.TXT"]),
+            rename=RenameConfig(on_collision="fail"),
+        )
+        plan = plan_over(tmp_path, config)
+        assert len(plan.actions) == 1
+        assert {s.path: s.reason for s in plan.skips} == {"a.txt": "collision"}
+
     def test_action_ids__sequential_and_run_scoped(self, tmp_path: Path) -> None:
         """DR-002: per-action ID correlated with the run-ID."""
         (tmp_path / "a.txt").write_bytes(b"x\r\n")

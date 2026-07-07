@@ -6,6 +6,7 @@ Complete an apply run that was killed mid-batch — crash, Ctrl-C, power loss �
 
 - **No partial files.** Writes are atomic (temp file + fsync + rename), so every document is either fully converted or untouched.
 - **A manifest that is complete up to the kill.** One record is fsync'd per mutation as it happens. At worst the final line is torn (the crash hit mid-append); the reader drops exactly that torn tail and keeps everything before it.
+- **A rename-and-rewrite killed mid-step leaves an `intent` line.** That action mutates in two steps (publish the converted target, remove the source), so apply records a write-ahead intent — the expected output hash — before the first step. If the manifest ends with an intent that has no final record, the kill landed inside that window; resume uses the intent to finish or adopt the action safely (see step 4).
 - The plan file is untouched — it is the immutable statement of intent the resume reconciles against.
 
 ## 1. Find the interrupted run's ID
@@ -51,7 +52,8 @@ A manifest recorded against a different tree is refused (exit 2) — that is a w
 | `already-applied` skip | The prior manifest records this action as applied and the live output still matches its recorded hash. Not a finding — a fully resumed clean run exits 0. | None. |
 | `applied` | Work the interrupted run never reached, now done. | None. |
 | `stale-hash` or `unreadable` skip | Usually the **lost-trailing-record case**: the mutation completed but the crash tore its manifest line, so resume re-checked the file and found it already converted (or, for a rename, gone from its source path). Safe — nothing was mutated twice. | Inspect the file; it is normally fine. If tool backups were on, the pre-mutation copy still exists under `<backup_root>/<run-id>/<relative-path>` even though the manifest lost the pointer to it. |
-| `failed` ERR-002 | The manifest says applied, but the output has since been **changed or deleted by something else**. Resume surfaces external interference rather than proceeding past it. | Investigate what touched the file; restore it from backup or re-plan just that file. |
+| `applied` from a **dangling intent** | The kill landed inside a rename-and-rewrite's two-step window. Resume checked the intent's expected hash against the live target and either finished the step that was pending (removing the source) or adopted the already-finished mutation, recording the applied line the interrupted run never wrote. | None — the resume manifest now carries the action's restore record. |
+| `failed` ERR-002 | The manifest says applied (or an intent was recorded), but the file state matches **neither the expected output nor the pre-action content** — something else changed or deleted it. Resume surfaces external interference rather than proceeding past it. | Investigate what touched the file; restore it from backup or re-plan just that file. |
 
 The resume attempt writes **its own manifest** (new run ID). The attempts' manifests together cover each mutation exactly once — to undo the whole run, restore each manifest newest-first (see `restore-from-manifest.md`).
 

@@ -208,7 +208,9 @@ def test_write_rename_and_rewrite__source_survives_failure(
     assert (root / "legacy.txt").read_bytes() == original_bytes
 
     records = read_manifest(tmp_path / "manifest.jsonl")
-    assert records[0].result == "failed"
+    # 1.3: the write-ahead intent precedes the mutation attempt; the failure
+    # closes it, so this dangling-free pair is exactly what resume expects.
+    assert [r.result for r in records] == ["intent", "failed"]
 
 
 def test_stale_hash__skipped_batch_continues(tmp_path: Path) -> None:
@@ -602,7 +604,7 @@ def test_rename_and_rewrite_unlink_failure__publish_rolled_back(
     assert (root_a / "legacy.txt").read_bytes() == original_bytes_a
     assert not (root_a / "legacy.md").exists()
     records_a = read_manifest((tmp_path / "a-run") / "manifest.jsonl")
-    assert records_a[0].result == "failed"
+    assert [r.result for r in records_a] == ["intent", "failed"]
     monkeypatch.setattr(Path, "unlink", original_unlink)
 
     # Sub-case (b): live collision under overwrite policy — the clobbered

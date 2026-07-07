@@ -105,6 +105,20 @@ def test_reconcile_report_mismatch__both_directions_found() -> None:
     }
 
 
+def test_reconcile_ignores_intent_records() -> None:
+    """A 1.3 intent record is a write-ahead marker, not an applied output:
+    reconcile_manifest must not hash-check its target (which may not exist),
+    and reconcile_report must not count it toward applied accounting — a
+    manifest whose intent is closed by an applied record reconciles clean."""
+    a1 = f"{RUN_ID}/a1"
+    intent = _applied_record(a1, 1).model_copy(
+        update={"result": "intent", "target_path": "/nonexistent/never-published.md"}
+    )
+    assert reconcile_manifest([intent]) == []
+    findings = reconcile_report(_report([_applied_outcome(a1)]), [intent, _applied_record(a1, 2)])
+    assert findings == []
+
+
 def test_reconcile_report_duplicate_applied_record__found() -> None:
     """A duplicate applied record for one action would slip past pure set
     comparison; it must surface explicitly."""

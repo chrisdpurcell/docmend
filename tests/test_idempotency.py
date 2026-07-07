@@ -122,7 +122,8 @@ def test_double_apply_with_resume__no_op_exit_0(
     assert "applied: 0" in result.output
     assert "already-applied 2" in result.output
     assert _hashes(corpus) == before
-    assert len(read_manifest(tmp_path / ".docmend" / f"docmend-{run_id}-manifest.jsonl")) == 2
+    records = read_manifest(tmp_path / ".docmend" / f"docmend-{run_id}-manifest.jsonl")
+    assert sum(1 for r in records if r.result == "applied") == 2  # no re-apply records
 
 
 def test_replan_over_converted_corpus__zero_actions_apply_no_op(

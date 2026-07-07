@@ -20,7 +20,10 @@ jobs:
 
       # setup-uv reads .python-version itself; it has no python-version-file
       # input (the v1.0.0 run warned on and ignored one).
-      - uses: astral-sh/setup-uv@v8.2.0
+      # SHA-pinned like check.yml: this job publishes artifacts with
+      # `contents: write`, so it must be at least as supply-chain hardened
+      # as the check job (first-party actions/* stay on tags, same as there).
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
 
       - name: Build sdist + wheel
         run: uv build

@@ -28,15 +28,15 @@
 These interpret the spec where it left the operational definition to the implementer. Each cites its basis. Decisions 1–2 are genuinely new surface, so they are ALSO filed as OQ-035/OQ-036 rows (spec §21 + `docs/open-questions.md`) per Appendix B — proposed assumptions, non-blocking, owner sign-off wanted by MS-4. If any decision turns out wrong during execution, stop and record an OQ-/DEV- row instead of guessing.
 
 1. **Preservation flags and risk tiers (→ OQ-035).** FR-005 names three byte-preserving strategies but no CLI surface for two of them. Locked: `--backup-dir PATH` (or snapshot `write.backup_dir`) activates tool-written backups; `--preserved-by {git,external}` _declares_ an external byte-preserving strategy (an operator assertion — docmend stays preservation-agnostic per adr-0004); `--allow-no-backup` is the FR-005 low-risk opt-in, valid **only when the plan contains exactly one action** (the spec's "low-risk single-file operation"). Risk tiers: an action is a _content rewrite_ iff any operation ≠ `rename`; a rename-only run under `skip`/`fail` collision policy needs no byte-preserving strategy (the manifest mechanically undoes a pure path move — nothing's bytes change); content rewrites require an active strategy or the single-action opt-in. Under the `overwrite` policy, clobbering an existing target destroys _that file's_ bytes (G-002), so any run that would actually overwrite requires an active byte-preserving strategy, and when tool backups are enabled the writer backs up the clobbered target too (manifest 1.1 fields `overwritten_sha256`/`overwritten_backup_path`).
-2. **Run-lock location and liveness (→ OQ-036).** OQ-027 mandates the lock but not its home. Locked: `$XDG_STATE_HOME/docmend/locks/<sha256-of-resolved-source-root>.json` (default `~/.local/state/...`) — keyed to the _target_, so two invocations from different CWDs contend correctly, and the library tree itself stays untouched (plan remains write-free over the library, §3.1). Created `O_CREAT|O_EXCL` with holder JSON (`run_id`, `pid`, `command`, `started_at`); a dead-PID or unparseable holder is stale and is atomically re-taken; a live holder refuses with exit 3 (AW-005). `plan`, `apply`, and `restore` all acquire it (restore mutates the same tree; commonpath of its manifest's original paths is the key).
+2. **Run-lock location and mechanism (→ OQ-036).** OQ-027 mandates the lock but not its home. Locked: `flock(2)` on `$XDG_STATE_HOME/docmend/locks/<sha256-of-resolved-source-root>.lock` (default `~/.local/state/...`) — keyed to the _target_, so two invocations from different CWDs contend correctly, and the library tree itself stays untouched (plan remains write-free over the library, §3.1). flock, not `O_EXCL`-create-plus-unlink (codex CR-004): the kernel owns the lock, it vanishes with the holding process (crash included), so there is no stale-PID detection to get wrong and no unlink-by-name step that could remove a competitor's freshly acquired lock. Holder JSON (`run_id`, `pid`, `command`, `started_at`) is written into the file purely for the refusal message; a live holder refuses with exit 3 (AW-005). `plan`, `apply`, and `restore` all acquire it (restore mutates the same tree; commonpath of its manifest's original paths is the key). Single-machine semantics by design (A-001; flock over NFS out of scope).
 3. **The plan snapshot is apply's config.** Apply takes **no** `--config`: transforms, filters, collision policy, and encoding facts come from `plan.config` (that is the point of the snapshot, DR-002/C.4); only `write.*` concerns may be overridden by apply-time flags (`--backup-dir`). Plan schema 1.1 adds **optional** `source_root` (MINOR-clean: optional field) recorded from the inventory; apply refuses a plan without it (ERR-006, exit 2, "regenerate the plan") — required-field promotion is deferred to a future MAJOR.
 4. **Apply recomputes and cross-checks.** For each action apply re-reads bytes, re-verifies `source_sha256` (mismatch → skipped `stale-hash`, ERR-002, exit 1 at completion, batch continues — AW-004), re-runs decode + `apply_text_transforms` from the snapshot, and requires the recomputed operation list to equal the plan's recorded one (divergence → failed ERR-006 — defensive; hash equality makes it unreachable). The EC-005 shrink invariant is re-checked at apply ("Planning flags it; apply skips it").
 5. **FR-012 at apply = snapshot-filter enforcement.** Apply re-checks each action's path against the snapshot's include/exclude and skips non-matching actions as `excluded` — identical selection behavior across scan/plan/apply without new flags (only a hand-edited plan can trip it).
 6. **Mutation mechanics.** Rewrite-in-place: temp file in the same directory + fsync + `os.replace` + parent-dir fsync, source mode preserved (D-004). Rename (no clobber): `os.link(src, dst)` then `os.unlink(src)` — atomic, `EEXIST` on collision race (a crash between link and unlink leaves both names and loses nothing). Rename+rewrite: temp beside the _target_, publish (link for no-clobber, `os.replace` under overwrite), then unlink the source — the original survives until the new file is durable. v1 renames change suffix only, so source and target always share a directory/device.
-7. **Manifest semantics.** Records carry **absolute** paths (restore has no PATH argument, IR-008 — the manifest must locate files standalone; artifacts are confidential-local, §13.4). One fsync'd record per mutation, written immediately **after** the mutation (adr-0006: a crash loses at most the last record; resume reconciles by hash at MS-4). `seq` starts at 1 per run. Reader applies the AOF rule: tolerate only a torn **trailing** line; hard-abort (ERR-008/exit 2) on any interior parse or schema failure. `operation` mapping: rename-only → `rename`; content-only → `rewrite`; both → `rename_and_rewrite`.
+7. **Manifest semantics.** Records carry **absolute** paths — including `backup_path`/`overwritten_backup_path`: the CLI resolves `backup_root` once at options-normalization time, so a relative `--backup-dir` can never produce cwd-dependent manifest entries (codex CR-005; restore has no PATH argument, IR-008 — the manifest must locate files standalone; artifacts are confidential-local, §13.4). One fsync'd record per mutation, written immediately **after** the mutation (adr-0006: a crash loses at most the last record; resume reconciles by hash at MS-4). `seq` starts at 1 per run. Reader applies the AOF rule: tolerate only a torn **trailing** line; hard-abort (ERR-008/exit 2) on any interior parse or schema failure. `operation` mapping: rename-only → `rename`; content-only → `rewrite`; both → `rename_and_rewrite`.
 8. **Gate refusal still leaves an audit trail.** On exit 3 the run writes a schema-valid report with empty outcomes plus the refusal reasons in the log/stderr (§8.5: no audit-trail-free runs); the library is untouched.
 9. **Report skip vocabulary** (report schema's `skip_reason` is a free string; keep it closed internally): `stale-hash` (ERR-002), `unreadable` (ERR-005), `collision` (AW-002), `shrink-invariant` (EC-005), `excluded` (decision 5), `containment` (a resolved path escaping `source_root` at execution time — symlinked-parent defense, §13.5). `failed` outcomes carry `error.class` ∈ {ERR-003 write, ERR-004 backup, ERR-006 plan-inconsistency}.
-10. **Restore conservatism (IR-008).** Only `result == "applied"` records replay, LIFO by `seq`. Before touching anything, restore verifies the live file still hashes to the record's `after_sha256` (changed since apply → skipped `modified-since-apply`, exit 1 — never clobber newer edits) and the backup hashes to `before_sha256` (mismatch → failed ERR-004). A record with `backup_path: null` (git/external/opt-in runs) is skipped `no-backup` — the user's own preservation strategy is the recovery path. Restore is itself mutation: it takes the lock, dry-runs by default, honors `--write`, and appends its own manifest records (inverse operations) to its run's manifest.
+10. **Restore conservatism (IR-008): preflight-then-mutate.** Only `result == "applied"` records replay, LIFO by `seq`. **Every** prerequisite is verified before **any** mutation of a record — live file still hashes to `after_sha256` (changed since apply → skipped `modified-since-apply`, exit 1 — never clobber newer edits), source backup hashes to `before_sha256`, the overwritten-target backup (when recorded) reads and hashes to `overwritten_sha256`, and the destination is collision-free (codex CR-003: a restore that mutates and then discovers a bad recovery input has destroyed state in the disaster-recovery path itself — failed ERR-004 must leave both live files byte-identical). A record with `backup_path: null` (git/external/opt-in runs) is skipped `no-backup` — the user's own preservation strategy is the recovery path — and an overwrite record whose `overwritten_backup_path` is null (declared external preservation) is skipped whole for the same reason: restoring only docmend's half would report success while the clobbered file stays missing (codex CR-NEW-003). **Failure mode is superset-by-design:** a restore that fails mid-mutation (ERR-003) never deletes anything — the reinstated original and the applied target can coexist; re-running restore reports the leftover as a `collision` skip and the operator clears it using the logged paths. This is the explicit supported recovery mode, asserted by test. Restore is itself mutation: it takes the lock, dry-runs by default, honors `--write`, and appends its own manifest records (inverse operations) to its run's manifest.
 11. **Detection provenance fallback (MS-2 review Important #1).** Inventory schema 1.1 records `scan_config.encoding_detect` (bool) and `scan_config.detector` (`"charset-normalizer <version>"` or null). When a plan runs over an inventory whose scan had detection **off**, a no-BOM/non-UTF-8/`detected: null` file skips as `low-confidence-encoding` with detail "encoding detection was not run at scan" — not `binary-suspect` — so `--fail-on-low-confidence-encoding` counts it. Absent fields (a 1.0 inventory) keep today's behavior.
 12. **Path containment hardening (MS-2 review Important #2).** `relative_path` in the inventory and plan schemas gains the pattern `^(?!/)(?!(?:.*/)?\.\.(?:/|$)).+$` (no leading `/`, no `..` segment — Python `re` handles the lookaheads; pydantic's rust-regex does not, so the model side is an `AfterValidator`). `read_inventory`/`read_plan` therefore reject crafted artifacts at exit 2. Apply adds the runtime belt: each source/target resolves (`Path.resolve()`) inside the resolved `source_root` or the action is skipped `containment`.
 13. **Schema version bumps** (adr-0005 MINOR policy — optional fields/enum values only): inventory 1.0→1.1 (two optional scan_config fields + pattern tightening), plan 1.0→1.1 (optional `source_root` + pattern tightening), manifest 1.0→1.1 (two optional overwrite fields + absolute-path descriptions), report stays 1.0. Pattern tightening is nominally a constraint change, but no artifact with an absolute/`..` path was ever legitimately producible — recorded here rather than as a MAJOR.
@@ -386,13 +386,15 @@ git commit -m "feat: record scan-time detection provenance; fix cross-config bin
 """Run-level lock (OQ-036 proposal; spec OQ-027, AW-005, §8.5).
 
 One live plan/apply/restore per target tree; a second invocation refuses with
-exit 3. The lock lives under $XDG_STATE_HOME/docmend/locks keyed by the hashed
-resolved source root, so the library tree itself is never touched and two
-invocations from different CWDs still contend.
+exit 3. flock(2) on a file under $XDG_STATE_HOME/docmend/locks keyed by the
+hashed resolved source root: the library tree is never touched, different CWDs
+still contend, and — because the kernel drops the lock with the holding
+process — a crashed run can never leave a stale lock, and no unlink-based
+steal race exists (codex CR-004 class, closed by construction).
 """
 
-import json
-import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -423,33 +425,43 @@ def test_release__allows_reacquire(tmp_path: Path) -> None:
     lock.acquire(root, run_id=RUN_ID, command="apply", state_dir=state).release()
 
 
-def test_stale_dead_pid_lock__is_retaken(tmp_path: Path) -> None:
+def test_dead_holder__lock_auto_released(tmp_path: Path) -> None:
+    """A holder that exited (or crashed) leaves no stale lock: flock dies with
+    the process, so re-acquisition needs no stale detection at all (CR-004)."""
     state = tmp_path / "state"
     root = tmp_path / "corpus"
     root.mkdir()
-    path = lock.lock_path(root, state_dir=state)
-    path.parent.mkdir(parents=True)
-    # A PID from a run that no longer exists: fork+exit gives a guaranteed-dead PID.
-    dead_pid = os.fork()
-    if dead_pid == 0:
-        os._exit(0)
-    os.waitpid(dead_pid, 0)
-    path.write_text(
-        json.dumps({"run_id": "run_20260101T000000Z_dead00", "pid": dead_pid,
-                    "command": "apply", "started_at": "2026-01-01T00:00:00+00:00"}),
-        encoding="utf-8",
+    script = (
+        "import sys; from pathlib import Path; from docmend import lock; "
+        "lock.acquire(Path(sys.argv[1]), run_id='run_20260101T000000Z_dead00', "
+        "command='apply', state_dir=Path(sys.argv[2]))"
     )
+    subprocess.run([sys.executable, "-c", script, str(root), str(state)], check=True)
     lock.acquire(root, run_id=RUN_ID, command="apply", state_dir=state).release()
 
 
-def test_corrupt_lock_file__treated_stale(tmp_path: Path) -> None:
+def test_live_holder_in_other_process__refuses(tmp_path: Path) -> None:
+    """AW-005 across real processes: a subprocess holds the lock while this
+    process tries to acquire."""
     state = tmp_path / "state"
     root = tmp_path / "corpus"
     root.mkdir()
-    path = lock.lock_path(root, state_dir=state)
-    path.parent.mkdir(parents=True)
-    path.write_text("{torn", encoding="utf-8")
-    lock.acquire(root, run_id=RUN_ID, command="apply", state_dir=state).release()
+    script = (
+        "import sys, time; from pathlib import Path; from docmend import lock; "
+        "lock.acquire(Path(sys.argv[1]), run_id='run_20260101T000000Z_11ee00', "
+        "command='apply', state_dir=Path(sys.argv[2])); print('held', flush=True); "
+        "time.sleep(30)"
+    )
+    holder = subprocess.Popen(
+        [sys.executable, "-c", script, str(root), str(state)], stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert holder.stdout is not None and holder.stdout.readline().strip() == "held"
+        with pytest.raises(lock.LockHeldError):
+            lock.acquire(root, run_id=RUN_ID, command="apply", state_dir=state)
+    finally:
+        holder.kill()
+        holder.wait()
 
 
 def test_different_roots__do_not_contend(tmp_path: Path) -> None:
@@ -480,36 +492,42 @@ NOT inside the library tree — plan stays write-free over the library (§3.1) a
 a read-only tree stays plannable. Keyed on the RESOLVED source root so
 invocations from different CWDs contend correctly.
 
-Liveness: the holder file records pid/run_id/command/started_at. A dead PID or
-unparseable file is stale and is re-taken; a live holder raises LockHeldError,
-which the CLI maps to exit 3 (safety refusal, §18.5). Single-machine semantics
-by design (A-001: local POSIX filesystem; single-user tool).
+Mechanism: flock(2), not O_EXCL-create-plus-unlink (codex CR-004). The kernel
+owns the lock: it vanishes with the holding process (crash included), so no
+stale-PID detection exists to get wrong, and no unlink-by-name step exists
+that could remove a competitor's freshly acquired lock (the classic steal
+race). Release closes the descriptor and leaves the file behind — an empty
+file in the state dir is metadata debris, never a stale lock. Holder JSON is
+written into the file purely for the refusal message. Single-machine
+semantics by design (A-001: local POSIX filesystem; flock over NFS is out of
+scope).
 """
 
+import errno
+import fcntl
 import hashlib
 import json
 import os
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-
-from docmend.observability import get_logger
-
-_MAX_STEAL_ATTEMPTS = 5
 
 
 class LockHeldError(Exception):
     """Another live run holds this target's lock (exit 3, AW-005)."""
 
 
-@dataclass
 class RunLock:
-    path: Path
-    _released: bool = field(default=False, init=False)
+    def __init__(self, path: Path, fd: int) -> None:
+        self.path = path
+        self._fd = fd
+        self._released = False
 
     def release(self) -> None:
+        # Closing the descriptor drops the flock; the file deliberately stays
+        # (unlinking it would reopen the CR-004 steal race for a competitor
+        # blocked on the same inode).
         if not self._released:
-            self.path.unlink(missing_ok=True)
+            os.close(self._fd)
             self._released = True
 
 
@@ -521,63 +539,58 @@ def _default_state_dir() -> Path:
 
 def lock_path(source_root: Path, *, state_dir: Path | None = None) -> Path:
     digest = hashlib.sha256(str(source_root.resolve()).encode()).hexdigest()
-    return (state_dir if state_dir is not None else _default_state_dir()) / f"{digest}.json"
-
-
-def _holder_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    return (state_dir if state_dir is not None else _default_state_dir()) / f"{digest}.lock"
 
 
 def acquire(
     source_root: Path, *, run_id: str, command: str, state_dir: Path | None = None
 ) -> RunLock:
-    log = get_logger(__name__)
     path = lock_path(source_root, state_dir=state_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    holder = json.dumps(
-        {
-            "run_id": run_id,
-            "pid": os.getpid(),
-            "command": command,
-            "started_at": datetime.now(UTC).isoformat(),
-        }
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        # Contention is EWOULDBLOCK/EAGAIN on Linux (BlockingIOError) but
+        # EACCES on some Unixes — treat both as "held", re-raise the rest.
+        if exc.errno not in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+            os.close(fd)
+            raise
+        holder = _read_holder(fd)
+        os.close(fd)
+        msg = (
+            f"{source_root}: another docmend run holds the lock{holder} — "
+            f"AW-005 refuses a second concurrent run against the same target"
+        )
+        raise LockHeldError(msg) from exc
+    # Best-effort holder metadata for the competitor's refusal message; the
+    # flock itself, not this JSON, is the mutual exclusion.
+    os.ftruncate(fd, 0)
+    os.write(
+        fd,
+        json.dumps(
+            {
+                "run_id": run_id,
+                "pid": os.getpid(),
+                "command": command,
+                "started_at": datetime.now(UTC).isoformat(),
+            }
+        ).encode("utf-8"),
     )
-    for _ in range(_MAX_STEAL_ATTEMPTS):
-        try:
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            try:
-                existing: dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
-                pid = int(existing["pid"])  # type: ignore[arg-type]
-            except (OSError, ValueError, KeyError, TypeError):
-                # Torn/corrupt holder file: stale by definition (the writer fsyncs
-                # before relying on it); remove and retry.
-                path.unlink(missing_ok=True)
-                continue
-            if _holder_alive(pid):
-                msg = (
-                    f"{source_root}: another docmend run holds the lock "
-                    f"(run_id {existing.get('run_id')}, pid {pid}, "
-                    f"command {existing.get('command')}) — AW-005 refuses a second "
-                    f"concurrent run against the same target"
-                )
-                raise LockHeldError(msg)
-            log.warning("stale lock re-taken", lock=str(path), dead_pid=pid)
-            path.unlink(missing_ok=True)
-            continue
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(holder)
-            fh.flush()
-            os.fsync(fh.fileno())
-        return RunLock(path)
-    msg = f"{source_root}: could not acquire the run lock after repeated stale-lock races"
-    raise LockHeldError(msg)
+    os.fsync(fd)
+    return RunLock(path, fd)
+
+
+def _read_holder(fd: int) -> str:
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        existing: dict[str, object] = json.loads(os.read(fd, 4096).decode("utf-8"))
+    except (OSError, ValueError):
+        return ""
+    return (
+        f" (run_id {existing.get('run_id')}, pid {existing.get('pid')}, "
+        f"command {existing.get('command')})"
+    )
 ```
 
 - [ ] **Step 4: Wire `plan` in `src/docmend/cli.py`.** After the inventory is obtained (both branches — the scanned root for the PATH shorthand, `Path(inventory.source_root)` for `--inventory`), wrap the planning work:
@@ -930,6 +943,34 @@ def test_torn_trailing_line__tolerated(tmp_path: Path) -> None:
     assert read_manifest(path) == [kept]
 
 
+def test_corrupt_newline_terminated_final_record__hard_aborts(tmp_path: Path) -> None:
+    """codex CR-NEW-006: a final line ending in '\\n' was a COMPLETE record —
+    if it no longer parses, that is corruption, never a tolerable torn tail."""
+    path = tmp_path / "manifest.jsonl"
+    with ManifestWriter(path, run_id=RUN_ID) as writer:
+        writer.append(_record(1))
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write("{corrupt}\n")
+    with pytest.raises(ArtifactError):
+        read_manifest(path)
+
+
+def test_first_append_fsyncs_manifest_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """codex CR-NEW-005: creating the manifest file must fsync its directory —
+    file fsync alone does not persist a new directory entry."""
+    from docmend.writer import manifest as manifest_module
+
+    calls: list[Path] = []
+    monkeypatch.setattr(manifest_module, "fsync_dir", calls.append)
+    path = tmp_path / "manifest.jsonl"
+    with ManifestWriter(path, run_id=RUN_ID) as writer:
+        writer.append(_record(1))
+        writer.append(_record(2))
+    assert calls == [tmp_path]  # exactly once, on first create
+
+
 def test_corrupt_interior_line__hard_aborts(tmp_path: Path) -> None:
     path = tmp_path / "manifest.jsonl"
     with ManifestWriter(path, run_id=RUN_ID) as writer:
@@ -950,6 +991,15 @@ def test_schema_invalid_interior_record__hard_aborts(tmp_path: Path) -> None:
     path.write_text(json.dumps(doc) + "\n" + path.read_text(encoding="utf-8"), encoding="utf-8")
     with pytest.raises(ArtifactError):
         read_manifest(path)
+
+
+def test_zero_appends__no_manifest_file_created(tmp_path: Path) -> None:
+    """A write run in which every action skipped leaves NO manifest file —
+    an empty manifest would imply mutations happened (lazy-open contract)."""
+    path = tmp_path / "manifest.jsonl"
+    with ManifestWriter(path, run_id=RUN_ID):
+        pass
+    assert not path.exists()
 
 
 def test_overwrite_fields__round_trip(tmp_path: Path) -> None:
@@ -1005,7 +1055,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal, Self, TextIO
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -1014,6 +1064,7 @@ from docmend.inventory import RunId, Sha256
 from docmend.observability import get_logger
 from docmend.plan import ActionId, DocmendId
 from docmend.report import ErrorInfo
+from docmend.writer.atomic import fsync_dir
 
 MANIFEST_SCHEMA_VERSION = "1.1"
 
@@ -1058,12 +1109,14 @@ class ManifestWriter:
         run_id: str,
         now: Callable[[], str] = lambda: datetime.now(UTC).isoformat(),
     ) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
         self._path = path
         self._run_id = run_id
         self._now = now
         self._seq = 0
-        self._fh = path.open("a", encoding="utf-8")
+        # Lazy-open on first append: a write run in which every action skips
+        # must not leave an empty manifest file implying mutations happened
+        # (codex round-1 "empty manifest" question — the answer is: no file).
+        self._fh: TextIO | None = None
 
     def __enter__(self) -> Self:
         return self
@@ -1077,6 +1130,13 @@ class ManifestWriter:
         self.close()
 
     def append(self, record: ManifestRecord) -> ManifestRecord:
+        if self._fh is None:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._fh = self._path.open("a", encoding="utf-8")
+            # The durability claim covers the file NAME too: fsync(2) on the
+            # file alone does not persist a newly created directory entry
+            # (codex CR-NEW-005), so the first append also fsyncs the parent.
+            fsync_dir(self._path.parent)
         self._seq += 1
         stamped = record.model_copy(update={"seq": self._seq, "recorded_at": self._now()})
         document = stamped.model_dump(mode="json")
@@ -1088,7 +1148,7 @@ class ManifestWriter:
         return stamped
 
     def close(self) -> None:
-        if not self._fh.closed:
+        if self._fh is not None and not self._fh.closed:
             self._fh.close()
 
     @property
@@ -1105,6 +1165,11 @@ def read_manifest(path: Path) -> list[ManifestRecord]:
         msg = f"{path}: cannot read manifest ({exc.strerror or exc})"
         raise ArtifactError(msg) from exc
     lines = raw.splitlines()
+    # AOF tolerance applies ONLY to a physically unterminated tail (a crash
+    # mid-append). A newline-terminated final line was a COMPLETE record; if
+    # it no longer parses, that is corruption, not a torn write, and it must
+    # hard-abort like an interior record (codex CR-NEW-006; adr-0006).
+    unterminated_tail = bool(raw) and not raw.endswith("\n")
     records: list[ManifestRecord] = []
     for index, line in enumerate(lines):
         if not line.strip():
@@ -1113,10 +1178,10 @@ def read_manifest(path: Path) -> list[ManifestRecord]:
         try:
             document: object = json.loads(line)
         except json.JSONDecodeError as exc:
-            if trailing:
+            if trailing and unterminated_tail:
                 log.warning("torn trailing manifest line dropped", path=str(path), line=index + 1)
                 break
-            msg = f"{path}:{index + 1}: corrupt interior manifest record — {exc}"
+            msg = f"{path}:{index + 1}: corrupt manifest record — {exc}"
             raise ArtifactError(msg) from exc
         validate_artifact("manifest", document)
         records.append(ManifestRecord.model_validate(document))
@@ -1152,7 +1217,9 @@ git commit -m "feat: DR-004 manifest model, fsync-per-record writer, AOF reader 
 - Produces (used by Tasks 7/9/11):
   - `WriteError(Exception)` — ERR-003 family; original guaranteed intact when raised.
   - `atomic_write_bytes(target: Path, data: bytes, *, mode: int | None = None, clobber: bool = True) -> None` — temp-in-same-dir + fsync + publish (`os.replace` when `clobber`, else `os.link`+unlink; `FileExistsError` propagates on a no-clobber race) + parent fsync.
-  - `rename_no_clobber(source: Path, target: Path) -> None` — `os.link` + `os.unlink`; `FileExistsError` propagates.
+  - `link_no_clobber(source: Path, target: Path) -> None` — the lossless half of a rename (both names exist afterwards); `FileExistsError` propagates.
+  - `rename_no_clobber(source: Path, target: Path) -> None` — `link_no_clobber` + `os.unlink`; `FileExistsError` propagates.
+  - `rename_overwrite(source: Path, target: Path) -> None` — `os.replace` + parent fsync + `WriteError` wrapping, for the FR-011 overwrite policy only (codex CR-NEW-001: the clobbering rename gets the same durability contract as every other mutation).
   - `fsync_dir(path: Path) -> None` — best-effort ("where practical", D-004).
 
 - [ ] **Step 1: Write the failing tests** — `tests/unit/writer/test_atomic.py`:
@@ -1240,6 +1307,34 @@ def test_rename_no_clobber__moves_and_refuses(tmp_path: Path) -> None:
     with pytest.raises(FileExistsError):
         atomic.rename_no_clobber(other, blocker)
     assert other.read_bytes() == b"other"
+    assert blocker.read_bytes() == b"blocker"
+
+
+def test_rename_overwrite__replaces_and_wraps_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """codex CR-NEW-001: the overwrite rename goes through the same
+    WriteError/fsync contract as every other mutation (FR-011, NFR-002)."""
+    src = tmp_path / "a.txt"
+    src.write_bytes(b"new")
+    dst = tmp_path / "a.md"
+    dst.write_bytes(b"old")
+    atomic.rename_overwrite(src, dst)
+    assert not src.exists()
+    assert dst.read_bytes() == b"new"
+
+    other = tmp_path / "b.txt"
+    other.write_bytes(b"payload")
+    blocker = tmp_path / "b.md"
+    blocker.write_bytes(b"blocker")
+
+    def boom(src_: object, dst_: object) -> None:
+        raise OSError(5, "I/O error")
+
+    monkeypatch.setattr(atomic.os, "replace", boom)
+    with pytest.raises(atomic.WriteError):
+        atomic.rename_overwrite(other, blocker)
+    assert other.read_bytes() == b"payload"
     assert blocker.read_bytes() == b"blocker"
 
 
@@ -1344,14 +1439,9 @@ def atomic_write_bytes(
     fsync_dir(target.parent)
 
 
-def rename_no_clobber(source: Path, target: Path) -> None:
-    """Move `source` to `target`, refusing an existing target (FR-011).
-
-    os.link + os.unlink instead of check-then-os.replace: link is atomic and
-    EEXIST-safe; a crash between the two calls leaves BOTH names pointing at
-    one intact inode — recoverable, never lossy. v1 renames change only the
-    suffix, so source and target always share a directory (same device).
-    """
+def link_no_clobber(source: Path, target: Path) -> None:
+    """Give `source`'s inode a second name at `target`, refusing an existing
+    target. The lossless half of a rename: after it, BOTH names exist."""
     try:
         os.link(source, target)
     except FileExistsError:
@@ -1359,10 +1449,45 @@ def rename_no_clobber(source: Path, target: Path) -> None:
     except OSError as exc:
         msg = f"{target}: cannot link rename target ({exc.strerror or exc})"
         raise WriteError(msg) from exc
+
+
+def rename_no_clobber(source: Path, target: Path) -> None:
+    """Move `source` to `target`, refusing an existing target (FR-011).
+
+    link + unlink instead of check-then-os.replace: link is atomic and
+    EEXIST-safe; a crash between the two calls leaves BOTH names pointing at
+    one intact inode — recoverable, never lossy. v1 renames change only the
+    suffix, so source and target always share a directory (same device).
+    """
+    link_no_clobber(source, target)
     try:
         source.unlink()
     except OSError as exc:
-        msg = f"{source}: rename linked but source not removed ({exc.strerror or exc})"
+        # Roll the link back so a failed rename leaves the exact pre-action
+        # state (codex CR-NEW-004 class); if even that fails, both names
+        # remain on one intact inode — superset, lossless, and said so.
+        residue = ""
+        try:
+            target.unlink()
+        except OSError:
+            residue = f"; rollback failed, {target} remains as a second name"
+        msg = f"{source}: rename linked but source not removed ({exc.strerror or exc}){residue}"
+        raise WriteError(msg) from exc
+    fsync_dir(target.parent)
+
+
+def rename_overwrite(source: Path, target: Path) -> None:
+    """Move `source` onto an existing `target` (FR-011 overwrite policy only).
+
+    The one deliberate clobber in the writer (codex CR-NEW-001): the same
+    os.replace + parent-fsync + WriteError contract as every other mutation —
+    an overwrite rename must not have weaker crash-durability than a
+    no-clobber one. Callers have already backed up the clobbered target.
+    """
+    try:
+        os.replace(source, target)
+    except OSError as exc:
+        msg = f"{target}: cannot replace with {source} ({exc.strerror or exc})"
         raise WriteError(msg) from exc
     fsync_dir(target.parent)
 ```
@@ -1425,7 +1550,8 @@ def test_backup__written_verified_and_returned(tmp_path: Path) -> None:
         relative_path="sub/a.txt",
         expected_sha256=_sha(data),
     )
-    assert dest == (tmp_path / "backups" / RUN_ID / "sub" / "a.txt")
+    assert dest == (tmp_path / "backups" / RUN_ID / "sub" / "a.txt").resolve()
+    assert dest.is_absolute()  # CR-005: manifest backup paths must survive cwd changes
     assert dest.read_bytes() == data
 
 
@@ -1530,7 +1656,9 @@ def backup_file(
             f"the plan's recorded source hash {expected_sha256} (ERR-004)"
         )
         raise BackupError(msg)
-    return dest
+    # Absolute by contract (codex CR-005): this path lands in the manifest,
+    # which restore must be able to follow from any cwd (IR-008).
+    return dest.resolve()
 ```
 
 - [ ] **Step 4: Run the tests**
@@ -1580,10 +1708,11 @@ Operations row (allpairspy, t=3 for the preservation/manifest/backup trio).
 - `test_multi_action_opt_in__refused` — plan (c), `allow_no_backup=True` → refusal `preservation` ("limited to single-action plans").
 - `test_rename_only_plan__needs_no_strategy` — plan (a), nothing active → `[]` (OQ-035 risk tier: manifest suffices for pure path moves).
 - `test_manifest_only_configuration__does_not_satisfy_preservation` — plan (c) with no strategy → refused (FR-005 acceptance criterion, verbatim case).
-- `test_backup_dir_inside_target__refused` — `backup_root=source_root / "backups"` → refusal `backup-outside-target` (OQ-005, §8.5).
+- `test_backup_dir_inside_target__refused_and_nothing_created` — `backup_root=source_root / "backups"` (path does **not** exist) → refusal `backup-outside-target` AND `source_root / "backups"` still does not exist afterwards (codex CR-002: a refusal must not mkdir inside the library). Also snapshot `source_root`'s full recursive listing before/after `evaluate_gate` and assert equality.
 - `test_backup_dir_unwritable__refused` — chmod 0o500 dir → refusal `backup-writable`.
 - `test_manifest_dir_unwritable__refused` — chmod 0o500 manifest_dir → refusal `manifest-writable`.
 - `test_disk_preflight__refused_when_backup_mount_too_small` — monkeypatch `gate.shutil.disk_usage` to return `free=1` → refusal `disk-preflight` (OQ-005).
+- `test_disk_preflight__counts_overwrite_targets_and_output_growth` (codex CR-006) — overwrite policy with a live-colliding target larger than every source: monkeypatch `disk_usage` so free space covers `sum(sources)` but not `sum(sources) + target_size` → refusal; and a single-action plan where free space covers the source size but not `source × 3` → refusal (the re-encode growth bound).
 - `test_overwrite_policy_with_live_collision__requires_strategy` — plan (b variant with `target_path` whose file exists on disk), snapshot `rename.on_collision="overwrite"`, no strategy → refusal `overwrite-preservation` (G-002); with `preserved_by="external"` → `[]`.
 - `test_containment_belt__escaping_target_refused` — hand-build a `PlanAction` via `model_construct(...)` (bypassing validators, simulating a crafted artifact that slipped a symlink-free `..`) with `target_path="../escape.md"` → refusal `containment`.
 - `test_gate_pairwise__every_failing_predicate_refuses` — allpairspy sweep:
@@ -1763,30 +1892,39 @@ def _overwrite_preservation(
 
 
 def _backup_destination(
-    plan: Plan, source_root: Path, options: ApplyOptions
+    plan: Plan, config: DocmendConfig, source_root: Path, options: ApplyOptions
 ) -> list[GateRefusal]:
     if options.backup_root is None:
         return []
-    refusals: list[GateRefusal] = []
     resolved = options.backup_root.resolve()
     if resolved.is_relative_to(source_root.resolve()):
-        refusals.append(
+        # Short-circuit BEFORE any writability probe (codex CR-002): probing
+        # mkdirs the destination, and this destination is inside the library —
+        # a refusal must leave the target untouched (§8.5, adr-0004).
+        return [
             GateRefusal(
                 predicate="backup-outside-target",
                 message=f"{options.backup_root}: backup destination lies inside the mutation target (OQ-005, §8.5)",
             )
-        )
+        ]
     if not _dir_writable(options.backup_root):
-        refusals.append(
+        return [
             GateRefusal(
                 predicate="backup-writable",
                 message=f"{options.backup_root}: backup destination is not writable (OQ-005)",
             )
-        )
-        return refusals
+        ]
     needed = sum(a.source_size_bytes for a in plan.actions)
+    if config.rename.on_collision == "overwrite":
+        # codex CR-006: overwrite mode also backs up each live-colliding
+        # target, so its bytes count against the same mount.
+        needed += sum(
+            (source_root / a.target_path).stat().st_size
+            for a in plan.actions
+            if a.target_path is not None and (source_root / a.target_path).exists()
+        )
     if shutil.disk_usage(options.backup_root).free < needed:
-        refusals.append(
+        return [
             GateRefusal(
                 predicate="disk-preflight",
                 message=(
@@ -1794,8 +1932,8 @@ def _backup_destination(
                     "free space on the destination mount (OQ-005 per-mount preflight)"
                 ),
             )
-        )
-    return refusals
+        ]
+    return []
 
 
 def _manifest_destination(manifest_dir: Path) -> list[GateRefusal]:
@@ -1809,18 +1947,24 @@ def _manifest_destination(manifest_dir: Path) -> list[GateRefusal]:
     ]
 
 
-def _source_headroom(plan: Plan, source_root: Path) -> list[GateRefusal]:
+def _source_headroom(plan: Plan, config: DocmendConfig, source_root: Path) -> list[GateRefusal]:
     if not plan.actions:
         return []
-    largest = max(a.source_size_bytes for a in plan.actions)
+    # codex CR-006: transformed output can be LARGER than the input. Bound the
+    # mechanical growth instead of assuming size parity: a legacy single-byte
+    # encoding re-encodes to at most 3 UTF-8 bytes per byte, and leading-tab
+    # expansion multiplies by tab_width; the two maxima cannot compound (tabs
+    # are ASCII and re-encode 1:1), so the factor is their max, not product.
+    factor = max(3, config.whitespace.tab_width if config.whitespace.normalize_tabs else 1)
+    largest = max(a.source_size_bytes for a in plan.actions) * factor
     if shutil.disk_usage(source_root).free >= largest:
         return []
     return [
         GateRefusal(
             predicate="disk-preflight",
             message=(
-                f"{source_root}: the largest planned temp file ({largest} bytes) exceeds "
-                "free space on the target mount (OQ-005 per-mount preflight)"
+                f"{source_root}: the largest planned temp file (bounded at {largest} bytes) "
+                "exceeds free space on the target mount (OQ-005 per-mount preflight)"
             ),
         )
     ]
@@ -1838,9 +1982,9 @@ def evaluate_gate(
         *_containment(plan, source_root),
         *_preservation(plan, options),
         *_overwrite_preservation(plan, config, source_root, options),
-        *_backup_destination(plan, source_root, options),
+        *_backup_destination(plan, config, source_root, options),
         *_manifest_destination(manifest_dir),
-        *_source_headroom(plan, source_root),
+        *_source_headroom(plan, config, source_root),
     ]
 ```
 
@@ -1891,7 +2035,24 @@ In `src/docmend/plan.py`, add to `Plan` (after `inventory_ref`):
     source_root: Annotated[str, Field(min_length=1)] | None = None
 ```
 
-In `src/docmend/planning.py` `build_plan`'s `return Plan(...)`, add `source_root=inventory.source_root,`. Add a quick assertion to an existing planning test (`tests/test_planning.py`): the built plan's `source_root` equals the inventory's.
+In `src/docmend/planning.py` `build_plan`, two changes:
+
+1. `return Plan(...)` gains `source_root=inventory.source_root,`.
+2. The config snapshot pins a relative `write.backup_dir` to the **planning** cwd before serialization (codex CR-NEW-002: the reviewed plan must fully determine where backups go — re-resolving a relative path against the _apply_ cwd would silently move them, or gate-refuse). Immediately before `config.model_dump(mode="json")`:
+
+```python
+    if config.write.backup_dir is not None and not config.write.backup_dir.is_absolute():
+        # The reviewed snapshot, not apply's cwd, decides the backup home.
+        config = config.model_copy(
+            update={
+                "write": config.write.model_copy(
+                    update={"backup_dir": config.write.backup_dir.resolve()}
+                )
+            }
+        )
+```
+
+Add assertions to `tests/test_planning.py`: the built plan's `source_root` equals the inventory's, and a config with `write.backup_dir=Path("backups")` snapshots as an absolute path under the planning cwd (`tmp_path` via `monkeypatch.chdir`).
 
 In `src/docmend/discovery.py`, rename `_sniff_bom` → `sniff_bom` (public: apply re-sniffs the BOM from bytes whose hash already matched the scan, so the sniff is provenance-equivalent) and update its internal call site.
 
@@ -1971,7 +2132,10 @@ Cases (each its own test function, docstrings citing the IDs shown):
 11. `test_operations_divergence__failed_err006` (decision 4): monkeypatch the transform to return different text (same length class) so recomputed operations ≠ plan's; outcome `failed`/`ERR-006`.
 12. `test_containment_resolve_escape__skipped` (§13.5): after planning, replace the file's parent directory with a symlink to a directory outside the root; outcome `skipped`/`containment`; nothing outside the root written.
 13. `test_report_counts_reconcile__and_manifest_seq_monotonic` (FR-018, DR-003, DR-004): mixed corpus; assert `totals` equals a `Counter` over outcomes and manifest `seq` is 1..N in order.
-14. `test_empty_plan__clean_report` : plan over an already-clean corpus (zero actions); write mode with no strategy; report has zero outcomes, no manifest records.
+14. `test_empty_plan__clean_report` : plan over an already-clean corpus (zero actions); write mode with no strategy; report has zero outcomes, and **no manifest file exists** (lazy-open contract).
+15. `test_dry_run_overwrite_collision_with_backup_dir__writes_nothing` (codex CR-001; FR-004, NFR-004): config snapshot with `rename.on_collision="overwrite"` **and** `write.backup_dir` set; create the colliding target after planning; execute with `write=False` and `backup_root` populated from the snapshot. Assert: outcome `would_apply`, the backup directory was never created, and a full recursive hash snapshot of `tmp_path` (corpus + would-be backup location) is unchanged except for report/log artifacts.
+16. `test_all_actions_skip_in_write_mode__no_manifest_file`: two-action plan, both files mutated after planning (stale-hash); write mode with backups; assert no manifest file is created and exit-relevant totals show 2 skips.
+17. `test_rename_and_rewrite_unlink_failure__publish_rolled_back` (codex CR-NEW-004): monkeypatch `Path.unlink` to raise `OSError` for the source path only; write mode with backups over a rename+rewrite action → outcome `failed`/`ERR-003`, manifest record `result == "failed"`, AND the corpus is byte-for-byte unchanged (the published target was rolled back; report/manifest/corpus agree). Repeat under `overwrite` policy with a live collision: the clobbered target's original bytes are back in place after the rollback.
 
 - [ ] **Step 3: Run to verify failure**
 
@@ -2025,7 +2189,12 @@ from docmend.transform.dispatch import (
     non_whitespace_count,
 )
 from docmend.transform.encoding import decode_source, encode_utf8
-from docmend.writer.atomic import WriteError, atomic_write_bytes, rename_no_clobber
+from docmend.writer.atomic import (
+    WriteError,
+    atomic_write_bytes,
+    rename_no_clobber,
+    rename_overwrite,
+)
 from docmend.writer.backup import BackupError, backup_file
 from docmend.writer.gate import ApplyOptions, is_content_rewrite
 from docmend.writer.manifest import ManifestOperation, ManifestRecord, ManifestWriter
@@ -2204,8 +2373,6 @@ def _execute_action(
     payload, _operations = recomputed
     kind = _operation_kind(action)
 
-    overwritten_sha: str | None = None
-    overwritten_backup: Path | None = None
     clobber = False
     if target is not None and target.exists():
         policy = config.rename.on_collision
@@ -2214,6 +2381,30 @@ def _execute_action(
         if policy == "fail":
             return _skip(action, "collision"), True  # non-zero abort (FR-011)
         clobber = True  # policy == "overwrite"
+
+    if not options.write:
+        # Dry-run boundary (codex CR-001): collision state was INSPECTED above,
+        # but nothing past this line may run — in particular no backup_file
+        # call for a would-be-clobbered target. FR-004/NFR-004: a dry run
+        # writes nothing but its report and log.
+        return (
+            ApplyOutcome(
+                action_id=action.action_id,
+                path=action.path,
+                status="would_apply",
+                before_sha256=action.source_sha256,
+                after_sha256=None,
+                skip_reason=None,
+                error=None,
+            ),
+            False,
+        )
+
+    overwritten_sha: str | None = None
+    overwritten_backup: Path | None = None
+    target_bytes: bytes | None = None  # clobbered content, kept for CR-NEW-004 rollback
+    if clobber:
+        assert target is not None
         try:
             target_bytes = target.read_bytes()
         except OSError as exc:
@@ -2230,20 +2421,6 @@ def _execute_action(
                 )
             except BackupError as exc:
                 return _failed(action, "ERR-004", str(exc)), False
-
-    if not options.write:
-        return (
-            ApplyOutcome(
-                action_id=action.action_id,
-                path=action.path,
-                status="would_apply",
-                before_sha256=action.source_sha256,
-                after_sha256=None,
-                skip_reason=None,
-                error=None,
-            ),
-            False,
-        )
 
     backup_path: Path | None = None
     if options.backup_root is not None:
@@ -2270,15 +2447,36 @@ def _execute_action(
         elif kind == "rename":
             assert target is not None
             if clobber:
-                import os
-
-                os.replace(source, target)
+                rename_overwrite(source, target)  # codex CR-NEW-001: fsync'd, WriteError-wrapped
             else:
                 rename_no_clobber(source, target)
         else:  # rename_and_rewrite
             assert target is not None
             atomic_write_bytes(target, payload, mode=mode, clobber=clobber)
-            source.unlink()
+            try:
+                source.unlink()
+            except OSError as unlink_exc:
+                # codex CR-NEW-004: the target is already published; recording
+                # "failed" while the corpus changed would make the report and
+                # manifest lie. Roll the publish back to the exact pre-action
+                # state (rewrite the clobbered bytes, or remove the published
+                # target), then fail honestly with the original untouched.
+                try:
+                    if target_bytes is not None:
+                        atomic_write_bytes(target, target_bytes)
+                    else:
+                        target.unlink()
+                except (WriteError, OSError):
+                    log.error(
+                        "apply residue: target published, source not removed, rollback failed",
+                        path=action.path,
+                        target=str(target),
+                    )
+                msg = (
+                    f"{source}: target published but source not removed; publish "
+                    f"rolled back ({unlink_exc.strerror or unlink_exc})"
+                )
+                raise WriteError(msg) from unlink_exc
     except FileExistsError:
         return _skip(action, "collision"), False  # no-clobber race lost (FR-011)
     except (WriteError, OSError) as exc:
@@ -2340,7 +2538,7 @@ def _record(
     )
 ```
 
-Notes for the implementer: (a) move `import os` to module top (the inline import above is illustrative only — Ruff will flag it); (b) `recorded_at=""` fails the model's own validation — give `ManifestRecord.recorded_at` a `str` type with no format constraint (it already is) and pass `recorded_at="1970-01-01T00:00:00+00:00"` as the placeholder the writer overwrites, or make `ManifestWriter.append` accept the fields as kwargs instead of a pre-built record — pick ONE and keep Task 5's tests consistent (the pre-built-record + `model_copy` stamp approach from Task 5 is the contract; use a valid placeholder timestamp); (c) `resolve()` on `original_path`/`target_path` happens **before** mutation for the target (it may not exist yet — `Path.resolve()` handles non-existent tails without error, which is exactly what we want); (d) the `fail`-policy abort must come **after** the outcome is recorded so the report shows the collision; unprocessed actions simply have no outcome (DR-003 reconciliation still holds).
+Notes for the implementer: (a) every mutation goes through a `docmend.writer.atomic` primitive — no inline `os.replace`/`os.link` calls in the engine (codex CR-NEW-001); (b) `recorded_at=""` fails the model's own validation — give `ManifestRecord.recorded_at` a `str` type with no format constraint (it already is) and pass `recorded_at="1970-01-01T00:00:00+00:00"` as the placeholder the writer overwrites, or make `ManifestWriter.append` accept the fields as kwargs instead of a pre-built record — pick ONE and keep Task 5's tests consistent (the pre-built-record + `model_copy` stamp approach from Task 5 is the contract; use a valid placeholder timestamp); (c) `resolve()` on `original_path`/`target_path` happens **before** mutation for the target (it may not exist yet — `Path.resolve()` handles non-existent tails without error, which is exactly what we want); (d) the `fail`-policy abort must come **after** the outcome is recorded so the report shows the collision; unprocessed actions simply have no outcome (DR-003 reconciliation still holds).
 
 - [ ] **Step 5: Run the tests, then the full suite**
 
@@ -2382,6 +2580,7 @@ gate refuses. NFR-004 acceptance: out-of-the-box invocation cannot mutate.
 Cases (helper `_make_plan(corpus) -> Path` shells `plan <corpus> --out plan.json` via CliRunner first):
 
 - `test_apply_default__dry_run_writes_nothing` (FR-004, NFR-004): `docmend apply plan.json` over a dirty corpus → exit 0, every corpus hash unchanged, no `-manifest.jsonl` anywhere, report artifact exists in `.docmend/` with `dry_run: true`, stdout summary shows `would-apply` count. **This is the NFR-004 config-default audit test — cite NFR-004 in the docstring.**
+- `test_apply_dry_run_overwrite_with_configured_backup_dir__no_backup_written` (codex CR-001): plan built with a `docmend.toml` setting `rename.on_collision = "overwrite"` and `write.backup_dir`; create the colliding target; run `docmend apply plan.json` (no `--write`) → exit 0 and the configured backup directory does not exist afterwards ("config alone can never enable writes", OQ-014).
 - `test_apply_write_and_dry_run__mutually_exclusive` (IR-003): `apply plan.json --write --dry-run` → exit 2. Also `docmend -n apply plan.json --write` → exit 2 (the global `-n` IS `--dry-run`; IR-005 gains its write-capable effect here).
 - `test_apply_write_without_strategy__gate_refuses_exit_3` (FR-005): content-rewrite plan, `--write` only → exit 3, stderr explains the missing preservation strategy, corpus unchanged, report written with zero outcomes (decision 8).
 - `test_apply_write_with_backup_dir__mutates_and_reports` (FR-005, FR-006, FR-018): `--write --backup-dir <outside>` → exit 0, corpus converted, report totals reconcile, manifest exists, console summary line contains `applied`.
@@ -2482,9 +2681,14 @@ def apply(
         typer.echo(f"error: {plan_path}: config snapshot invalid — {exc}", err=True)
         raise typer.Exit(2) from exc
 
+    backup_root = backup_dir if backup_dir is not None else config.write.backup_dir
     options = ApplyOptions(
         write=write,
-        backup_root=backup_dir if backup_dir is not None else config.write.backup_dir,
+        # Resolved ONCE here (codex CR-005): every backup path derived from
+        # this root lands in the manifest, which restore must be able to
+        # follow from any cwd (IR-008) — a relative --backup-dir must never
+        # produce cwd-dependent manifest entries.
+        backup_root=backup_root.resolve() if backup_root is not None else None,
         preserved_by=preserved_by.value if preserved_by is not None else None,
         allow_no_backup=allow_no_backup,
     )
@@ -2600,6 +2804,10 @@ git commit -m "feat: docmend apply - dry-run default, gate wiring, readable summ
 - `test_restore_no_backup_record__skipped`: apply via `--allow-no-backup`; restore of the rewrite record → skipped `no-backup`.
 - `test_restore_backup_hash_mismatch__failed_err004`: corrupt the backup file bytes; restore → `failed`, file untouched.
 - `test_restore_overwrite_record__clobbered_target_reinstated`: apply under `overwrite` with backups; restore puts the ORIGINAL clobbered `.md` content back at the target path and the `.txt` source back.
+- `test_restore_overwrite_backup_corrupt__nothing_mutated` (codex CR-003): apply under `overwrite` with backups, then corrupt the `overwritten_backup_path` file's bytes; restore `--write` → that record `failed` with an ERR-004 detail AND both live files (the applied target and everything else) are byte-for-byte unchanged — preflight must catch the bad input before any write/unlink.
+- `test_restore_source_backup_corrupt__nothing_mutated` (codex CR-003 sibling): corrupt the `backup_path` file of a `rename_and_rewrite` record; restore `--write` → `failed`, applied target still present and unchanged, original path still absent.
+- `test_restore_mutation_phase_failure__no_file_lost` (codex CR-003 residual): for a `rename_and_rewrite` record, monkeypatch `docmend.restore.atomic_write_bytes` to succeed on the first call (original reinstated) and raise `WriteError` on the second — or monkeypatch `Path.unlink` for the no-clobbered variant; restore `--write` → record `failed` with ERR-003, AND every payload survives on disk: the reinstated original holds the pre-apply bytes and the applied target file still exists (superset, nothing lost). Re-running restore then reports the leftover as a `collision` skip, not silent damage.
+- `test_restore_external_preservation_overwrite__skipped_untouched` (codex CR-NEW-003): apply a pure `.txt`→`.md` overwrite rename under `--preserved-by external` (no `--backup-dir`); restore `--write` → that record is `skipped` with the external-preservation `no-backup` detail, exit 1, and the corpus is byte-for-byte unmutated — restore must never report success while the clobbered target stays missing.
 - `test_restore_records_its_own_manifest`: after a write restore, `manifest_out` contains one record per restoration with swapped before/after hashes.
 - CLI tests (in the same file): `--manifest`/`--run-id` exclusivity → exit 2; `--run-id` resolves `.docmend/docmend-<id>-manifest.jsonl`; corrupt-interior manifest → exit 2; findings → exit 1; clean write restore → exit 0; locked root → exit 3; `--id` filters to one document.
 
@@ -2628,7 +2836,12 @@ from typing import Literal
 
 from docmend.observability import get_logger
 from docmend.report import ErrorInfo
-from docmend.writer.atomic import WriteError, atomic_write_bytes, rename_no_clobber
+from docmend.writer.atomic import (
+    WriteError,
+    atomic_write_bytes,
+    link_no_clobber,
+    rename_no_clobber,
+)
 from docmend.writer.manifest import ManifestRecord, ManifestWriter
 
 type RestoreStatus = Literal["restored", "would_restore", "skipped", "failed"]
@@ -2721,6 +2934,10 @@ def run_restore(
 def _restore_one(
     record: ManifestRecord, *, write: bool, run_id: str, manifest: ManifestWriter | None
 ) -> RestoreOutcome:
+    # ---- Preflight: verify EVERY recovery input before ANY mutation (codex
+    # CR-003). A restore that mutates and then discovers a bad input has
+    # destroyed state inside the disaster-recovery path itself — every early
+    # return in this section leaves both live files byte-identical.
     mismatch = _live_matches_after(record)
     if mismatch is not None:
         return mismatch
@@ -2738,30 +2955,64 @@ def _restore_one(
         if isinstance(verdict, RestoreOutcome):
             return verdict
         backup = verdict
+    clobbered: bytes | None = None
+    if record.overwritten_sha256 is not None and record.operation != "rewrite":
+        # The overwrite policy destroyed a pre-existing target (OQ-035/G-002).
+        if record.overwritten_backup_path is None:
+            # Declared external preservation: docmend holds no bytes to
+            # reinstate the clobbered file. Restoring only our own mutation
+            # would report success while that file stays missing (codex
+            # CR-NEW-003) — the operator's external strategy recovers the
+            # WHOLE record, so skip it, mutating nothing.
+            return RestoreOutcome(
+                record.action_id, record.docmend_id, record.original_path, "skipped",
+                "no-backup: overwritten target restorable only from external preservation",
+            )
+        # Its backup must read and verify BEFORE we undo our own mutation.
+        try:
+            clobbered = Path(record.overwritten_backup_path).read_bytes()
+        except OSError as exc:
+            return RestoreOutcome(
+                record.action_id, record.docmend_id, record.original_path, "failed",
+                f"ERR-004: overwritten-target backup unreadable ({exc})",
+            )
+        if _sha(clobbered) != record.overwritten_sha256:
+            return RestoreOutcome(
+                record.action_id, record.docmend_id, record.original_path, "failed",
+                "ERR-004: overwritten-target backup hash mismatch",
+            )
     if not write:
         return RestoreOutcome(
             record.action_id, record.docmend_id, record.original_path, "would_restore", None
         )
 
+    # ---- Mutate: all inputs proven above. Ordering is loss-proof (codex
+    # CR-003 residual): the original is reinstated FIRST and the applied
+    # target is removed/replaced LAST, so an environmental failure at any
+    # step leaves a SUPERSET of the wanted files on disk — never a missing
+    # one. A half-restored record is deliberately re-runnable: its preflight
+    # collision check surfaces the leftover state instead of guessing.
     try:
         if record.operation == "rewrite":
             assert backup is not None
             atomic_write_bytes(original, backup)
         elif record.operation == "rename":
-            rename_no_clobber(target, original)
+            if clobbered is not None:
+                # Keep the target name occupied throughout: link the applied
+                # file back to its original name, then atomically replace the
+                # target with the clobbered content — no window where either
+                # name is missing.
+                link_no_clobber(target, original)
+                atomic_write_bytes(target, clobbered)
+            else:
+                rename_no_clobber(target, original)
         else:  # rename_and_rewrite
             assert backup is not None
             atomic_write_bytes(original, backup, clobber=False)
-            target.unlink()
-        if record.overwritten_backup_path is not None and record.operation != "rewrite":
-            # Reinstate the file the overwrite policy clobbered (OQ-035/G-002).
-            clobbered = Path(record.overwritten_backup_path).read_bytes()
-            if record.overwritten_sha256 is not None and _sha(clobbered) != record.overwritten_sha256:
-                return RestoreOutcome(
-                    record.action_id, record.docmend_id, record.original_path, "failed",
-                    "ERR-004: overwritten-target backup hash mismatch",
-                )
-            atomic_write_bytes(target, clobbered, clobber=False)
+            if clobbered is not None:
+                atomic_write_bytes(target, clobbered)
+            else:
+                target.unlink()
     except (WriteError, OSError, FileExistsError) as exc:
         return RestoreOutcome(
             record.action_id, record.docmend_id, record.original_path, "failed",
@@ -2990,6 +3241,25 @@ def test_single_file_journey__scan_plan_apply_with_defaults(
     assert not single.exists()
 
 
+def test_drill_relative_backup_dir__restore_from_other_cwd(
+    drill_corpus: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """codex CR-005: a RELATIVE --backup-dir must still yield a manifest that
+    restores from a different working directory (IR-008 standalone manifest)."""
+    before = _snapshot(drill_corpus)
+    runner.invoke(app, ["plan", str(drill_corpus), "--out", "plan.json"])
+    applied = runner.invoke(app, ["apply", "plan.json", "--write", "--backup-dir", "backups"])
+    assert applied.exit_code == 0, applied.output
+    manifest = _artifact(r"manifest: (\S+)", applied.output).resolve()
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    restored = runner.invoke(app, ["restore", "--manifest", str(manifest), "--write"])
+    assert restored.exit_code == 0, restored.output
+    assert _snapshot(drill_corpus) == before
+
+
 def test_drill_report_and_manifest_agree(drill_corpus: Path) -> None:
     """DR-003/DR-004 consistency: applied count in the report equals the number
     of applied manifest records (§17.2 Operations row)."""
@@ -3041,7 +3311,7 @@ git commit -m "test: automated restore drill + single-file apply journey (18.6/F
 - [ ] **Step 1: §21 rows.** Append to the spec's §21 table (content-edit within existing structure — no CLI needed, conventions #3):
 
 ```markdown
-| OQ-035 | FR-005's CLI surface and risk tiers: how are the git/external preservation strategies declared, what exactly is a "low-risk single-file operation", and how is an overwrite-clobbered target preserved (G-002)? | Proceeding on: `--backup-dir` activates tool backups; `--preserved-by git\|external` declares an external byte-preserving strategy (operator assertion); `--allow-no-backup` is the low-risk opt-in, valid only for single-action plans; an action is a content rewrite iff any operation ≠ rename; rename-only runs under skip/fail collision policy need no strategy (manifest suffices); a run that would overwrite an existing target requires an active strategy, and tool backups also copy the clobbered target (manifest 1.1 `overwritten_*` fields). | No | owner | MS-4 (before verify/resume harden the surface) | Open | | OQ-036 | Run-level lock (OQ-027) location and liveness semantics — the spec mandates the lock but not its home. | Proceeding on: `$XDG_STATE_HOME/docmend/locks/<sha256-of-resolved-source-root>.json` (default `~/.local/state/…`), holder JSON (run_id/pid/command/started_at), `O_CREAT\|O_EXCL` acquisition, dead-PID/corrupt holder treated stale and re-taken, live holder refuses with exit 3 (AW-005); plan warns-and-proceeds if the state dir is uncreatable (stays read-only-safe), apply/restore refuse. | No | owner | MS-4 | Open |
+| OQ-035 | FR-005's CLI surface and risk tiers: how are the git/external preservation strategies declared, what exactly is a "low-risk single-file operation", and how is an overwrite-clobbered target preserved (G-002)? | Proceeding on: `--backup-dir` activates tool backups; `--preserved-by git\|external` declares an external byte-preserving strategy (operator assertion); `--allow-no-backup` is the low-risk opt-in, valid only for single-action plans; an action is a content rewrite iff any operation ≠ rename; rename-only runs under skip/fail collision policy need no strategy (manifest suffices); a run that would overwrite an existing target requires an active strategy, and tool backups also copy the clobbered target (manifest 1.1 `overwritten_*` fields). | No | owner | MS-4 (before verify/resume harden the surface) | Open | | OQ-036 | Run-level lock (OQ-027) location and mechanism — the spec mandates the lock but not its home. | Proceeding on: `flock(2)` on `$XDG_STATE_HOME/docmend/locks/<sha256-of-resolved-source-root>.lock` (default `~/.local/state/…`) — kernel-owned, so a crashed holder can never leave a stale lock and no stale-detection/unlink races exist; holder JSON (run_id/pid/command/started_at) written only for the refusal message; a live holder refuses with exit 3 (AW-005); plan warns-and-proceeds if the state dir is uncreatable (stays read-only-safe), apply/restore refuse. Single-machine semantics (A-003-adjacent: local POSIX filesystem per A-001). | No | owner | MS-4 | Open |
 ```
 
 Mirror both into `docs/open-questions.md` following that file's existing entry format (read it first; keep the same headings/fields it uses for OQ-034).

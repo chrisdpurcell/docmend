@@ -2,7 +2,7 @@
 
 Approved design for remediating the rollout-blocking safety findings DMR-01 through DMR-07 from the [2026-07-10 comprehensive review synthesis](../../codex-reviews/2026-07-10-2034-comprehensive-review-synthesis.md). This document is the design-stage artifact; the binding change lands as a SPEC-VHHB revision plus ADR amendments and new ADRs before implementation (see [Change-control follow-through](#change-control-follow-through)).
 
-Revision note: revised to resolve findings F1–F8 of the [design review](../../codex-reviews/2026-07-10-safety-core-remediation-design-review.md) (artifact-guard default carve-out, descriptor/pathname identity binding on both source and target, the complete manifest 2.0 wire model, backup-store trust boundary, verify input contract, ADR dispositions, and the read/write context split).
+Revision note: revised to resolve findings F1–F8 of the [design review](../../codex-reviews/2026-07-10-safety-core-remediation-design-review.md) (artifact-guard default carve-out, descriptor/pathname identity binding on both source and target, the complete manifest 2.0 wire model, backup-store trust boundary, verify input contract, ADR dispositions, and the read/write context split). Revised again per review round 2: the adjudication table now enumerates every crash-after-step state — including the lossless both-names intermediates of the link-then-unlink primitives — and verify's coverage reduction makes the ManifestChain the mutation authority with `already-applied` as a nonterminal confirmation.
 
 ## Decisions Fixed Before Design
 
@@ -91,19 +91,34 @@ New module `writer/commit.py`; substantial rewrites of `writer/manifest.py`, `wr
 
 **One reducer, three consumers.** `reduce_lifecycle(chain)` folds records in chain order, then `seq` — never wall-clock — into one state per original apply action: `pending-intent`, `applied`, `failed`, `pending-restore`, `restored`, `restore-failed`. Resume, restore, and verify all consume this reducer; the three divergent interpretations currently in `apply.py`, `restore.py`, and `verify.py` are deleted.
 
-**Dangling-intent adjudication.** A dangling intent (no terminal record after it in the chain) means a kill landed inside that mutation's window. The consumer adjudicates from disk state, generalizing today's `_reconcile_intent`; every cell either completes deterministically or refuses as `external-interference` (ADR-0006's no-guessing rule):
+**Dangling-intent adjudication.** A dangling intent (no terminal record after it in the chain) means a kill landed inside that mutation's window. The consumer adjudicates from disk state, generalizing today's `_reconcile_intent`. The table enumerates the crash-after state of **every mutation step** of every primitive — including the lossless intermediate states the multi-step primitives deliberately leave (`rename_no_clobber` is link-then-unlink, so a kill between the calls leaves both names on one intact inode; the restore inverses stage the original before cleaning up the target). Every recognized state either re-executes from the start or **completes the remaining steps** — after re-verifying each involved object against the record's hashes and identities — and appends the terminal. `external-interference` is reserved for states that fail all recorded identity/hash predicates (ADR-0006's no-guessing rule); it is never the classification of a known intermediate state.
 
-| Operation (intent dangling) | Disk state | Adjudication |
+| Operation (intent dangling) | Crash-after disk state (matched via recorded hashes/identity) | Adjudication |
 | --- | --- | --- |
-| rewrite | path hashes to expected after | mutation happened — append terminal `applied` |
-| rewrite | path hashes to before | never happened — re-execute |
-| rename | target has before-bytes (or recorded overwritten target replaced) and source gone | happened — append terminal `applied` |
-| rename | source has before-bytes and target absent (or still holds recorded overwritten bytes) | never happened — re-execute |
-| rename_and_rewrite | target hashes to expected after | publish happened — unlink lingering source, append terminal |
-| rename_and_rewrite | target absent or holds recorded overwritten bytes | never happened — re-execute |
-| restore inverse (any kind) | disk matches the inverse's expected outcome | happened — append terminal; state becomes `restored` |
-| restore inverse (any kind) | disk matches pre-inverse state | never happened — re-execute the inverse |
-| any | anything else | `external-interference`; mutate nothing |
+| rewrite (single atomic step) | path hashes to before | never happened — re-execute |
+| rewrite | path hashes to expected after | happened — append terminal `applied` |
+| rename, no-clobber (link, then unlink) | source only, before-bytes | never happened — re-execute |
+| rename, no-clobber | **both names bound to one inode, before-bytes** | link landed — unlink source, append terminal `applied` |
+| rename, no-clobber | target only, before-bytes | happened — append terminal `applied` |
+| rename, overwrite (single atomic replace) | source has before-bytes, target holds recorded overwritten bytes | never happened — re-execute |
+| rename, overwrite | target has before-bytes, source gone | happened — append terminal `applied` |
+| rename_and_rewrite (publish target, then unlink source) | target absent or holds recorded overwritten bytes | never happened — re-execute |
+| rename_and_rewrite | **target hashes to expected after, source still has before-bytes** | publish landed — unlink source, append terminal `applied` |
+| rename_and_rewrite | target hashes to expected after, source gone | happened — append terminal `applied` |
+| restore inverse of rewrite (single atomic step) | original still hashes to after (the applied bytes) | never happened — re-execute the inverse |
+| restore inverse of rewrite | original hashes to before | happened — append inverse terminal (`restored`) |
+| restore inverse of rename, no clobbered target (link, then unlink) | target only, after-bytes | never happened — re-execute the inverse |
+| restore inverse of rename, no clobbered target | **both names bound to one inode** | link landed — unlink target, append inverse terminal |
+| restore inverse of rename, no clobbered target | original only, after-bytes | happened — append inverse terminal |
+| restore inverse of rename with clobbered target (relink original, then rewrite target) | target has applied bytes, original absent | never happened — re-execute the inverse |
+| restore inverse of rename with clobbered target | **original relinked, target still has applied bytes** | verify both identities and the clobbered backup, finish the target rewrite, append inverse terminal |
+| restore inverse of rename with clobbered target | original has applied bytes, target holds recorded clobbered bytes | happened — append inverse terminal |
+| restore inverse of rename_and_rewrite (reinstate original, then clean up target) | original absent, target has applied bytes | never happened — re-execute the inverse |
+| restore inverse of rename_and_rewrite | **original hashes to before, target still has applied bytes** | reinstatement landed — verify the restored original, finish target cleanup (unlink, or rewrite to recorded clobbered bytes), append inverse terminal |
+| restore inverse of rename_and_rewrite | original hashes to before, target absent or holds recorded clobbered bytes | happened — append inverse terminal |
+| any | fails every recorded identity/hash predicate | `external-interference`; mutate nothing |
+
+Each table row is paired with a deterministic fault-injection test that kills exactly after the corresponding step (see Testing).
 
 **Worked example (F4).** Plan P, actions a1–a3. Apply run R1 writes M1: header (kind apply, plan P, prior null); a1 intent+applied; a2 intent — killed. Resume R2 writes M2 (prior = sha(M1)): adjudicates a2's dangling intent from disk (never happened) and re-executes — a2 intent+applied; a3 intent+applied; a1 needs no record (already terminal in chain). Restore R3 writes M3 (kind restore, prior = sha(M2)): inverse of a3 (undoes a3) intent+applied; inverse of a2 intent — killed. Restore re-run R4 writes M4 (prior = sha(M3)): adjudicates a2's dangling inverse intent, completes it, then inverts a1. `reduce_lifecycle([M1, M2, M3, M4])` yields a1 `restored`, a2 `restored`, a3 `restored` — deterministically, from chain links and seq alone.
 
@@ -145,9 +160,11 @@ Verify consumes Plan, **Report(s)**, ManifestChain, and BackupStore (F6) — mat
 Plan-coverage semantics (F6):
 
 - The action partition is a full invariant: every plan action appears exactly once across `applied | failed | skipped | not-attempted` (write runs) — duplicates and omissions are findings. `ReportTotals` gains `not_attempted` and the DR-003 reconciliation extends to it.
-- Across a resume chain with multiple reports, the latest terminal outcome per action wins; earlier reports must not contradict the manifest chain.
+- **The ManifestChain lifecycle reduction is the mutation authority; report outcomes never override it.** The partition is built in two passes: first `reduce_lifecycle(chain)` fixes the state of every action with mutation evidence, then report outcomes fill in the actions the manifest intentionally never records (ordinary skips, `not-attempted`).
+- `skipped/already-applied` is a **nonterminal reconciliation observation**, not a terminal outcome: a resume run emits it after confirming an earlier run's applied record against disk, so it confirms and retains the reducer's `applied` state — it never demotes it. A clean single or double resume therefore certifies as fully applied.
+- Allowed cross-run report transitions, in precedence order: `not-attempted -> any terminal` (a later run attempted the action); `failed -> applied` (a successful retry); `applied -> already-applied` (retained as `applied`); any later report that contradicts the chain's terminal mutation state — or claims a terminal `applied` with no chain record — is a finding.
 - A dry-run report (`would_apply`) is not terminal evidence: `verify --plan` against only dry-run reports reports coverage as uncertified, a finding.
-- A missing report where the manifest chain shows mutations — including a report whose publication was interrupted after corpus mutation — is a finding (`coverage unprovable`), not silence; the manifest chain remains the mutation authority.
+- A missing report where the manifest chain shows mutations — including a report whose publication was interrupted after corpus mutation — is a finding (`coverage unprovable`), not silence.
 
 Verify optionally writes a durable result artifact (new `verify-report` schema, written through the destination guard) so rollout gates can consume recorded evidence rather than an exit code.
 
@@ -178,9 +195,9 @@ Each abstraction gets unit tests plus the review's reproductions as regressions:
 - the DMR-01 collision plan (dirty `a.md` + `a.txt -> a.md`, overwrite policy) applying and then restoring byte-identically;
 - the artifact-clobber matrix across scan, plan, apply dry-run, and refused writes, **plus** default-path acceptance (`scan .`, `plan .`, apply, restore, verify writing under `./.docmend/`) and explicit rejection of in-corpus source-file destinations and of `.docmend/` destinations when its exclusion has been removed (F1);
 - adversarial manifest fixtures: mixed root and run, gapped or duplicate sequence, crafted out-of-root paths, crafted backup paths outside the BackupStore key space (F5), broken chain links, forked chains, intent/terminal immutable-field divergence, dangling intents, duplicate applied records, missing `undoes` references, 1.x rejection;
-- crash-window fault injection for all mutation kinds and restore inverses, extending the existing `test_resume.py` injection pattern, including the worked example's apply → interrupted resume → interrupted restore → convergent re-run chain;
+- crash-window fault injection for all mutation kinds and restore inverses, extending the existing `test_resume.py` injection pattern: **one deterministic kill-after-step test per adjudication-table row** (including every both-names intermediate state), plus the worked example's apply → interrupted resume → interrupted restore → convergent re-run chain;
 - commit-boundary races via the deterministic hooks listed above (source replacement, parent symlink, target replacement after backup, target creation before publish, unlink/publish windows) (F2/F3);
-- a verify false-clean matrix asserting each table row yields a finding, plus `verify --plan` full-partition accounting across single-run, resume-chain, dry-run-only, and missing-report cases (F6).
+- a verify false-clean matrix asserting each table row yields a finding, plus `verify --plan` full-partition accounting across single-run, resume-chain, dry-run-only, and missing-report cases — including clean single-resume and double-resume chains proving `already-applied` retains the `applied` state (F6).
 
 The standard gate holds: Ruff, BasedPyright strict, pytest at or above the current 97% branch coverage, allpairspy for the new gate and commit predicates, pip-audit.
 

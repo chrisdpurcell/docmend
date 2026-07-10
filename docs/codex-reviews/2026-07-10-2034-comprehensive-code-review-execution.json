@@ -1,0 +1,28 @@
+{
+	"canonical_prompt": "perform a code review",
+	"completed_at": "2026-07-10T21:37:23.552345+00:00",
+	"error": null,
+	"follow_on_reviews": [],
+	"last_heartbeat_at": "2026-07-10T21:37:23.552345+00:00",
+	"last_message_path": null,
+	"last_progress_message": "Child review completed successfully. Elapsed: 10m13s. Saved report: docs/codex-reviews/2026-07-10-2034-comprehensive-code-review-report.md",
+	"latest_existing_report": "docs/codex-reviews/2026-07-10-2034-codex-review-live-status.md",
+	"queue_position": 18,
+	"repo_name": "docmend",
+	"repo_root": ".",
+	"residual_risk_summary": [],
+	"review_manifest_path": "./docs/codex-reviews/2026-07-10-2034-comprehensive-code-review-execution.json",
+	"review_skill": "comprehensive-code-review",
+	"save_dir": "docs/codex-reviews/",
+	"saved_report_path": "docs/codex-reviews/2026-07-10-2034-comprehensive-code-review-report.md",
+	"shared_research_path": "docs/codex-reviews/2026-07-10-2034-codex-review-shared-research.md",
+	"shared_research_status": "completed",
+	"started_at": "2026-07-10T21:27:10.489480+00:00",
+	"status": "completed",
+	"sweep_started_at": "2026-07-10-2034",
+	"top_findings_summary": [
+		"ISSUE-001: Mutation and recovery journals do not cover every commit boundary",
+		"ISSUE-002: Restore and verify trust manifest paths outside the recorded source root",
+		"ISSUE-003: Hash and containment preconditions are not held through mutation"
+	]
+}

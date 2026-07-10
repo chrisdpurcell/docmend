@@ -1,0 +1,32 @@
+{
+	"canonical_prompt": "perform a product logic review",
+	"completed_at": "2026-07-10T21:03:57.703319+00:00",
+	"error": null,
+	"follow_on_reviews": [],
+	"last_heartbeat_at": "2026-07-10T21:03:57.703319+00:00",
+	"last_message_path": null,
+	"last_progress_message": "Child review completed successfully. Elapsed: 12m13s. Saved report: docs/codex-reviews/2026-07-10-2034-product-and-business-logic-review-report.md",
+	"latest_existing_report": "docs/codex-reviews/2026-07-10-2034-codex-review-live-status.md",
+	"queue_position": 3,
+	"repo_name": "docmend",
+	"repo_root": ".",
+	"residual_risk_summary": [
+		"The normal suite is green, but it does not exercise the confirmed high-risk combinations above.",
+		"The opt-in 100k scale test was not run during this review; scale performance was not needed to confirm the logic findings.",
+		"Real-library anomaly prevalence and external-backup reliability remain unverified owner/environment facts."
+	],
+	"review_manifest_path": "./docs/codex-reviews/2026-07-10-2034-product-and-business-logic-review-execution.json",
+	"review_skill": "product-and-business-logic-review",
+	"save_dir": "docs/codex-reviews/",
+	"saved_report_path": "docs/codex-reviews/2026-07-10-2034-product-and-business-logic-review-report.md",
+	"shared_research_path": "docs/codex-reviews/2026-07-10-2034-codex-review-shared-research.md",
+	"shared_research_status": "completed",
+	"started_at": "2026-07-10T20:51:43.733651+00:00",
+	"status": "completed",
+	"sweep_started_at": "2026-07-10-2034",
+	"top_findings_summary": [
+		"ISSUE-001: Hash and containment preconditions are not held through mutation",
+		"ISSUE-002: Restore and verify do not enforce manifest-to-source-root binding",
+		"ISSUE-003: Verify does not verify backup references or recoverable before-state"
+	]
+}

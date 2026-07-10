@@ -17,6 +17,10 @@ _None outstanding._
 
 ## Agent tasks
 
+- [ ] Remediate the confirmed rollout blockers in the [2026-07-10 comprehensive review synthesis](codex-reviews/2026-07-10-2034-comprehensive-review-synthesis.md).
+
+  Start with same-plan path ownership and backup namespacing, artifact destination overlap, and validated manifest/root boundaries. Then close apply/restore journal gaps and every false-clean verify path. Reconcile scale, identity, schema, release, observability, and documentation contracts after the safety core is protected.
+
 - [ ] Support the owner's first staged real-library rollout under spec section 18.4.
 
-  Scan read-only, review the plan and skip pile, apply a filtered subset, then widen. Expand the weird-document corpus only through the adr-0015 re-synthesis procedure so no real library bytes or paths enter this public repository.
+  Blocked on the comprehensive-review remediation above. After it closes, scan read-only, review the plan and skip pile, apply a filtered subset, then widen. Expand the weird-document corpus only through the adr-0015 re-synthesis procedure so no real library bytes or paths enter this public repository.

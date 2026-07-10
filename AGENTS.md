@@ -30,3 +30,10 @@ Do not reread `docs/handoff/state.md` when SessionStart already injected it.
 Keep current status and tasks in `docs/STATUS.md` and `docs/TODO.md`; route durable facts through `docs/handoff/`.
 At closeout, update only changed facts, preserve user-authored work, store credential references only, and run relevant validation.
 <!-- END agent-handoff managed instructions -->
+
+## Review Orchestrator Note
+
+- Full `review-orchestrator` sweeps now run selected child reviews with bounded parallelism by default, currently up to `8` in parallel after planning, preflight, and shared research complete.
+- The shared-research phase can legitimately take around `10` minutes on larger or research-heavy repos before child reviews start, so treat that as normal unless heartbeats stop or no artifact activity appears beyond that window.
+- Expect the sweep index, child review reports, and `*-execution.json` manifests under `docs/codex-reviews/` while the sweep is running.
+- Do not describe sweep child reviews as running “one at a time” unless the sweep was explicitly configured down to serial execution.

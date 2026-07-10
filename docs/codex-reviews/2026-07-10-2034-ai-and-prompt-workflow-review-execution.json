@@ -1,0 +1,28 @@
+{
+	"canonical_prompt": "perform an AI workflow review",
+	"completed_at": "2026-07-10T21:01:02.390940+00:00",
+	"error": null,
+	"follow_on_reviews": [],
+	"last_heartbeat_at": "2026-07-10T21:01:02.390940+00:00",
+	"last_message_path": null,
+	"last_progress_message": "Child review completed successfully. Elapsed: 9m18s. Saved report: docs/codex-reviews/2026-07-10-2034-ai-and-prompt-workflow-review-report.md",
+	"latest_existing_report": "docs/codex-reviews/2026-07-10-2034-codex-review-live-status.md",
+	"queue_position": 6,
+	"repo_name": "docmend",
+	"repo_root": ".",
+	"residual_risk_summary": [
+		"current_product_ai_risk: none identified; product model inference, retrieval, prompt construction, agent loops, and tool calling are absent in v1",
+		"current_development_ai_risk: high until ISSUE-001 is corrected if the consistency prompt remains active; medium for research-source isolation; low for the remaining governance and documentation gaps",
+		"future_ai_risk: high if confidential corpus content is ever sent to a hosted model or model output can affect destructive actions without a separately approved data-flow, deterministic policy enforcement, constrained tools/egress, evals, and human approval"
+	],
+	"review_manifest_path": "./docs/codex-reviews/2026-07-10-2034-ai-and-prompt-workflow-review-execution.json",
+	"review_skill": "ai-and-prompt-workflow-review",
+	"save_dir": "docs/codex-reviews/",
+	"saved_report_path": "docs/codex-reviews/2026-07-10-2034-ai-and-prompt-workflow-review-report.md",
+	"shared_research_path": "docs/codex-reviews/2026-07-10-2034-codex-review-shared-research.md",
+	"shared_research_status": "completed",
+	"started_at": "2026-07-10T20:51:43.735088+00:00",
+	"status": "completed",
+	"sweep_started_at": "2026-07-10-2034",
+	"top_findings_summary": []
+}

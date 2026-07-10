@@ -1,0 +1,28 @@
+{
+	"canonical_prompt": "perform a performance review",
+	"completed_at": "2026-07-10T21:12:52.842202+00:00",
+	"error": null,
+	"follow_on_reviews": [],
+	"last_heartbeat_at": "2026-07-10T21:12:52.842202+00:00",
+	"last_message_path": null,
+	"last_progress_message": "Child review completed successfully. Elapsed: 8m16s. Saved report: docs/codex-reviews/2026-07-10-2034-performance-review-report.md",
+	"latest_existing_report": "docs/codex-reviews/2026-07-10-2034-codex-review-live-status.md",
+	"queue_position": 16,
+	"repo_name": "docmend",
+	"repo_root": ".",
+	"residual_risk_summary": [
+		"Direct repo evidence cannot predict the real-library rollout without its workload distribution and storage environment.",
+		"Tracemalloc excludes some native allocations and is not peak RSS; large-file field memory may be higher or lower than the focused values.",
+		"The 100 MiB extrapolation is intentionally labeled as inference; only 8/16/32 MiB inputs were measured."
+	],
+	"review_manifest_path": "./docs/codex-reviews/2026-07-10-2034-performance-review-execution.json",
+	"review_skill": "performance-review",
+	"save_dir": "docs/codex-reviews/",
+	"saved_report_path": "docs/codex-reviews/2026-07-10-2034-performance-review-report.md",
+	"shared_research_path": "docs/codex-reviews/2026-07-10-2034-codex-review-shared-research.md",
+	"shared_research_status": "completed",
+	"started_at": "2026-07-10T21:04:35.971656+00:00",
+	"status": "completed",
+	"sweep_started_at": "2026-07-10-2034",
+	"top_findings_summary": []
+}

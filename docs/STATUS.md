@@ -6,5 +6,7 @@
 - The approved SPEC-VHHB revision 0.25 and ADRs 0001-0018 govern post-v1 changes; the decision backlog is empty.
 - The current baseline is 619 tests plus an opt-in 100k-file scale test, with 97% coverage.
 - The repository workflow is `dev` to pull request to protected `main`; releases are signed `vX.Y.Z` tags with sdist and wheel artifacts.
-- The next substantive work is the owner's staged real-library rollout and synthetic weird-corpus expansion from observed anomalies.
+- The 2026-07-10 comprehensive review confirmed rollout-blocking defects in plan/backup path ownership, artifact destinations, manifest trust, recovery journaling, and verification semantics; no product fixes were made during the review.
+- The default Python gate remains green, but the opt-in scale test is stale and currently fails against the manifest 1.3 intent protocol.
+- The next substantive work is the review remediation queue; the owner's staged real-library write rollout follows only after those blockers close.
 - Agent Handoff v1 provides one shared repo-local SessionStart runtime for the dual Claude/Codex profile.

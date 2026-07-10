@@ -1,0 +1,32 @@
+{
+	"canonical_prompt": "perform a documentation review",
+	"completed_at": "2026-07-10T21:01:18.822865+00:00",
+	"error": null,
+	"follow_on_reviews": [],
+	"last_heartbeat_at": "2026-07-10T21:01:18.822865+00:00",
+	"last_message_path": null,
+	"last_progress_message": "Child review completed successfully. Elapsed: 9m35s. Saved report: docs/codex-reviews/2026-07-10-2034-documentation-and-runbook-review-report.md",
+	"latest_existing_report": "docs/codex-reviews/2026-07-10-2034-codex-review-live-status.md",
+	"queue_position": 2,
+	"repo_name": "docmend",
+	"repo_root": ".",
+	"residual_risk_summary": [
+		"High residual risk remains until recovery language and verification are corrected: current docs can induce overconfidence even though the CLI has conservative defaults and warnings.",
+		"High-confidence repo evidence supports ISSUE-001 through ISSUE-008 and ISSUE-010 through ISSUE-014.",
+		"ISSUE-009 is medium-confidence because the documentation defect is the unsupported certainty; actual legal applicability is intentionally unresolved."
+	],
+	"review_manifest_path": "./docs/codex-reviews/2026-07-10-2034-documentation-and-runbook-review-execution.json",
+	"review_skill": "documentation-and-runbook-review",
+	"save_dir": "docs/codex-reviews/",
+	"saved_report_path": "docs/codex-reviews/2026-07-10-2034-documentation-and-runbook-review-report.md",
+	"shared_research_path": "docs/codex-reviews/2026-07-10-2034-codex-review-shared-research.md",
+	"shared_research_status": "completed",
+	"started_at": "2026-07-10T20:51:43.733227+00:00",
+	"status": "completed",
+	"sweep_started_at": "2026-07-10-2034",
+	"top_findings_summary": [
+		"ISSUE-001: Recovery documentation promises complete journals and universal reversibility that the documented failure model does not provide",
+		"ISSUE-002: The approved specification advertises CLI and configuration behavior that is not implemented",
+		"ISSUE-003: The restore runbook's verification step does not prove that the corpus returned to its pre-apply state"
+	]
+}

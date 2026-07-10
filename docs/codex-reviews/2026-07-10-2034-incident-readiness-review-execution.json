@@ -1,0 +1,32 @@
+{
+	"canonical_prompt": "perform an incident readiness review",
+	"completed_at": "2026-07-10T21:12:11.431435+00:00",
+	"error": null,
+	"follow_on_reviews": [],
+	"last_heartbeat_at": "2026-07-10T21:12:11.431435+00:00",
+	"last_message_path": null,
+	"last_progress_message": "Child review completed successfully. Elapsed: 10m17s. Saved report: docs/codex-reviews/2026-07-10-2034-incident-readiness-review-report.md",
+	"latest_existing_report": "docs/codex-reviews/2026-07-10-2034-codex-review-live-status.md",
+	"queue_position": 13,
+	"repo_name": "docmend",
+	"repo_root": ".",
+	"residual_risk_summary": [
+		"overall_posture: `not ready for broad unattended destructive rollout without owner-accepted recovery risk; appropriate for continued synthetic testing and read-only scan/plan`",
+		"strongest_controls: `dry-run default, explicit write gate, tool-backup verification, atomic publication, run locking, per-run correlation, conservative skip behavior, broad automated tests`",
+		"highest_residual_risks: `unjournaled committed mutations, uncontained restore manifests, stale file identity at commit, false-clean verification, and unproven recovery-point integrity`"
+	],
+	"review_manifest_path": "./docs/codex-reviews/2026-07-10-2034-incident-readiness-review-execution.json",
+	"review_skill": "incident-readiness-review",
+	"save_dir": "docs/codex-reviews/",
+	"saved_report_path": "docs/codex-reviews/2026-07-10-2034-incident-readiness-review-report.md",
+	"shared_research_path": "docs/codex-reviews/2026-07-10-2034-codex-review-shared-research.md",
+	"shared_research_status": "completed",
+	"started_at": "2026-07-10T21:01:54.070800+00:00",
+	"status": "completed",
+	"sweep_started_at": "2026-07-10-2034",
+	"top_findings_summary": [
+		"ISSUE-001: Mutation journals are not write-ahead for every apply and restore operation",
+		"ISSUE-002: Restore and verify do not enforce manifest-to-root containment",
+		"ISSUE-003: Hash and containment preconditions are not held through commit"
+	]
+}

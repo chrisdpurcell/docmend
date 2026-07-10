@@ -26,3 +26,12 @@ spec:
 # NOTE: no `markdown.adr.require_sections` block either — that check rides the frontmatter
 # validator workflow, which is not installed here, so it would be inert. ADRs are authored
 # from docs/adr/adr.template.md and kept consistent by convention.
+
+# BEGIN agent-handoff managed config
+agent_handoff:
+  version: "1.0"
+  startup: automatic
+  harnesses:
+    - claude-code
+    - codex
+# END agent-handoff managed config

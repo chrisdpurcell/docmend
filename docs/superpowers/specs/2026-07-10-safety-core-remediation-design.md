@@ -1,6 +1,8 @@
 # Safety-Core Remediation Design
 
-Approved design for remediating the rollout-blocking safety findings DMR-01 through DMR-07 from the [2026-07-10 comprehensive review synthesis](../../codex-reviews/2026-07-10-2034-comprehensive-review-synthesis.md). This document is the design-stage artifact; the binding change lands as a SPEC-VHHB revision plus new ADRs before implementation (see [Change-control follow-through](#change-control-follow-through)).
+Approved design for remediating the rollout-blocking safety findings DMR-01 through DMR-07 from the [2026-07-10 comprehensive review synthesis](../../codex-reviews/2026-07-10-2034-comprehensive-review-synthesis.md). This document is the design-stage artifact; the binding change lands as a SPEC-VHHB revision plus ADR amendments and new ADRs before implementation (see [Change-control follow-through](#change-control-follow-through)).
+
+Revision note: revised to resolve findings F1–F8 of the [design review](../../codex-reviews/2026-07-10-safety-core-remediation-design-review.md) (artifact-guard default carve-out, descriptor/pathname identity binding on both source and target, the complete manifest 2.0 wire model, backup-store trust boundary, verify input contract, ADR dispositions, and the read/write context split).
 
 ## Decisions Fixed Before Design
 
@@ -33,7 +35,7 @@ New module `writer/commit.py`; substantial rewrites of `writer/manifest.py`, `wr
 | Artifact destination guard        | `artifacts.py`       | DMR-02    |
 | Verify as pure consumer           | `verify.py`          | DMR-05    |
 
-Engine entrypoints (`execute_plan`, `run_restore`) additionally stop being callable without coordination: both take a `SafetyContext` constructible only by acquiring the run lock and passing the gate, closing the engine-bypass medium.
+**Read/write entrypoint split (F8).** The engines split into read-only preview and mutation entrypoints instead of one dual-mode function. `preview_plan` and `preview_restore` keep today's dry-run behavior (default mode, current lock semantics, no write ceremony — FR-004/IR-008). `execute_plan` and `run_restore` require a `WriteSafetyContext`, a sealed capability whose only factory: acquires the run lock, evaluates the apply gate (apply) or the ManifestSet preflight and lock keying (restore), runs the artifact destination guard over the run's report and manifest destinations, and remains held — as a context manager — through manifest close and report publication. Nothing else can construct it, closing the engine-bypass medium without gating read-only use.
 
 ## Output Ledger and Backup Store (DMR-01)
 
@@ -46,72 +48,113 @@ Engine entrypoints (`execute_plan`, `run_restore`) additionally stop being calla
 **BackupStore.** The layout changes from `<backup_root>/<run_id>/<relative_path>` to `<backup_root>/<run_id>/<action_seq>/<role>/<relative_path>` with `role` one of `source` or `overwritten`.
 
 - Keys are write-once: the destination opens `O_EXCL`, and an existing file at a key raises `BackupError` (ERR-004). A retry is a new run with a new `run_id`, never a rewrite of an existing key.
-- The manifest records full backup paths, so restore needs no layout knowledge; ManifestSet validates recorded backup paths as outside the source root before restore follows them.
+- **Backup trust boundary (F5).** The manifest header carries the run's resolved `backup_root`. ManifestSet requires every non-null recorded backup path to resolve beneath that root **and** to reconstruct exactly from the record's own `(run_id, action_seq, role, relative_path)` BackupStore key — a backup reference is derivable evidence, never a free-form path. Before any backup is opened, ManifestSet additionally validates: regular file, no symlink in the components below `backup_root`, role consistency with the record's operation (an `overwritten` role requires `overwritten_sha256`), and at most one path per role per action. External-preservation records keep null backup paths; their recovery lives outside `docmend restore`, unchanged (ADR-0004).
 - Defense in depth: even a future planner regression cannot reproduce the DMR-01 data loss, because the colliding backups land under different `(action, role)` keys.
 
-## Manifest 2.0, Lifecycle Reducer, Journaled Mutations (DMR-03/04)
+## Manifest 2.0 Wire Model (DMR-03/04)
 
-**Format.** Append-only NDJSON with the existing torn-tail rule. Line 1 becomes a header record:
+**Format.** Append-only NDJSON with the existing torn-tail rule. Line 1 is a header record; every subsequent line is a mutation record.
 
 ```json
 {
 	"schema": "docmend/manifest-header",
 	"schema_version": "2.0",
-	"run_id": "…",
+	"run_id": "R2",
 	"kind": "apply",
-	"source_root": "/resolved/root",
+	"source_root": "/resolved/library",
+	"backup_root": "/resolved/backups",
 	"plan_sha256": "sha256:…",
+	"prior_manifest_sha256": null,
 	"created_at": "…"
 }
 ```
 
-Run-level facts (run, root, plan identity) live once in the header instead of being re-stamped per record. Mutation records keep their fields, drop `source_root`, and use `result` as the lifecycle field: `intent | applied | failed`.
+- `kind` is `apply` (covers first apply and every resume) or `restore`.
+- `backup_root` is the run's resolved tool backup root, or null when the run took no tool backups (F5's trusted anchor).
+- `plan_sha256` binds an apply-kind manifest to the exact plan artifact; restore-kind headers carry the same value copied from the chain they undo, so one chain serves one plan.
+- `prior_manifest_sha256` is the durable chain link (F4): null for the first apply manifest; for a resume, the sha256 of the manifest file it extends; for a restore, the sha256 of the newest manifest in the chain it undoes; for a restore re-run, the sha256 of the interrupted restore manifest. Manifest files are closed before any successor hashes them, so the hash is stable (a torn tail stays torn).
 
-**Journal every mutation.** Every mutation kind — rewrite, rename, rename_and_rewrite, and each restore inverse — appends a fsync'd `intent` record before the corpus is touched and a terminal record after. A kill at any instant leaves either no evidence and no mutation, or a dangling intent that resume adjudicates from disk state, generalizing the existing `_reconcile_intent` logic to all kinds. Cost: two fsync'd appends per mutation.
+**Mutation records.** Records keep the 1.3 fields minus `source_root` (now header-owned), with `result` as the lifecycle field: `intent | applied | failed`. Two additions:
 
-**ManifestSet.** `read_manifest_set` replaces raw record lists everywhere and validates, before any referenced path is touched:
+- Immutable-field rule: an action's `intent` and terminal record must agree on `action_id`, `docmend_id`, `operation`, `original_path`, `target_path`, `before_sha256`, `after_sha256` (expected vs achieved), and both backup references; only `result`, `error`, `seq`, and `recorded_at` may differ. Divergence is a lifecycle violation.
+- Restore records carry `undoes_action_id` and `undoes_run_id` naming the original apply action they invert (F4) — the reducer never infers the relationship from timestamps or paths. Apply records carry both as null.
+
+**Journal every mutation.** Every mutation kind — rewrite, rename, rename_and_rewrite, and each restore inverse — appends a fsync'd `intent` record before the corpus is touched and a terminal record after. Pre-mutation failures (unreadable source, backup error) append `failed` with no prior intent, asserting no mutation occurred. Cost: two fsync'd appends per completed mutation.
+
+**ManifestSet and chain validation.** `read_manifest_set` validates one file; `read_manifest_chain` orders a set of files by their `prior_manifest_sha256` links. Validated before any referenced path is touched:
 
 - header present; version `2.x` with unsupported-future-minor rejection; any `1.x` file is rejected with the clean-break operator message;
 - one `run_id` matching the header; `seq` strictly contiguous from 1;
-- lifecycle legality per action: at most one terminal record; `applied` requires a preceding intent (a mutation happened, so it must have been journaled); `failed` is legal without an intent and then asserts no mutation occurred (pre-mutation failures such as a backup error); duplicate applied records are illegal;
-- containment: every `original_path` and `target_path` resolves inside the header's `source_root`; every backup path resolves outside it. Violation is a hard ERR-008 (exit 2), never a per-record skip — a manifest that lies about paths is untrusted evidence, not partially usable.
+- lifecycle legality per action: at most one terminal record; `applied` requires a preceding intent; `failed` without an intent asserts no mutation occurred; duplicate applied records are illegal; intent/terminal immutable fields must match;
+- chain coherence: exactly one root manifest, no forks, no gaps; identical `source_root` and `plan_sha256` across the chain; a `restore` kind may only follow the chain tip; restore records must reference `undoes_action_id` values that exist in the chain's apply records;
+- containment: every `original_path` and `target_path` resolves inside the header's `source_root`; every backup path satisfies the F5 BackupStore rules above. Violation handling: malformed or lifecycle-invalid files are ERR-008 artifact-input errors (exit 2); containment violations are safety refusals (exit 3, ADR-0012) — except in verify, where both are read-only findings (exit 1).
 
-**One reducer, three consumers.** `reduce_lifecycle` folds an ordered chain of ManifestSets, sorted by `(recorded_at, seq)`, into one terminal state per action (`applied`, `failed`, `pending-intent`, `restored`). Resume, restore, and verify all consume this reducer; the three divergent interpretations currently in `apply.py`, `restore.py`, and `verify.py` are deleted.
+**One reducer, three consumers.** `reduce_lifecycle(chain)` folds records in chain order, then `seq` — never wall-clock — into one state per original apply action: `pending-intent`, `applied`, `failed`, `pending-restore`, `restored`, `restore-failed`. Resume, restore, and verify all consume this reducer; the three divergent interpretations currently in `apply.py`, `restore.py`, and `verify.py` are deleted.
 
-**Restore.** The run lock keys on the header's `source_root`, not the first record. `--only-ids` selecting zero records exits 1 instead of reporting success. Because restore journals its inverses, an interrupted restore converges on re-run: the reducer sees the dangling inverse intent and completes it instead of tripping the collision preflight.
+**Dangling-intent adjudication.** A dangling intent (no terminal record after it in the chain) means a kill landed inside that mutation's window. The consumer adjudicates from disk state, generalizing today's `_reconcile_intent`; every cell either completes deterministically or refuses as `external-interference` (ADR-0006's no-guessing rule):
 
-## Commit Boundary and Artifact Guard (DMR-02/06/07)
+| Operation (intent dangling) | Disk state | Adjudication |
+| --- | --- | --- |
+| rewrite | path hashes to expected after | mutation happened — append terminal `applied` |
+| rewrite | path hashes to before | never happened — re-execute |
+| rename | target has before-bytes (or recorded overwritten target replaced) and source gone | happened — append terminal `applied` |
+| rename | source has before-bytes and target absent (or still holds recorded overwritten bytes) | never happened — re-execute |
+| rename_and_rewrite | target hashes to expected after | publish happened — unlink lingering source, append terminal |
+| rename_and_rewrite | target absent or holds recorded overwritten bytes | never happened — re-execute |
+| restore inverse (any kind) | disk matches the inverse's expected outcome | happened — append terminal; state becomes `restored` |
+| restore inverse (any kind) | disk matches pre-inverse state | never happened — re-execute the inverse |
+| any | anything else | `external-interference`; mutate nothing |
 
-**CommitBoundary.** Each mutation binds to one object identity instead of a pathname:
+**Worked example (F4).** Plan P, actions a1–a3. Apply run R1 writes M1: header (kind apply, plan P, prior null); a1 intent+applied; a2 intent — killed. Resume R2 writes M2 (prior = sha(M1)): adjudicates a2's dangling intent from disk (never happened) and re-executes — a2 intent+applied; a3 intent+applied; a1 needs no record (already terminal in chain). Restore R3 writes M3 (kind restore, prior = sha(M2)): inverse of a3 (undoes a3) intent+applied; inverse of a2 intent — killed. Restore re-run R4 writes M4 (prior = sha(M3)): adjudicates a2's dangling inverse intent, completes it, then inverts a1. `reduce_lifecycle([M1, M2, M3, M4])` yields a1 `restored`, a2 `restored`, a3 `restored` — deterministically, from chain links and seq alone.
 
-- Source bytes are read once through a file descriptor opened `O_RDONLY | O_NOFOLLOW`; `fstat` captures `(st_dev, st_ino)`; the hash check, transform recompute, and backup all use those bytes.
-- Immediately before the atomic publish, the boundary re-stats the source by descriptor and re-resolves containment. Identity drift — changed dev/ino, a path resolving outside the root, or an interposed symlink — skips the action with the new reason `external-interference`, corpus untouched. The check-to-rename window shrinks from whole-action to microseconds; the residual window is a documented accepted limitation with an injectable test hook, per DMR-06's repeat-checks arm (portable POSIX rename cannot be fully TOCTOU-free).
-- Overwrite preservation becomes an action-time invariant (DMR-07): if the target exists at commit — regardless of gate-time state — it must have a verified preservation outcome: an overwritten-role backup taken at commit into its own key, or a declared external strategy. Overwrite policy with no active strategy and a target present at commit skips with the new reason `collision-unpreserved`, never clobbers. The gate's plan-time check remains as early feedback but is no longer load-bearing.
+**Restore.** The run lock keys on the header's `source_root`. `--only-ids` selecting zero records exits 1 instead of reporting success. Because restore journals its inverses, an interrupted restore converges on re-run via the adjudication table instead of tripping the collision preflight.
 
-**Artifact destination guard.** One preflight for every CLI artifact write (`scan --report`, `plan --out`, `apply --report`, verify output):
+## Commit Boundary (DMR-06/07)
 
-- Resolve the destination through symlinks; refuse if it lies inside the corpus root, aliases any input artifact of the same invocation, or is a non-regular file. Refusal is exit 2 before the pipeline runs.
+**Source identity (F2).** Each mutation binds to one object identity, not a pathname:
+
+- The source opens once with `O_RDONLY | O_NOFOLLOW`; `fstat` captures `(st_dev, st_ino)`; the hash check, transform recompute, and backup all use bytes read from that descriptor.
+- Immediately before **each** pathname mutation step — every publish and every unlink — the boundary `lstat`s the source pathname (never following symlinks) and compares its `(st_dev, st_ino)` against the captured descriptor identity. A missing name, a symlink, or an identity mismatch skips the action as `external-interference` with the corpus untouched. `fstat` on the descriptor alone is insufficient by construction: it describes the originally opened inode even after the name is repointed.
+- Parent-path defense: `O_NOFOLLOW` guards only the final component, so the boundary re-resolves the full path and re-checks containment against the source root at the same instant as the `lstat` comparison; a parent directory swapped for a symlink fails containment even when the leaf identity matches.
+
+**Target identity (F3).** An existing overwrite target gets the same binding: it opens `O_NOFOLLOW`, its identity is captured, and its bytes are read and backed up **through that descriptor** into the `(action, overwritten)` key. Immediately before `os.replace`, the target pathname is `lstat`-compared against the captured identity — disappeared or changed means `external-interference`, never a clobber of an unpreserved object. When the earlier check found **no** target, publication uses a no-clobber primitive (`link`/`RENAME_NOREPLACE` semantics) and maps `EEXIST` to the new skip `collision-unpreserved` — a target that appears after the gate is never silently overwritten (DMR-07). The gate's plan-time overwrite-preservation check remains as early feedback but is no longer load-bearing.
+
+**Residual windows.** The `lstat`-to-`rename` interval on each side is the accepted residual (portable POSIX rename cannot be fully TOCTOU-free); it shrinks from whole-action seconds to microseconds and is documented as a stated limitation. Deterministic test hooks cover: regular-file replacement after validation, parent-symlink interposition, target replacement after backup, target creation immediately before publish, and the unlink/publish windows.
+
+## Artifact Destination Guard (DMR-02)
+
+One preflight for every CLI artifact write (`scan --report`, `plan --out`, `apply --report`, verify output), with one carve-out (F1):
+
+- The canonical tool artifact root — `.docmend/` in the invoking directory (OQ-034, §18.2) — remains a legal destination even when it lies inside the corpus root, **provided** the effective exclude patterns still cover it (the default `**/.docmend/**` exclude is present, so its contents can never become scan candidates) and the destination does not alias any input artifact of the same invocation. If the operator has removed the `.docmend/` exclusion, the guard refuses: the default workflows (`scan .`, `plan .`, the single-file journey) must keep working without setup (NFR-006), but never by writing into scannable corpus space.
+- Every other destination is refused when it resolves (through symlinks) inside the corpus root, aliases an input artifact of the same invocation, or is a non-regular file. Refusal is a safety refusal, exit 3 (ADR-0012), before the pipeline runs — a refused artifact write must not follow a completed scan.
 - Staging uses `O_EXCL` randomized temp names in the destination directory, replacing the predictable `<name>.tmp` sibling; the same change lands in `writer/atomic.py`, closing both the truncate-a-victim vector and the stale-temp-blocks-retry medium.
-- Apply report finalization moves inside the lock: the gate receives the report path, the guard runs before mutation starts, and the report is staged and published while the run lock is held. A refused or dry-run apply leaves prior corpus state and prior artifacts untouched.
+- Apply report finalization moves inside the `WriteSafetyContext`: the guard runs before mutation starts and the report is staged and published while the run lock is held. A refused or dry-run apply leaves prior corpus state and prior artifacts untouched.
 
 ## Verify Redesign (DMR-05)
 
-Verify becomes a pure consumer of Plan, ManifestSet, and BackupStore. Every confirmed false-clean path becomes a finding:
+Verify consumes Plan, **Report(s)**, ManifestChain, and BackupStore (F6) — matching ADR-0012's input contract (flags or sidecar discovery). Coverage binding: the report's `plan_ref` hash, the manifest headers' `plan_sha256`, and the plan artifact hash must agree; report and manifest bind per run by `run_id`. Every confirmed false-clean path becomes a finding:
 
 | False-clean today | New check |
 | --- | --- |
-| Missing or corrupt backup, exit 0 | Every applied record's backups (both roles) must exist and hash to their recorded digests |
+| Missing or corrupt backup, exit 0 | Every applied record's backups (both roles) must exist under the F5 trust boundary and hash to their recorded digests |
 | Zero readable files, exit 0 | `checked == 0` while inputs exist is a finding; discovery `unreadable` and `timeout` skips surface as findings |
-| Aborted plan's trailing actions invisible | New binding `verify --plan`: every plan action must map to exactly one terminal outcome — `applied`, `failed`, `skipped`, or the report's new explicit `not-attempted` status for post-abort actions |
-| Wrong-root manifest, exit 0 | The ManifestSet root must equal the verified root; mismatch is a finding |
-| Dangling intent ignored | Any `pending-intent` state from the reducer is a finding |
+| Aborted plan's trailing actions invisible | `verify --plan` (the binding interface): every plan action must map to exactly one terminal outcome — `applied`, `failed`, `skipped`, or the report's new explicit `not-attempted` status for post-abort actions |
+| Wrong-root manifest, exit 0 | The chain's `source_root` must equal the verified root; mismatch is a finding |
+| Dangling intent ignored | Any `pending-intent` or `pending-restore` state from the reducer is a finding |
+
+Plan-coverage semantics (F6):
+
+- The action partition is a full invariant: every plan action appears exactly once across `applied | failed | skipped | not-attempted` (write runs) — duplicates and omissions are findings. `ReportTotals` gains `not_attempted` and the DR-003 reconciliation extends to it.
+- Across a resume chain with multiple reports, the latest terminal outcome per action wins; earlier reports must not contradict the manifest chain.
+- A dry-run report (`would_apply`) is not terminal evidence: `verify --plan` against only dry-run reports reports coverage as uncertified, a finding.
+- A missing report where the manifest chain shows mutations — including a report whose publication was interrupted after corpus mutation — is a finding (`coverage unprovable`), not silence; the manifest chain remains the mutation authority.
 
 Verify optionally writes a durable result artifact (new `verify-report` schema, written through the destination guard) so rollout gates can consume recorded evidence rather than an exit code.
 
 ## Coupled Mediums Resolved Here
 
 - Scan and plan runs containing `timeout` skips exit 1 (partial) instead of 0.
-- `SafetyContext` gates the write-capable engine entrypoints.
+- The read/write entrypoint split with `WriteSafetyContext` gates the write-capable engines (F8).
 - Randomized staging removes the fixed temp-name retry blocker.
 - Restore selector misses exit 1.
 
@@ -119,18 +162,25 @@ Deferred to sub-projects 2–4: disk-headroom same-filesystem accounting, the pa
 
 ## Error Taxonomy
 
-No new exit codes. Containment or lifecycle-invalid manifests map to ERR-008 (exit 2); commit-time interference is a per-action skip counting toward exit 1; guard refusals are exit 2 before the pipeline runs. New skip reasons: `collision-unpreserved`, `external-interference`. New report outcome status: `not-attempted`. Schema versions: manifest 2.0; the report schema bumps for the `not-attempted` status; the plan and inventory schemas are unchanged.
+No new exit codes; classifications follow ADR-0012's taxonomy (F7):
+
+- Artifact destination guard refusal: **exit 3** (safety refusal).
+- Malformed or lifecycle-invalid manifest input: **exit 2** (ERR-008 artifact-input error).
+- Manifest containment violation (paths escaping `source_root`, backup outside the BackupStore): **exit 3** in restore/resume; a read-only **finding (exit 1)** in verify.
+- Commit-time interference: per-action skip counting toward exit 1.
+- New skip reasons: `collision-unpreserved`, `external-interference`. New report outcome status: `not-attempted`.
+- Schema versions: manifest 2.0; the report schema bumps for `not-attempted` and the totals extension; the plan and inventory schemas are unchanged; `verify-report` is a new schema.
 
 ## Testing
 
 Each abstraction gets unit tests plus the review's reproductions as regressions:
 
 - the DMR-01 collision plan (dirty `a.md` + `a.txt -> a.md`, overwrite policy) applying and then restoring byte-identically;
-- the artifact-clobber matrix across scan, plan, apply dry-run, and refused writes;
-- adversarial manifest fixtures: mixed root and run, gapped or duplicate sequence, crafted out-of-root paths, dangling intents, duplicate applied records, 1.x rejection;
-- crash-window fault injection for all mutation kinds and restore inverses, extending the existing `test_resume.py` injection pattern, including restore convergence on re-run;
-- commit-boundary races via injectable hooks (post-validation swap, target-appears-after-gate);
-- a verify false-clean matrix asserting each table row above yields a finding, plus `verify --plan` full-coverage accounting.
+- the artifact-clobber matrix across scan, plan, apply dry-run, and refused writes, **plus** default-path acceptance (`scan .`, `plan .`, apply, restore, verify writing under `./.docmend/`) and explicit rejection of in-corpus source-file destinations and of `.docmend/` destinations when its exclusion has been removed (F1);
+- adversarial manifest fixtures: mixed root and run, gapped or duplicate sequence, crafted out-of-root paths, crafted backup paths outside the BackupStore key space (F5), broken chain links, forked chains, intent/terminal immutable-field divergence, dangling intents, duplicate applied records, missing `undoes` references, 1.x rejection;
+- crash-window fault injection for all mutation kinds and restore inverses, extending the existing `test_resume.py` injection pattern, including the worked example's apply → interrupted resume → interrupted restore → convergent re-run chain;
+- commit-boundary races via the deterministic hooks listed above (source replacement, parent symlink, target replacement after backup, target creation before publish, unlink/publish windows) (F2/F3);
+- a verify false-clean matrix asserting each table row yields a finding, plus `verify --plan` full-partition accounting across single-run, resume-chain, dry-run-only, and missing-report cases (F6).
 
 The standard gate holds: Ruff, BasedPyright strict, pytest at or above the current 97% branch coverage, allpairspy for the new gate and commit predicates, pip-audit.
 
@@ -139,5 +189,10 @@ The standard gate holds: Ruff, BasedPyright strict, pytest at or above the curre
 Before implementation starts, this design lands in the binding process:
 
 - SPEC-VHHB revision updating the affected FR/DR/IR requirements (manifest format, verify semantics, backup layout, artifact IO, exit taxonomy) and section 18.4 rollout preconditions.
-- New ADRs: manifest 2.0 envelope and lifecycle journaling; backup store namespacing; commit-boundary identity and the action-time overwrite invariant; artifact destination guard; verify plan-coverage semantics and the durable verify result.
+- **ADR dispositions (F7):**
+  - `adr-0004` (apply safety gate and preservation): **amended** — action-time overwrite invariant, `WriteSafetyContext`, BackupStore keying.
+  - `adr-0005` (durable artifact schema contract): **amended** — manifest 2.0, the report totals extension, `verify-report` as a fifth durable artifact, and the recorded clean-break compatibility decision.
+  - `adr-0006` (resume and recovery model): **superseded** by a new ADR defining the manifest 2.0 envelope, chain links, journaled lifecycle, reducer, and adjudication tables — with reciprocal `supersedes`/`superseded_by` metadata and index updates.
+  - `adr-0012` (verify semantics and exit-code taxonomy): **amended** — verify input binding and plan coverage, the findings list above, and the exit classifications in the error taxonomy section.
+- New ADRs: the manifest 2.0 recovery model (superseding `adr-0006`); commit-boundary object identity; the artifact destination guard and canonical artifact-root carve-out.
 - The implementation plan follows via the writing-plans process after the spec revision is approved.

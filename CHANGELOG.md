@@ -4,7 +4,14 @@ All notable changes to docmend are recorded here. The format follows [Keep a Cha
 
 ## [Unreleased]
 
-Safety-core remediation, plans A, B and C of four (spec rev 0.26/0.27; 2026-07-10 comprehensive review findings DMR-01..DMR-04 and DMR-06/07; ADRs 0019–0021). Targets the eventual v2.0.0.
+Safety-core remediation, plans A–D (spec revs 0.26–0.29; 2026-07-10 comprehensive review findings DMR-01..07; ADRs 0019–0021). Targets the eventual v2.0.0.
+
+### Changed — plan-aware verification (plan D)
+
+- `verify --plan` now certifies exactly-once plan coverage across repeatable `--manifest`, `--report`, and `--run-id` evidence, ordering report-only, manifest-only, resumed, and restore attempts from durable lineage instead of argument order.
+- Verification closes the confirmed false-clean set: unreadable/timeout discovery evidence and zero-checked runs, wrong manifest roots, incomplete or restored lifecycle states, missing or corrupt source/overwrite backups, output-hash drift, missing apply reports after mutation evidence, and uncovered or uncertified plan actions are findings (exit 1). Structural artifact contradictions remain input errors (exit 2); restore runs do not require apply reports.
+- `verify --out FILE` optionally publishes a guarded, schema-validated verify-report. Omitting it preserves the no-result-artifact behavior; an ordinary existing output is replaced, while corpus, input-alias, and non-regular destinations are refused before scanning.
+- Standalone `scan` and `verify` now share `plan`'s read-only run-lock posture: a concurrent docmend run using the same resolved corpus-root key is refused (exit 3), while lock-creation failure warns and continues per OQ-036. Lock keys are exact resolved roots, so a subtree key does not contend with an ancestor apply key.
 
 ### Changed — manifest 2.0 (plan B, BREAKING)
 

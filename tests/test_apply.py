@@ -18,6 +18,7 @@ from docmend import discovery, planning
 from docmend.artifacts import sha256_of_file
 from docmend.config import DocmendConfig, RenameConfig, WriteConfig
 from docmend.plan import ActionProvenance, ArtifactRef, Plan, PlanAction, PlanTotals
+from docmend.report import Report
 from docmend.restore import run_restore
 from docmend.transform.dispatch import Operation, apply_text_transforms, classify_suffix
 from docmend.transform.encoding import decode_source, encode_utf8
@@ -255,6 +256,59 @@ def test_unreadable_at_apply__skipped(tmp_path: Path) -> None:
     outcome = report.outcomes[0]
     assert outcome.status == "skipped"
     assert outcome.skip_reason == "unreadable"
+
+
+class TestCommitBoundarySourceBinding:
+    @staticmethod
+    def _planned_rewrite(tmp_path: Path) -> tuple[Path, Plan, DocmendConfig, Path]:
+        root = tmp_path / "root"
+        materialize(root, [FileRecipe("a.txt", "utf-8", "crlf")], seeded_faker())
+        config = DocmendConfig()
+        plan = _plan_for(root, config)
+        assert len(plan.actions) == 1
+        return root, plan, config, tmp_path / "manifest.jsonl"
+
+    @staticmethod
+    def _execute(plan: Plan, config: DocmendConfig, tmp_path: Path) -> Report:
+        return _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+        )
+
+    def test_symlinked_source_at_apply__external_interference_skip(self, tmp_path: Path) -> None:
+        """Refuse an in-root symlink interposed after planning without mutation."""
+        root, plan, config, manifest_path = self._planned_rewrite(tmp_path)
+        source = root / plan.actions[0].path
+        payload = source.read_bytes()
+        aside = root / "aside.txt"
+        source.rename(aside)
+        source.symlink_to(aside)
+
+        report = self._execute(plan, config, tmp_path)
+
+        outcome = report.outcomes[0]
+        assert outcome.status == "skipped"
+        assert outcome.skip_reason == "external-interference"
+        assert aside.read_bytes() == payload
+        assert source.is_symlink()
+        assert not manifest_path.exists()
+
+    def test_source_swapped_same_bytes_before_bind__applies_against_new_object(
+        self, tmp_path: Path
+    ) -> None:
+        """A pre-bind same-byte replacement becomes the object the run validates."""
+        root, plan, config, _manifest_path = self._planned_rewrite(tmp_path)
+        source = root / plan.actions[0].path
+        payload = source.read_bytes()
+        source.unlink()
+        source.write_bytes(payload)
+
+        report = self._execute(plan, config, tmp_path)
+
+        assert report.outcomes[0].status == "applied"
 
 
 def test_collision_policies__skip_fail_overwrite(tmp_path: Path) -> None:

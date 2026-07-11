@@ -59,6 +59,7 @@ from docmend.writer.atomic import (
     stage_bytes,
 )
 from docmend.writer.backup import BackupError, backup_file
+from docmend.writer.commit import InterferenceError, bind_file
 from docmend.writer.gate import ApplyOptions, is_content_rewrite
 from docmend.writer.manifest import (
     ManifestChain,
@@ -367,11 +368,17 @@ def _execute_action(
     log: structlog.stdlib.BoundLogger,
 ) -> tuple[ApplyOutcome, bool]:
     source = source_root / action.path
-    # FR-003: the plan's decision only executes against the exact bytes it saw.
+    # FR-003 + adr-0020: one non-following descriptor supplies the bytes for
+    # hashing, recomputation, and backup plus the identity later commit steps
+    # re-check. A pathname read could silently follow an interposed symlink.
     try:
-        data = source.read_bytes()
+        bound = bind_file(source)
+    except InterferenceError as exc:
+        log.info("commit boundary refusal at bind", path=action.path, detail=str(exc))
+        return _skip(action, "external-interference"), False
     except OSError:
         return _skip(action, "unreadable"), False  # ERR-005
+    data = bound.data
     if _sha(data) != action.source_sha256:
         return _skip(action, "stale-hash"), False  # ERR-002, AW-004
     # FR-012: snapshot filters hold at apply exactly as at scan/plan.
@@ -500,12 +507,11 @@ def _execute_action(
     # `failed` with no intent, asserting no corpus name was touched.
     staged: StagedWrite | None = None
     try:
-        source_stat = source.stat()
         if kind in ("rewrite", "rename_and_rewrite"):
             staged = stage_bytes(
                 target if kind == "rename_and_rewrite" else source,  # type: ignore[arg-type]
                 payload,
-                mode=source_stat.st_mode,
+                mode=bound.mode,
             )
     except (WriteError, OSError) as exc:
         outcome = _failed(action, "ERR-003", str(exc))
@@ -525,7 +531,7 @@ def _execute_action(
         return outcome, False
 
     identities = _Identities(
-        source=_identity(source_stat),
+        source=bound.identity,
         # Captured at the same moment as the overwrite backup read (clobber
         # implies target existed); Plan C's CommitBoundary binds this to a
         # descriptor — Plan B persists the evidence model.
@@ -533,7 +539,7 @@ def _execute_action(
         # Replacement publishes move the STAGED inode onto the target name;
         # pure renames move the source inode. Either way the identity is
         # knowable before any corpus name changes.
-        expected=staged.identity if staged is not None else _identity(source_stat),
+        expected=staged.identity if staged is not None else bound.identity,
     )
     _record_intent(
         manifest,
@@ -549,7 +555,7 @@ def _execute_action(
         identities,
     )
     try:
-        mode = source_stat.st_mode
+        mode = bound.mode
         if kind == "rewrite":
             assert staged is not None
             publish_staged(staged, source)

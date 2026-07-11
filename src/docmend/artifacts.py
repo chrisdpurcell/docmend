@@ -55,6 +55,8 @@ ARTIFACT_KINDS: tuple[ArtifactKind, ...] = (
     "frontmatter",
 )
 
+ARTIFACT_DIR_NAME = ".docmend"
+
 
 class ArtifactError(Exception):
     """An artifact could not be read, parsed, or validated (exit 2, §18.5)."""
@@ -236,18 +238,24 @@ def write_plan(plan: Plan, path: Path) -> None:
 
 def read_plan(path: Path) -> Plan:
     """Load and validate a plan artifact (ERR-008 semantics on failure)."""
+    return read_plan_snapshot(path)[0]
+
+
+def read_plan_snapshot(path: Path) -> tuple[Plan, str]:
+    """Load a plan model and digest from one immutable byte snapshot."""
     try:
-        raw = path.read_text(encoding="utf-8")
+        payload = path.read_bytes()
     except OSError as exc:
         msg = f"{path}: cannot read plan artifact ({exc.strerror or exc})"
         raise ArtifactError(msg) from exc
     try:
-        document: object = json.loads(raw)
-    except json.JSONDecodeError as exc:
+        document: object = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         msg = f"{path}: not valid JSON — {exc}"
         raise ArtifactError(msg) from exc
     validate_artifact("plan", document)
-    return Plan.model_validate(document)
+    digest = f"sha256:{hashlib.sha256(payload).hexdigest()}"
+    return Plan.model_validate(document), digest
 
 
 def write_report(report: Report, path: Path) -> None:
@@ -271,18 +279,24 @@ def write_report(report: Report, path: Path) -> None:
 
 def read_report(path: Path) -> Report:
     """Load and validate a report artifact (ERR-008 semantics on failure)."""
+    return read_report_snapshot(path)[0]
+
+
+def read_report_snapshot(path: Path) -> tuple[Report, str]:
+    """Load a report model and digest from one immutable byte snapshot."""
     try:
-        raw = path.read_text(encoding="utf-8")
+        payload = path.read_bytes()
     except OSError as exc:
         msg = f"{path}: cannot read report artifact ({exc.strerror or exc})"
         raise ArtifactError(msg) from exc
     try:
-        document: object = json.loads(raw)
-    except json.JSONDecodeError as exc:
+        document: object = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         msg = f"{path}: not valid JSON — {exc}"
         raise ArtifactError(msg) from exc
     validate_artifact("report", document)
-    return Report.model_validate(document)
+    digest = f"sha256:{hashlib.sha256(payload).hexdigest()}"
+    return Report.model_validate(document), digest
 
 
 def sha256_of_file(path: Path) -> str:

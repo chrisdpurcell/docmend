@@ -11,6 +11,7 @@ against `schemas/frontmatter.schema.json`.
 
 import hashlib
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -85,7 +86,7 @@ def _sha(data: bytes) -> str:
     return f"sha256:{hashlib.sha256(data).hexdigest()}"
 
 
-def reconcile_manifest(records: list[ManifestRecord]) -> list[VerifyFinding]:
+def reconcile_manifest(records: Sequence[ManifestRecord]) -> list[VerifyFinding]:
     """Reconcile applied outputs against the manifest (adr-0012, FR-014).
 
     The FR-014 'hash mismatch' defect class: each applied record's live target
@@ -114,7 +115,7 @@ def reconcile_manifest(records: list[ManifestRecord]) -> list[VerifyFinding]:
     return findings
 
 
-def reconcile_report(report: Report, records: list[ManifestRecord]) -> list[VerifyFinding]:
+def reconcile_report(report: Report, records: Sequence[ManifestRecord]) -> list[VerifyFinding]:
     """Cross-artifact accounting (FR-014 'skipped-file accounting / artifact
     internal consistency', OQ-006): every applied report outcome must have an
     applied manifest record and vice versa. The intra-report totals rule

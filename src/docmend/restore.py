@@ -159,6 +159,7 @@ def run_restore(
                 prior_attempt=PriorAttempt(
                     run_id=tip.header.run_id, report_sha256=None, manifest_sha256=tip_sha
                 ),
+                effective_excludes=root_header.effective_excludes,
                 created_at=datetime.now(UTC).isoformat(),
             ),
         )

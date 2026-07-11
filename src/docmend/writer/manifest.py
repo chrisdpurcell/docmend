@@ -27,7 +27,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Annotated, Literal, Self, TextIO, cast
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from docmend.artifacts import ArtifactError, validate_artifact
 from docmend.inventory import RunId, Sha256
@@ -73,7 +73,11 @@ class ManifestHeader(BaseModel):
     """
 
     model_config = ConfigDict(
-        extra="forbid", strict=True, populate_by_name=True, serialize_by_alias=True
+        extra="forbid",
+        strict=True,
+        populate_by_name=True,
+        serialize_by_alias=True,
+        frozen=True,
     )
 
     schema_kind: Literal["docmend/manifest-header"] = Field(
@@ -87,14 +91,28 @@ class ManifestHeader(BaseModel):
     plan_sha256: Sha256
     prior_manifest_sha256: Sha256 | None
     prior_attempt: PriorAttempt | None
+    # Restore cannot reconstruct apply-time policy when invocation flags replace
+    # the configured list. This durable witness is therefore the sole license
+    # source for the canonical .docmend/ artifact carve-out (Plan C CR-006).
+    effective_excludes: tuple[str, ...]
     created_at: str
+
+    @field_validator("effective_excludes", mode="before")
+    @classmethod
+    def _excludes_to_tuple(cls, value: object) -> object:
+        """Keep the frozen header free of a mutable exclude container."""
+        return tuple(cast("list[object]", value)) if isinstance(value, list) else value
 
 
 class ManifestRecord(BaseModel):
     """One mutation record (DR-004) — one NDJSON line, restorable in isolation."""
 
     model_config = ConfigDict(
-        extra="forbid", strict=True, populate_by_name=True, serialize_by_alias=True
+        extra="forbid",
+        strict=True,
+        populate_by_name=True,
+        serialize_by_alias=True,
+        frozen=True,
     )
 
     schema_kind: Literal["docmend/manifest-record"] = Field(
@@ -226,7 +244,7 @@ class ManifestSet:
     """
 
     header: ManifestHeader
-    records: list[ManifestRecord]
+    records: tuple[ManifestRecord, ...]
     path: Path
     sha256: str | None = None
 
@@ -491,14 +509,14 @@ def read_manifest_set(path: Path, *, check_backup_objects: bool = True) -> Manif
     _validate_kind(path, header, records)
     _validate_containment(path, header, records, resolve=check_backup_objects)
     _validate_backup_trust(path, header, records, check_objects=check_backup_objects)
-    return ManifestSet(header=header, records=records, path=path)
+    return ManifestSet(header=header, records=tuple(records), path=path)
 
 
 @dataclass(frozen=True)
 class ManifestChain:
     """Validated manifest sets ordered root→tip by their hash links."""
 
-    sets: list[ManifestSet]
+    sets: tuple[ManifestSet, ...]
 
 
 def _order_chain(paths: Sequence[Path], sets: list[ManifestSet]) -> list[ManifestSet]:
@@ -687,7 +705,7 @@ def read_manifest_chain(
     chain (adr-0019). An EMPTY input is a legal empty chain: a report-only
     predecessor produced no manifest (review CR-004)."""
     if not paths:
-        return ManifestChain(sets=[])
+        return ManifestChain(sets=())
     sets = [
         replace(
             read_manifest_set(path, check_backup_objects=check_backup_objects),
@@ -700,7 +718,7 @@ def read_manifest_chain(
     _validate_attempt_lineage(ordered)
     _validate_cross_set_lifecycle(ordered)
     _validate_undoes_references(ordered)
-    return ManifestChain(sets=ordered)
+    return ManifestChain(sets=tuple(ordered))
 
 
 type LifecycleState = Literal[

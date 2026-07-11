@@ -29,7 +29,8 @@ from tests.helpers.manifest2 import (
 )
 
 from docmend.artifacts import ArtifactError, validate_artifact
-from docmend.lineage import PriorAttempt
+from docmend.lineage import ObjectIdentity, PriorAttempt
+from docmend.report import ErrorInfo
 from docmend.writer.manifest import (
     ManifestContainmentError,
     ManifestHeader,
@@ -70,6 +71,21 @@ class TestManifestHeader:
         edge = PriorAttempt(run_id=RUN_ID, report_sha256=SHA_A, manifest_sha256=None)
         assert edge.report_sha256 == SHA_A
 
+    def test_header_and_nested_lineage__deep_frozen(self) -> None:
+        edge = PriorAttempt(run_id=RUN_ID, report_sha256=SHA_A, manifest_sha256=None)
+        header = _header(prior_attempt=edge)
+        assert isinstance(header.effective_excludes, tuple)
+        with pytest.raises(ValidationError):
+            header.source_root = "/elsewhere"  # type: ignore[misc]
+        with pytest.raises(ValidationError):
+            edge.run_id = OTHER_RUN_ID  # type: ignore[misc]
+        identity = ObjectIdentity(dev=1, ino=2)
+        error = ErrorInfo(error_class="ERR-003", message="synthetic")
+        with pytest.raises(ValidationError):
+            identity.dev = 3  # type: ignore[misc]
+        with pytest.raises(ValidationError):
+            error.message = "changed"  # type: ignore[misc]
+
     def test_header_schema__rejects_future_major_and_extra_members(self) -> None:
         base = header_doc(
             kind="restore",
@@ -102,7 +118,7 @@ class TestWriterDurability:
         assert json.loads(lines[0])["schema"] == "docmend/manifest-header"
         loaded = read_manifest_set(path)
         assert loaded.header == _header()
-        assert loaded.records == [first, second]
+        assert loaded.records == (first, second)
         assert loaded.sha256 is None  # filled by chain reading only
 
     def test_torn_trailing_line__tolerated(self, tmp_path: Path) -> None:
@@ -111,7 +127,7 @@ class TestWriterDurability:
             kept = writer.append(_record(1))
         with path.open("a", encoding="utf-8") as fh:
             fh.write('{"schema": "docmend/manifest-record", "torn')  # crash mid-append
-        assert read_manifest_set(path).records == [kept]
+        assert read_manifest_set(path).records == (kept,)
 
     def test_corrupt_newline_terminated_final_record__hard_aborts(self, tmp_path: Path) -> None:
         """codex CR-NEW-006: a final line ending in '\\n' was a COMPLETE record —
@@ -162,7 +178,7 @@ class TestWriterDurability:
         header-only file: a valid, EMPTY set (nothing was durably recorded)."""
         path = write_set(tmp_path / "manifest.jsonl", header_doc())
         loaded = read_manifest_set(path)
-        assert loaded.records == []
+        assert loaded.records == ()
 
     def test_missing_file__raises_cannot_read(self, tmp_path: Path) -> None:
         with pytest.raises(ArtifactError, match="cannot read"):

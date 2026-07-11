@@ -15,6 +15,7 @@
 		"plan_sha256",
 		"prior_manifest_sha256",
 		"prior_attempt",
+		"effective_excludes",
 		"created_at"
 	],
 	"properties": {
@@ -72,6 +73,11 @@
 					]
 				}
 			]
+		},
+		"effective_excludes": {
+			"description": "The effective exclude patterns that governed the apply lineage and license restore artifact destinations.",
+			"type": "array",
+			"items": { "type": "string" }
 		},
 		"created_at": { "type": "string", "format": "date-time" }
 	},

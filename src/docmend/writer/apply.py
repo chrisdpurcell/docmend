@@ -857,6 +857,7 @@ def execute_plan(
                 plan_sha256=plan_sha256,
                 prior_manifest_sha256=prior_manifest_sha256,
                 prior_attempt=prior_attempt,
+                effective_excludes=tuple(config.paths.exclude),
                 created_at=now(),
             ),
             now=now,

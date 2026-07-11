@@ -1,6 +1,7 @@
 """Commit-boundary primitives (adr-0020): descriptor-bound identity capture
 and the at-commit lstat re-check. All fixtures are synthetic (conventions #6)."""
 
+import inspect
 import os
 import threading
 from pathlib import Path
@@ -8,21 +9,141 @@ from typing import cast
 
 import pytest
 from allpairspy import AllPairs  # pyright: ignore[reportMissingTypeStubs]
+from pydantic import ValidationError
+from tests.helpers.manifest2 import header_doc, record_doc, write_set
+from tests.test_plan_artifact import sample_plan
 
+from docmend import artifacts, lock
 from docmend.lineage import ObjectIdentity
 from docmend.writer.atomic import WriteError
 from docmend.writer.commit import (
     NO_HOOKS,
     BoundFile,
     CommitHooks,
+    DestinationRefusedError,
     InterferenceError,
+    WriteSafetyContext,
     _rollback_link,  # pyright: ignore[reportPrivateUsage] - direct boundary regression seam.
+    apply_write_context,
     bind_file,
     check_bound,
     check_destination,
     guarded_rename_no_clobber,
     guarded_replace,
+    restore_write_context,
 )
+
+
+class TestWriteSafetyContext:
+    @staticmethod
+    def _plan_path(tmp_path: Path) -> tuple[Path, Path]:
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        plan = sample_plan().model_copy(update={"source_root": str(corpus)})
+        plan_path = tmp_path / "plan.json"
+        artifacts.write_plan(plan, plan_path)
+        return corpus, plan_path
+
+    def test_direct_construction__typeerror(self) -> None:
+        with pytest.raises(TypeError, match="factory-sealed"):
+            WriteSafetyContext()
+
+    def test_apply_capability__attested_private_and_scope_bound(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        corpus, plan_path = self._plan_path(tmp_path)
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+        manifest_path = tmp_path / "manifest.jsonl"
+        report_path = tmp_path / "report.json"
+        with apply_write_context(
+            plan_path,
+            run_id="run_20260711T000000Z_000011",
+            manifest_path=manifest_path,
+            report_path=report_path,
+            preserved_by="external",
+        ) as safety:
+            safety.confirm_apply(run_id="run_20260711T000000Z_000011", manifest_path=manifest_path)
+            safety.confirm_report(report_path)
+            with pytest.raises(RuntimeError, match="attestation"):
+                safety.confirm_apply(
+                    run_id="run_20260711T000000Z_000012", manifest_path=manifest_path
+                )
+            with pytest.raises(AttributeError):
+                _ = safety.plan  # type: ignore[attr-defined]
+            first_plan, first_config, _, _, chain, _ = safety._consume_apply_state()  # pyright: ignore[reportPrivateUsage]
+            first_plan.actions[0].target_path = "elsewhere.md"
+            first_config.rename.on_collision = "overwrite"
+            second_plan, second_config, _, _, second_chain, _ = safety._consume_apply_state()  # pyright: ignore[reportPrivateUsage]
+            assert second_plan.actions[0].target_path == "legacy.md"
+            assert second_plan.source_root == str(corpus.resolve())
+            assert second_config.rename.on_collision == "skip"
+            assert chain.sets == second_chain.sets == ()
+            with pytest.raises(lock.LockHeldError):
+                lock.acquire(corpus, run_id="probe", command="apply")
+            leaked = safety
+        with pytest.raises(RuntimeError, match="outside its factory scope"):
+            leaked.confirm_report(report_path)
+
+    def test_apply_factory__in_corpus_destination_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        corpus, plan_path = self._plan_path(tmp_path)
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+        with (
+            pytest.raises(DestinationRefusedError, match="inside the corpus"),
+            apply_write_context(
+                plan_path,
+                run_id="run_20260711T000000Z_000014",
+                manifest_path=corpus / "manifest.jsonl",
+                report_path=tmp_path / "report.json",
+                preserved_by="external",
+            ),
+        ):
+            raise AssertionError("destination guard must refuse before yield")
+
+    def test_factories_own_authority_parameters(self) -> None:
+        apply_parameters = inspect.signature(apply_write_context).parameters
+        restore_parameters = inspect.signature(restore_write_context).parameters
+        for forbidden in ("config", "options", "source_root", "lock_state_dir", "artifact_root"):
+            assert forbidden not in apply_parameters
+        for forbidden in ("source_root", "lock_state_dir", "artifact_root", "exclude"):
+            assert forbidden not in restore_parameters
+
+    def test_restore_chain__factory_loaded_and_deep_frozen(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        manifest = write_set(
+            tmp_path / "apply.jsonl",
+            header_doc(source_root=str(corpus)),
+            record_doc(
+                1,
+                result="intent",
+                original_path=str(corpus / "legacy.txt"),
+                target_path=str(corpus / "legacy.txt"),
+            ),
+            record_doc(
+                1,
+                seq=2,
+                original_path=str(corpus / "legacy.txt"),
+                target_path=str(corpus / "legacy.txt"),
+            ),
+        )
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+        manifest_out = tmp_path / "restore.jsonl"
+        with restore_write_context(
+            [manifest],
+            run_id="run_20260711T000000Z_000013",
+            manifest_out=manifest_out,
+        ) as safety:
+            safety.confirm_restore(run_id="run_20260711T000000Z_000013", manifest_out=manifest_out)
+            assert isinstance(safety.chain.sets, tuple)
+            assert isinstance(safety.chain.sets[0].records, tuple)
+            with pytest.raises(ValidationError):
+                safety.chain.sets[0].header.source_root = "/elsewhere"  # type: ignore[misc]
+            with pytest.raises(RuntimeError, match="attestation"):
+                safety._consume_apply_state()  # pyright: ignore[reportPrivateUsage]
 
 
 class TestBindFile:

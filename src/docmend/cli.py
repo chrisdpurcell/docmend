@@ -35,6 +35,7 @@ from pathspec.patterns.gitignore.spec import GitIgnoreSpecPattern
 from pydantic import ValidationError
 
 from docmend import __version__, artifacts, discovery, lock, planning
+from docmend.artifacts import ARTIFACT_DIR_NAME
 from docmend.config import ConfigError, DocmendConfig, PathsConfig, load_config
 from docmend.lineage import PriorAttempt
 from docmend.observability import configure_logging, get_logger, new_run_id
@@ -44,12 +45,8 @@ from docmend.restore import run_restore
 from docmend.verify import check_content, check_frontmatter, reconcile_manifest, reconcile_report
 from docmend.writer import manifest
 from docmend.writer.apply import execute_plan
+from docmend.writer.commit import _load_apply_predecessors  # pyright: ignore[reportPrivateUsage]
 from docmend.writer.gate import ApplyOptions, evaluate_gate, is_content_rewrite
-
-#: Default per-run artifact/log directory, created in the invoking directory
-#: (proposed OQ-034; the run-ID-keyed names inside it are the OQ-006 sidecar
-#: discovery convention's future input).
-ARTIFACT_DIR_NAME = ".docmend"
 
 app = typer.Typer(
     name="docmend",
@@ -756,120 +753,18 @@ def _load_resume_inputs(
         return None, None, None
 
     try:
-        chain = manifest.read_manifest_chain(manifest_paths)
+        chain, tip_edge = _load_apply_predecessors(
+            manifest_paths,
+            report_paths,
+            source_root=source_root,
+            plan_sha256=plan_sha256,
+        )
     except manifest.ManifestContainmentError as exc:
         typer.echo(f"refused [manifest-containment]: {exc}", err=True)
         raise typer.Exit(3) from exc
     except artifacts.ArtifactError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(2) from exc
-    root_resolved = str(source_root.resolve())
-    if chain.sets and chain.sets[0].header.source_root != root_resolved:
-        typer.echo(
-            f"error: manifest source root {chain.sets[0].header.source_root} does not "
-            f"match the plan's ({root_resolved}) — wrong manifest for this plan (ERR-006)",
-            err=True,
-        )
-        raise typer.Exit(2)
-
-    reports: dict[str, tuple[Report, str]] = {}
-    for path in report_paths:
-        try:
-            loaded = artifacts.read_report(path)
-        except artifacts.ArtifactError as exc:
-            typer.echo(f"error: {exc}", err=True)
-            raise typer.Exit(2) from exc
-        sha = f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
-        if loaded.plan_ref.sha256 != plan_sha256:
-            typer.echo(
-                f"error: {path}: predecessor report belongs to a different plan "
-                f"({loaded.plan_ref.sha256}) — one attempt lineage serves one plan (ERR-006)",
-                err=True,
-            )
-            raise typer.Exit(2)
-        if loaded.run_id in reports:
-            typer.echo(f"error: {path}: duplicate report for run {loaded.run_id}", err=True)
-            raise typer.Exit(2)
-        reports[loaded.run_id] = (loaded, sha)
-
-    chain_by_run = {s.header.run_id: s for s in chain.sets}
-    chain_by_sha = {s.sha256: s for s in chain.sets}
-    for rid, (loaded, _sha) in reports.items():
-        if loaded.manifest_sha256 is None:
-            if loaded.totals.applied:
-                typer.echo(
-                    f"error: report for run {rid} carries no manifest hash but claims "
-                    f"{loaded.totals.applied} applied action(s) — mutation evidence is "
-                    f"missing (ERR-006)",
-                    err=True,
-                )
-                raise typer.Exit(2)
-        elif loaded.manifest_sha256 not in chain_by_sha:
-            typer.echo(
-                f"error: missing mutation evidence: report for run {rid} records a "
-                f"closed manifest ({loaded.manifest_sha256}) that was not supplied — "
-                f"a lost manifest is never a mutation-free attempt (ERR-006)",
-                err=True,
-            )
-            raise typer.Exit(2)
-        matching_set = chain_by_run.get(rid)
-        if matching_set is not None and matching_set.header.prior_attempt != loaded.prior_attempt:
-            typer.echo(
-                f"error: run {rid}: its manifest header and report disagree on the "
-                f"prior_attempt edge — the attempt lineage is contradictory (ERR-006)",
-                err=True,
-            )
-            raise typer.Exit(2)
-
-    # The attempt graph: one node per predecessor run; manifests are the
-    # preferred edge source (their header equals the report edge, just proven).
-    edges: dict[str, PriorAttempt | None] = {}
-    for current in chain.sets:
-        edges[current.header.run_id] = current.header.prior_attempt
-    for rid, (loaded, _sha) in reports.items():
-        edges.setdefault(rid, loaded.prior_attempt)
-
-    for rid, edge in edges.items():
-        if edge is None:
-            continue
-        target = edge.run_id
-        target_manifest = chain_by_run.get(target)
-        target_report = reports.get(target)
-        resolved = (
-            edge.manifest_sha256 is not None
-            and target_manifest is not None
-            and target_manifest.sha256 == edge.manifest_sha256
-        ) or (
-            edge.report_sha256 is not None
-            and target_report is not None
-            and target_report[1] == edge.report_sha256
-        )
-        if not resolved:
-            typer.echo(
-                f"error: run {rid} names predecessor {target}, whose evidence was "
-                f"not supplied (or does not hash-match the recorded edge) — supply "
-                f"every attempt's manifest or report (no-gap rule, ERR-006)",
-                err=True,
-            )
-            raise typer.Exit(2)
-
-    referenced = {edge.run_id for edge in edges.values() if edge is not None}
-    tips = [rid for rid in edges if rid not in referenced]
-    if len(tips) != 1:
-        typer.echo(
-            f"error: predecessor evidence forms {len(tips)} attempt tips "
-            f"({', '.join(sorted(tips)) or 'none'}) — one unambiguous newest attempt "
-            f"is required (ERR-006)",
-            err=True,
-        )
-        raise typer.Exit(2)
-    tip = tips[0]
-    if tip in reports:
-        tip_edge = PriorAttempt(run_id=tip, report_sha256=reports[tip][1], manifest_sha256=None)
-    else:
-        tip_edge = PriorAttempt(
-            run_id=tip, report_sha256=None, manifest_sha256=chain_by_run[tip].sha256
-        )
     prior_manifest_sha256 = chain.sets[-1].sha256 if chain.sets else None
     return chain, tip_edge, prior_manifest_sha256
 

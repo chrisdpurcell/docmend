@@ -10,6 +10,7 @@ action executes normally, still behind the FR-003 hash guard.
 
 import hashlib
 import shutil
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -57,7 +58,7 @@ def _execute(
     *,
     run_id: str = RUN_ID,
     write: bool = True,
-    resume_records: list[ManifestRecord] | None = None,
+    resume_records: Sequence[ManifestRecord] | None = None,
 ) -> Report:
     options = ApplyOptions(
         write=write, backup_root=None, preserved_by="external", allow_no_backup=False
@@ -97,7 +98,7 @@ class _Interrupt(RuntimeError):
 
 def _interrupted_apply(
     root: Path, config: DocmendConfig, manifest_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> tuple[Plan, list[ManifestRecord]]:
+) -> tuple[Plan, tuple[ManifestRecord, ...]]:
     """Apply the plan for `root`, injecting an interrupt before the 2nd mutation.
 
     Leaves file 1 applied+recorded, files 2..n untouched — the AW-001 crash
@@ -327,7 +328,7 @@ def test_resume_dry_run__previews_remainder_writes_nothing(
 
 def _interrupted_after_publish(
     root: Path, config: DocmendConfig, manifest_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> tuple[Plan, list[ManifestRecord]]:
+) -> tuple[Plan, tuple[ManifestRecord, ...]]:
     """Kill the 1st rename_and_rewrite AFTER its target publish, BEFORE the
     source unlink — the narrow multi-step window. Leaves target published,
     source still present, and a dangling intent record as the only evidence."""
@@ -347,7 +348,7 @@ def _interrupted_after_publish(
 
 def _interrupted_before_final_record(
     root: Path, config: DocmendConfig, manifest_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> tuple[Plan, list[ManifestRecord]]:
+) -> tuple[Plan, tuple[ManifestRecord, ...]]:
     """Kill the 1st rename_and_rewrite AFTER the whole mutation (target
     published, source unlinked) but BEFORE its final manifest append — the
     mutation completed with only the intent record as evidence."""

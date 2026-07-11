@@ -149,7 +149,7 @@ class TestChainStructure:
 
     def test_empty_input__empty_chain(self) -> None:
         chain = read_manifest_chain([])
-        assert chain.sets == []
+        assert chain.sets == ()
 
     def test_forked_chain__rejected(self, tmp_path: Path) -> None:
         m1 = _apply_set(tmp_path / "m1.jsonl", RUN_1, *_pair(RUN_1, 1, base_seq=1))

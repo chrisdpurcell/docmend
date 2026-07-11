@@ -12,7 +12,7 @@ mirroring `tests/test_cli_apply.py`'s fixtures.
 
 import hashlib
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -54,17 +54,17 @@ def _hash_tree(root: Path) -> dict[str, str]:
     }
 
 
-def _records_for(tmp_path: Path) -> list[ManifestRecord]:
+def _records_for(tmp_path: Path) -> tuple[ManifestRecord, ...]:
     return read_records(tmp_path / "manifest.jsonl")
 
 
-def _set_with(tmp_path: Path, records: list[ManifestRecord]) -> ManifestChain:
+def _set_with(tmp_path: Path, records: Sequence[ManifestRecord]) -> ManifestChain:
     """A single-set CHAIN over the apply run's REAL validated set with its
     record list swapped for the test's (possibly synthetic) records —
     run_restore consumes chains in 2.0."""
     base = read_manifest_set(tmp_path / "manifest.jsonl")
-    filled = replace(base, records=records, sha256=manifest_sha256(base.path))
-    return ManifestChain(sets=[filled])
+    filled = replace(base, records=tuple(records), sha256=manifest_sha256(base.path))
+    return ManifestChain(sets=(filled,))
 
 
 # ---------------------------------------------------------------------------

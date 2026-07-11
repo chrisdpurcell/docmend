@@ -491,7 +491,13 @@ class TestApplyArtifactGuard:
         # (valid empty set) with the matching root reaches the guard.
         from tests.helpers.manifest2 import header_doc, write_set
 
-        write_set(derived_manifest, header_doc(source_root=str(corpus.resolve())))
+        write_set(
+            derived_manifest,
+            header_doc(
+                source_root=str(corpus.resolve()),
+                plan_sha256=f"sha256:{hashlib.sha256(plan_path.read_bytes()).hexdigest()}",
+            ),
+        )
         result = runner.invoke(
             app,
             [

@@ -6,7 +6,7 @@ description: 'Manifest 2.0 replaces per-record trust with a validated set model:
 doc_type: 'adr'
 status: 'accepted'
 created: '2026-07-10'
-updated: '2026-07-10'
+updated: '2026-07-11'
 reviewed: null
 owner: 'chrisdpurcell'
 consumer: 'agent'
@@ -84,6 +84,7 @@ Confirmed by: adversarial manifest fixtures (mixed root/run, gapped or duplicate
 
 ## More Information
 
+- The header additionally records the run's effective exclude patterns. Plan C review CR-006 requires restore's artifact-destination carve-out to be licensed against the excludes that governed apply, which per-invocation replacement flags make unreconstructable later. Revision note: added 2026-07-11.
 - Supersedes `adr-0006-resume-and-recovery-model`: the plan/manifest/hash triangulation, incremental fsync-per-record NDJSON, and AOF torn-tail rule carry forward; the single-kind intent record, per-record trust, and wall-clock resume ordering do not.
 - The full wire model, adjudication table, and worked apply → interrupted resume → interrupted restore → convergent re-run example live in the approved design: `docs/superpowers/specs/2026-07-10-safety-core-remediation-design.md` (reviewed through five adversarial rounds, F1–F8 closed).
 - Spec: rev 0.26 — FR-013, FR-014, DR-003, DR-004, IR-008, §12.2/§12.3.

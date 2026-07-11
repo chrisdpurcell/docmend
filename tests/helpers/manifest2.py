@@ -6,6 +6,7 @@ fields — that the strict models would refuse to construct.
 """
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 from docmend.writer.manifest import (
@@ -19,28 +20,28 @@ from docmend.writer.manifest import (
 RUN_ID = "run_20260706T000000Z_00006d"
 
 
-def read_records(path: Path) -> list[ManifestRecord]:
+def read_records(path: Path) -> tuple[ManifestRecord, ...]:
     """The records of one validated manifest 2.0 file — the mechanical
     replacement for the deleted 1.x `read_manifest` in tests that only
     inspect mutation records."""
     return read_manifest_set(path).records
 
 
-def chain_of(records: list[ManifestRecord], *, source_root: str = "/corpus") -> ManifestChain:
+def chain_of(records: Sequence[ManifestRecord], *, source_root: str = "/corpus") -> ManifestChain:
     """A synthetic single-set chain over arbitrary (possibly gappy) record
     subsets — for ENGINE tests that feed resume evidence directly, bypassing
     file-level validation the way a validated CLI read would have passed it.
     The reducer only folds records; header facts are inert here."""
     header = ManifestHeader.model_validate(header_doc(source_root=source_root))
     return ManifestChain(
-        sets=[
+        sets=(
             ManifestSet(
                 header=header,
-                records=records,
+                records=tuple(records),
                 path=Path("/synthetic-manifest.jsonl"),
                 sha256=SHA_C,
-            )
-        ]
+            ),
+        )
     )
 
 
@@ -62,6 +63,7 @@ def header_doc(**overrides: object) -> dict[str, object]:
         "plan_sha256": SHA_C,
         "prior_manifest_sha256": None,
         "prior_attempt": None,
+        "effective_excludes": ["**/.docmend/**"],
         "created_at": "2026-07-10T00:00:00+00:00",
     }
     doc.update(overrides)

@@ -51,7 +51,11 @@ class ErrorInfo(BaseModel):
     Python keyword, hence the alias."""
 
     model_config = ConfigDict(
-        extra="forbid", strict=True, populate_by_name=True, serialize_by_alias=True
+        extra="forbid",
+        strict=True,
+        populate_by_name=True,
+        serialize_by_alias=True,
+        frozen=True,
     )
 
     error_class: Annotated[str, Field(pattern=r"^ERR-\d{3}$", alias="class")]

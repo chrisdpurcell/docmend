@@ -19,7 +19,7 @@ class ObjectIdentity(BaseModel):
     (safety-core design F4 rounds 3-4). Device mismatch refuses as
     external-interference, never substitutes a current device number."""
 
-    model_config = ConfigDict(extra="forbid", strict=True)
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
     dev: Annotated[int, Field(ge=0)]
     ino: Annotated[int, Field(ge=0)]
@@ -33,7 +33,7 @@ class PriorAttempt(BaseModel):
     header AND the apply report so the edge survives whichever artifact an
     interruption erases."""
 
-    model_config = ConfigDict(extra="forbid", strict=True)
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
     run_id: RunId
     report_sha256: Sha256 | None

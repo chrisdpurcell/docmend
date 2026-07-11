@@ -99,6 +99,30 @@ class TestPlanArtifactIO:
         with pytest.raises(artifacts.ArtifactError):
             artifacts.read_plan(target)
 
+    def test_snapshot__model_and_hash_come_from_one_read(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        target = tmp_path / "plan.json"
+        plan = sample_plan()
+        artifacts.write_plan(plan, target)
+        reads = 0
+        real_read_bytes = Path.read_bytes
+
+        def read_once(path: Path) -> bytes:
+            nonlocal reads
+            reads += 1
+            if reads > 1:
+                raise AssertionError("plan snapshot read more than once")
+            return real_read_bytes(path)
+
+        monkeypatch.setattr(Path, "read_bytes", read_once)
+        loaded, digest = artifacts.read_plan_snapshot(target)
+        assert loaded == plan
+        assert (
+            digest == "sha256:" + __import__("hashlib").sha256(real_read_bytes(target)).hexdigest()
+        )
+        assert reads == 1
+
 
 class TestSha256OfFile:
     def test_matches__hashlib(self, tmp_path: Path) -> None:

@@ -300,6 +300,7 @@ def plan(
         run_id=run_id, command="plan", log_dir=artifact_dir, verbose=opts.verbose, quiet=opts.quiet
     )
     log = get_logger(__name__)
+    out_path = out if out is not None else artifact_dir / f"docmend-{run_id}-plan.json"
 
     if path is not None:
         if not path.exists():
@@ -309,12 +310,18 @@ def plan(
         # scan+plan pair is covered as one run (OQ-027) instead of leaving the
         # scan step racy against a concurrent invocation over the same tree.
         scan_root = (path if path.is_dir() else path.parent).resolve()
-        run_lock = _acquire_run_lock(scan_root, run_id=run_id)
-        log.info("plan starting (scan shorthand)", path=str(path))
-        inventory = discovery.scan(path, config, run_id=run_id, generated_at=now.isoformat())
         # Resolved to absolute: inventory_ref.path must stay valid outside this
         # invocation's CWD, unlike out_path (echoed, never round-tripped) below.
         inventory_artifact = (artifact_dir / f"docmend-{run_id}-inventory.json").resolve()
+        _guard_artifact_paths(
+            [out_path, inventory_artifact],
+            corpus_root=scan_root,
+            input_artifacts=[],
+            config=config,
+        )
+        run_lock = _acquire_run_lock(scan_root, run_id=run_id)
+        log.info("plan starting (scan shorthand)", path=str(path))
+        inventory = discovery.scan(path, config, run_id=run_id, generated_at=now.isoformat())
         artifacts.write_inventory(inventory, inventory_artifact)
     else:
         assert inventory_path is not None
@@ -325,6 +332,12 @@ def plan(
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(2) from exc
         inventory_artifact = inventory_path.resolve()
+        _guard_artifact_paths(
+            [out_path],
+            corpus_root=Path(inventory.source_root),
+            input_artifacts=[inventory_path],
+            config=config,
+        )
         # The root is only known once the inventory is read, so the lock is
         # acquired here rather than up front (OQ-027).
         run_lock = _acquire_run_lock(Path(inventory.source_root), run_id=run_id)
@@ -342,7 +355,6 @@ def plan(
             generated_at=now.isoformat(),
             inventory_ref=inventory_ref,
         )
-        out_path = out if out is not None else artifact_dir / f"docmend-{run_id}-plan.json"
         artifacts.write_plan(result, out_path)
 
         reasons = Counter(skip.reason for skip in result.skips)

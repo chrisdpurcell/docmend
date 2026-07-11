@@ -245,3 +245,39 @@ class TestPlanLock:
         monkeypatch.setattr(cli.lock, "acquire", _raise_oserror)
         result = runner.invoke(app, ["plan", str(corpus)])
         assert result.exit_code == 0, result.output
+
+
+class TestPlanArtifactGuard:
+    """rev 0.26 IR-007 / adr-0021 / DMR-02 wiring for both plan branches."""
+
+    def test_out_inside_corpus__refused_exit_3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        victim = corpus / "victim.txt"
+        victim.write_bytes(b"corpus document\n")
+        result = runner.invoke(app, ["plan", str(corpus), "--out", str(victim)])
+        assert result.exit_code == 3
+        assert "artifact-destination" in result.output
+        assert victim.read_bytes() == b"corpus document\n"
+
+    def test_out_aliasing_inventory_input__refused_exit_3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A destination outside the corpus can still corrupt the pipeline by
+        aliasing this invocation's own input (adr-0021)."""
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "doc.txt").write_text("clean\n")
+        inventory_path = tmp_path / "inventory.json"
+        scan_result = runner.invoke(app, ["scan", str(corpus), "--report", str(inventory_path)])
+        assert scan_result.exit_code == 0, scan_result.output
+        result = runner.invoke(
+            app,
+            ["plan", "--inventory", str(inventory_path), "--out", str(inventory_path)],
+        )
+        assert result.exit_code == 3
+        assert "artifact-destination" in result.output

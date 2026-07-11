@@ -76,16 +76,18 @@ def test_single_file_journey__scan_plan_apply_with_defaults(
     single = tmp_path / "letter.txt"
     single.write_bytes(b"hello\r\nworld")
 
-    # rev 0.26 IR-007/adr-0021: a loose `inventory.json` in the corpus root is
-    # now a refused artifact-destination (DMR-02) — the report must land under
-    # the licensed .docmend/ carve-out like the tool's own defaults do.
+    # rev 0.26 IR-007/adr-0021: a loose `inventory.json`/`plan.json` in the
+    # corpus root is now a refused artifact-destination (DMR-02, Task 8 wires
+    # the same guard onto `plan`'s --out) — both artifacts must land under the
+    # licensed .docmend/ carve-out like the tool's own defaults do.
     scanned = runner.invoke(app, ["scan", str(single), "--report", ".docmend/inventory.json"])
     assert scanned.exit_code == 0, scanned.output
     planned = runner.invoke(
-        app, ["plan", "--inventory", ".docmend/inventory.json", "--out", "plan.json"]
+        app,
+        ["plan", "--inventory", ".docmend/inventory.json", "--out", ".docmend/plan.json"],
     )
     assert planned.exit_code == 0, planned.output
-    applied = runner.invoke(app, ["apply", "plan.json", "--write", "--allow-no-backup"])
+    applied = runner.invoke(app, ["apply", ".docmend/plan.json", "--write", "--allow-no-backup"])
     assert applied.exit_code == 0, applied.output
 
     converted = tmp_path / "letter.md"

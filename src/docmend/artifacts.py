@@ -23,7 +23,7 @@ import json
 import os
 import secrets
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from functools import cache
 from importlib import resources
 from pathlib import Path
@@ -31,6 +31,8 @@ from typing import Literal, Protocol, cast
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as SchemaValidationError
+from pathspec import PathSpec
+from pathspec.patterns.gitignore.spec import GitIgnoreSpecPattern
 
 from docmend.inventory import Inventory
 from docmend.plan import Plan
@@ -89,6 +91,65 @@ def validate_artifact(kind: ArtifactKind, document: object) -> None:
         findings = "; ".join(f"{e.json_path}: {e.message}" for e in errors)
         msg = f"{kind} artifact failed schema validation — {findings}"
         raise ArtifactError(msg)
+
+
+def guard_artifact_destination(
+    destination: Path,
+    *,
+    corpus_root: Path | None,
+    input_artifacts: Iterable[Path] = (),
+    artifact_root: Path | None = None,
+    exclude: PathSpec[GitIgnoreSpecPattern] | None = None,
+) -> str | None:
+    """One source-aware preflight for every CLI artifact write (rev 0.26
+    IR-007, adr-0021, DMR-02): docmend's own artifacts must never be able to
+    mutate the corpus they describe, and a refused write must precede the
+    pipeline, not follow it. Returns the refusal message, or None when safe.
+
+    Containment is judged on TWO candidates, because publication is
+    tmp.replace(destination): the LEXICAL directory entry the replace swaps
+    (resolved parent + final name, final component deliberately not followed)
+    and the fully RESOLVED referent. An in-corpus name aliasing an external
+    file mutates the corpus's directory entry; an external name aliasing an
+    in-corpus file mutates corpus bytes — both must refuse.
+
+    The .docmend/ carve-out (adr-0021) is licensed PER DESTINATION: a
+    candidate inside the corpus is allowed only when it lies under
+    `artifact_root` AND its own corpus-relative path matches `exclude` — a
+    gitignore negation that re-includes one destination withdraws exactly
+    that destination's license, and an operator-replaced exclude set
+    withdraws the root wholesale.
+    """
+    lexical = destination.parent.resolve() / destination.name
+    resolved = destination.resolve()
+    if resolved.exists() and not resolved.is_file():
+        return f"{destination}: artifact destination is not a regular file"
+    for artifact in input_artifacts:
+        if resolved == Path(artifact).resolve():
+            return (
+                f"{destination}: artifact destination aliases an input artifact "
+                f"of this invocation ({artifact})"
+            )
+    if corpus_root is None:
+        return None
+    root = corpus_root.resolve()
+    licensed_root = artifact_root.resolve() if artifact_root is not None else None
+    for candidate in {lexical, resolved}:
+        if not candidate.is_relative_to(root):
+            continue
+        licensed = (
+            licensed_root is not None
+            and candidate.is_relative_to(licensed_root)
+            and exclude is not None
+            and exclude.match_file(candidate.relative_to(root).as_posix())
+        )
+        if not licensed:
+            return (
+                f"{destination}: artifact destination resolves inside the corpus "
+                f"root {root} (only excluded destinations under the canonical "
+                f"artifact root are legal in-corpus writes; adr-0021)"
+            )
+    return None
 
 
 def write_json_artifact(document: dict[str, object], path: Path) -> None:

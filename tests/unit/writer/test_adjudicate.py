@@ -14,11 +14,13 @@ from pathlib import Path
 import pytest
 from tests.helpers.manifest2 import RUN_ID, record_doc
 
+from docmend.writer import adjudicate as adjudicate_module
 from docmend.writer.adjudicate import (
     Adjudication,
     adjudicate_dangling_intent,
     finish_remaining,
 )
+from docmend.writer.commit import CommitHooks
 from docmend.writer.manifest import ManifestRecord
 
 BEFORE = b"before bytes\n"
@@ -134,7 +136,7 @@ class TestApplyRows:
         )
         verdict = adjudicate_dangling_intent(intent)
         assert verdict.verdict == "finish-remaining"
-        finish_remaining(intent)
+        finish_remaining(intent, root_resolved=tmp_path.resolve())
         assert not source.exists()
         assert target.read_bytes() == BEFORE
 
@@ -229,7 +231,7 @@ class TestApplyRows:
         )
         verdict = adjudicate_dangling_intent(intent)
         assert verdict.verdict == "finish-remaining"
-        finish_remaining(intent)
+        finish_remaining(intent, root_resolved=tmp_path.resolve())
         assert not source.exists()
         assert target.read_bytes() == AFTER
 
@@ -391,7 +393,7 @@ class TestRestoreInverseRows:
         )
         verdict = adjudicate_dangling_intent(intent)
         assert verdict.verdict == "finish-remaining"
-        finish_remaining(intent)
+        finish_remaining(intent, root_resolved=tmp_path.resolve())
         assert not applied.exists()
         assert original.read_bytes() == AFTER
 
@@ -428,7 +430,7 @@ class TestRestoreInverseRows:
         )
         verdict = adjudicate_dangling_intent(intent, undone=undone)
         assert verdict.verdict == "finish-remaining"
-        finish_remaining(intent, undone=undone)
+        finish_remaining(intent, undone=undone, root_resolved=tmp_path.resolve())
         assert applied.read_bytes() == CLOBBERED
         assert original.read_bytes() == AFTER
 
@@ -475,7 +477,7 @@ class TestRestoreInverseRows:
         )
         verdict = adjudicate_dangling_intent(intent)
         assert verdict.verdict == "finish-remaining"
-        finish_remaining(intent)
+        finish_remaining(intent, root_resolved=tmp_path.resolve())
         assert not applied.exists()
         assert original.read_bytes() == BEFORE
 
@@ -535,7 +537,264 @@ class TestVerifiedFinish:
         from docmend.writer.atomic import WriteError
 
         with pytest.raises(WriteError, match="refusing"):
-            finish_remaining(intent)
+            finish_remaining(intent, root_resolved=tmp_path.resolve())
+
+
+class TestFinishRemainingBoundary:
+    def test_observe_nonregular__unobservable_without_blocking(self, tmp_path: Path) -> None:
+        fifo = tmp_path / "pipe"
+        os.mkfifo(fifo)
+        observed = adjudicate_module._observe(fifo)  # pyright: ignore[reportPrivateUsage]
+        assert observed.state == "unobservable"
+
+    def test_observe_descriptor_read_error__unobservable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = tmp_path / "a.md"
+        path.write_bytes(AFTER)
+
+        def fail_fdopen(fd: int, mode: str) -> object:
+            raise OSError(5, "I/O error")
+
+        monkeypatch.setattr(adjudicate_module.os, "fdopen", fail_fdopen)
+        observed = adjudicate_module._observe(path)  # pyright: ignore[reportPrivateUsage]
+        assert observed.state == "unobservable"
+
+    def test_finish_unlink__parent_interposed__refused(self, tmp_path: Path) -> None:
+        root = tmp_path / "root"
+        sub = root / "sub"
+        sub.mkdir(parents=True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        source = sub / "a.txt"
+        target = sub / "a.md"
+        source.write_bytes(BEFORE)
+        os.link(source, target)
+        intent = _intent(
+            operation="rename",
+            original=source,
+            target=target,
+            source_identity=_ident(source),
+            expected_identity=_ident(target),
+            after=BEFORE,
+        )
+        assert adjudicate_dangling_intent(intent).verdict == "finish-remaining"
+        sub.rename(outside / "sub")
+        sub.symlink_to(outside / "sub")
+
+        from docmend.writer.atomic import WriteError
+
+        with pytest.raises(WriteError):
+            finish_remaining(intent, root_resolved=root.resolve())
+        assert (outside / "sub" / "a.txt").read_bytes() == BEFORE
+
+    def test_finish_rewrite_from_backup__target_swapped_in_stage_window__refused(
+        self, tmp_path: Path
+    ) -> None:
+        applied = tmp_path / "a.md"
+        original = tmp_path / "a.txt"
+        applied.write_bytes(AFTER)
+        os.link(applied, original)
+        undone = _undone_apply(tmp_path, overwritten=CLOBBERED, backup=CLOBBERED)
+        intent = _inverse_intent(
+            operation="rename",
+            applied_name=applied,
+            original_name=original,
+            source_identity=_ident(applied),
+            expected_identity=_ident(original),
+            original_bytes=AFTER,
+            applied_bytes=AFTER,
+        )
+
+        def swap(step: str, path: Path) -> None:
+            if step == "replace-target":
+                applied.unlink()
+                applied.write_bytes(b"interloper")
+
+        from docmend.writer.atomic import WriteError
+
+        with pytest.raises(WriteError):
+            finish_remaining(
+                intent,
+                undone=undone,
+                root_resolved=tmp_path.resolve(),
+                hooks=CommitHooks(swap),
+            )
+        assert applied.read_bytes() == b"interloper"
+
+    def test_finish_rewrite_from_backup__preserves_target_mode(self, tmp_path: Path) -> None:
+        applied = tmp_path / "a.md"
+        original = tmp_path / "a.txt"
+        applied.write_bytes(AFTER)
+        applied.chmod(0o640)
+        os.link(applied, original)
+        undone = _undone_apply(tmp_path, overwritten=CLOBBERED, backup=CLOBBERED)
+        intent = _inverse_intent(
+            operation="rename",
+            applied_name=applied,
+            original_name=original,
+            source_identity=_ident(applied),
+            expected_identity=_ident(original),
+            original_bytes=AFTER,
+            applied_bytes=AFTER,
+        )
+
+        finish_remaining(intent, undone=undone, root_resolved=tmp_path.resolve())
+
+        assert applied.read_bytes() == CLOBBERED
+        assert os.lstat(applied).st_mode & 0o7777 == 0o640
+
+    def test_finish_rewrite_mode_is_bound_to_verified_descriptor(self, tmp_path: Path) -> None:
+        applied = tmp_path / "a.md"
+        original = tmp_path / "a.txt"
+        applied.write_bytes(AFTER)
+        applied.chmod(0o640)
+        os.link(applied, original)
+        undone = _undone_apply(tmp_path, overwritten=CLOBBERED, backup=CLOBBERED)
+        intent = _inverse_intent(
+            operation="rename",
+            applied_name=applied,
+            original_name=original,
+            source_identity=_ident(applied),
+            expected_identity=_ident(original),
+            original_bytes=AFTER,
+            applied_bytes=AFTER,
+        )
+
+        def swap_mode_then_restore(step: str, path: Path) -> None:
+            if step == "replace-target":
+                held = tmp_path / "held.md"
+                applied.rename(held)
+                applied.write_bytes(b"interloper")
+                applied.chmod(0o777)
+                applied.unlink()
+                held.rename(applied)
+
+        finish_remaining(
+            intent,
+            undone=undone,
+            root_resolved=tmp_path.resolve(),
+            hooks=CommitHooks(swap_mode_then_restore),
+        )
+
+        assert applied.read_bytes() == CLOBBERED
+        assert os.lstat(applied).st_mode & 0o7777 == 0o640
+
+    def test_finish_unlink__survivor_swapped_since_adjudication__refused(
+        self, tmp_path: Path
+    ) -> None:
+        source = tmp_path / "a.txt"
+        target = tmp_path / "a.md"
+        source.write_bytes(BEFORE)
+        os.link(source, target)
+        intent = _intent(
+            operation="rename",
+            original=source,
+            target=target,
+            source_identity=_ident(source),
+            expected_identity=_ident(target),
+            after=BEFORE,
+        )
+
+        def swap(step: str, path: Path) -> None:
+            if step == "unlink":
+                target.unlink()
+                target.write_bytes(BEFORE)
+
+        from docmend.writer.atomic import WriteError
+
+        with pytest.raises(WriteError):
+            finish_remaining(
+                intent,
+                root_resolved=tmp_path.resolve(),
+                hooks=CommitHooks(swap),
+            )
+        assert source.exists()
+
+    def test_finish_unlink__environmental_error_wrapped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = tmp_path / "a.txt"
+        target = tmp_path / "a.md"
+        source.write_bytes(BEFORE)
+        os.link(source, target)
+        intent = _intent(
+            operation="rename",
+            original=source,
+            target=target,
+            source_identity=_ident(source),
+            expected_identity=_ident(target),
+            after=BEFORE,
+        )
+        real_unlink = Path.unlink
+
+        def fail_source(self: Path, missing_ok: bool = False) -> None:
+            if self == source:
+                raise OSError(5, "I/O error")
+            real_unlink(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", fail_source)
+        from docmend.writer.atomic import WriteError
+
+        with pytest.raises(WriteError, match="cannot finish"):
+            finish_remaining(intent, root_resolved=tmp_path.resolve())
+
+    def test_inverse_rnr_clobber_finish_rewrites_backup(self, tmp_path: Path) -> None:
+        applied = tmp_path / "a.md"
+        original = tmp_path / "a.txt"
+        applied.write_bytes(AFTER)
+        original.write_bytes(BEFORE)
+        undone = _undone_apply(tmp_path, overwritten=CLOBBERED, backup=CLOBBERED)
+        intent = _inverse_intent(
+            operation="rename_and_rewrite",
+            applied_name=applied,
+            original_name=original,
+            source_identity=_ident(applied),
+            expected_identity=_ident(original),
+        )
+
+        finish_remaining(intent, undone=undone, root_resolved=tmp_path.resolve())
+
+        assert applied.read_bytes() == CLOBBERED
+        assert original.read_bytes() == BEFORE
+
+    def test_observe__identity_and_bytes_from_one_descriptor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = tmp_path / "a.md"
+        path.write_bytes(AFTER)
+
+        def forbid_path_read(self: Path) -> bytes:
+            raise AssertionError("pathname read_bytes must not be used")
+
+        monkeypatch.setattr(Path, "read_bytes", forbid_path_read)
+        observed = adjudicate_module._observe(path)  # pyright: ignore[reportPrivateUsage]
+        assert observed.sha256 == _sha(AFTER)
+
+    @pytest.mark.parametrize("error", [PermissionError(13, "denied"), OSError(5, "I/O")])
+    def test_observe_metadata_error__unobservable_never_absent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: OSError
+    ) -> None:
+        path = tmp_path / "a.md"
+        path.write_bytes(AFTER)
+
+        def fail_open(candidate: os.PathLike[str] | str, flags: int) -> int:
+            if Path(candidate) == path:
+                raise error
+            return os.open(candidate, flags)
+
+        monkeypatch.setattr(adjudicate_module.os, "open", fail_open)
+        observed = adjudicate_module._observe(path)  # pyright: ignore[reportPrivateUsage]
+        assert observed.state == "unobservable"
+        assert observed.absent is False
+        intent = _intent(
+            operation="rewrite",
+            original=path,
+            target=path,
+            source_identity=_ident(path),
+            expected_identity=_ident(path),
+        )
+        assert adjudicate_dangling_intent(intent).verdict == "external-interference"
 
 
 class TestRefusalArms:
@@ -651,7 +910,7 @@ class TestFinishErrorPaths:
         from docmend.writer.atomic import WriteError
 
         with pytest.raises(WriteError, match="external"):
-            finish_remaining(intent, undone=undone)
+            finish_remaining(intent, undone=undone, root_resolved=tmp_path.resolve())
 
     def test_finish_rewrite_from_backup_hash_mismatch__write_error(self, tmp_path: Path) -> None:
         undone = _undone_apply(tmp_path, overwritten=CLOBBERED, backup=b"tampered bytes\n")
@@ -665,7 +924,7 @@ class TestFinishErrorPaths:
         from docmend.writer.atomic import WriteError
 
         with pytest.raises(WriteError, match="mismatch"):
-            finish_remaining(intent, undone=undone)
+            finish_remaining(intent, undone=undone, root_resolved=tmp_path.resolve())
 
     def test_finish_rewrite_from_backup_unreadable__write_error(self, tmp_path: Path) -> None:
         undone = _undone_apply(tmp_path, overwritten=CLOBBERED, backup=CLOBBERED)
@@ -681,4 +940,4 @@ class TestFinishErrorPaths:
         from docmend.writer.atomic import WriteError
 
         with pytest.raises(WriteError, match="unreadable"):
-            finish_remaining(intent, undone=undone)
+            finish_remaining(intent, undone=undone, root_resolved=tmp_path.resolve())

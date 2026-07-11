@@ -20,6 +20,7 @@ Cross-file contracts:
   record itself holds no backup references.
 """
 
+import errno
 import hashlib
 import os
 import stat
@@ -28,7 +29,14 @@ from pathlib import Path
 from typing import Literal
 
 from docmend.lineage import ObjectIdentity
-from docmend.writer.atomic import WriteError, atomic_write_bytes
+from docmend.writer.atomic import WriteError
+from docmend.writer.commit import (
+    NO_HOOKS,
+    CommitHooks,
+    InterferenceError,
+    check_bound,
+    guarded_replace,
+)
 from docmend.writer.manifest import ManifestRecord
 
 type AdjudicationVerdict = Literal[
@@ -48,36 +56,45 @@ def _sha(data: bytes) -> str:
 
 @dataclass(frozen=True)
 class _Observed:
-    """One pathname's lstat'd state: None everywhere = the name is absent."""
+    """Describe one name from a single non-following descriptor observation."""
 
+    state: ObservationState
     identity: ObjectIdentity | None
     sha256: str | None
+    mode: int | None
 
     @property
     def absent(self) -> bool:
-        return self.identity is None
+        return self.state == "absent"
+
+
+type ObservationState = Literal["regular", "absent", "symlink", "unobservable"]
 
 
 def _observe(path: Path) -> _Observed:
-    """lstat + hash one name. A symlink or special file yields identity-only
-    (its hash is None, so every bytes predicate fails — refusal, not a read
-    through the link)."""
+    """Capture identity, bytes, and mode through one non-following descriptor."""
     try:
-        st = os.lstat(path)
-    except FileNotFoundError:
-        return _Observed(identity=None, sha256=None)
-    except OSError:
-        # Unreadable metadata is indistinguishable from interference; no
-        # predicate can pass against it.
-        return _Observed(identity=None, sha256=None)
-    identity = ObjectIdentity(dev=st.st_dev, ino=st.st_ino)
-    if not stat.S_ISREG(st.st_mode):
-        return _Observed(identity=identity, sha256=None)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return _Observed("absent", None, None, None)
+        if exc.errno == errno.ELOOP:
+            return _Observed("symlink", None, None, None)
+        return _Observed("unobservable", None, None, None)
     try:
-        data = path.read_bytes()
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return _Observed("unobservable", None, None, None)
+        identity = ObjectIdentity(dev=st.st_dev, ino=st.st_ino)
+        with os.fdopen(fd, "rb") as file_handle:
+            fd = -1
+            data = file_handle.read()
     except OSError:
-        return _Observed(identity=identity, sha256=None)
-    return _Observed(identity=identity, sha256=_sha(data))
+        return _Observed("unobservable", None, None, None)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    return _Observed("regular", identity, _sha(data), st.st_mode)
 
 
 def _is(observed: _Observed, identity: ObjectIdentity | None, sha256: str | None) -> bool:
@@ -86,6 +103,7 @@ def _is(observed: _Observed, identity: ObjectIdentity | None, sha256: str | None
     intent failed to persist it — refuse rather than guess)."""
     return (
         identity is not None
+        and observed.state == "regular"
         and observed.identity == identity
         and sha256 is not None
         and observed.sha256 == sha256
@@ -243,7 +261,13 @@ def _adjudicate_inverse(record: ManifestRecord, undone: ManifestRecord | None) -
     return _refuse(record, "inverse rename_and_rewrite matches no recorded state")
 
 
-def finish_remaining(record: ManifestRecord, *, undone: ManifestRecord | None = None) -> None:
+def finish_remaining(
+    record: ManifestRecord,
+    *,
+    undone: ManifestRecord | None = None,
+    root_resolved: Path,
+    hooks: CommitHooks = NO_HOOKS,
+) -> None:
     """Complete the residual step(s) of a `finish-remaining` adjudication.
 
     The caller has JUST adjudicated, so the involved objects were verified
@@ -254,26 +278,75 @@ def finish_remaining(record: ManifestRecord, *, undone: ManifestRecord | None = 
     """
     if record.undoes_action_id is None:
         # Apply rows: the only residual step is unlinking the source name.
-        _verified_unlink(Path(record.original_path), record.source_identity, record.before_sha256)
+        _verified_unlink(
+            Path(record.original_path),
+            record.source_identity,
+            record.before_sha256,
+            survivor=(
+                Path(record.target_path),
+                record.expected_published_identity,
+                record.after_sha256,
+            ),
+            root_resolved=root_resolved,
+            hooks=hooks,
+        )
         return
     clobbered_sha = undone.overwritten_sha256 if undone is not None else None
     if record.operation == "rename" and clobbered_sha is not None:
         # Rewrite the applied name back to the recorded clobbered bytes.
-        _rewrite_from_backup(record, undone)
+        _rewrite_from_backup(record, undone, root_resolved=root_resolved, hooks=hooks)
         return
     if record.operation == "rename_and_rewrite" and clobbered_sha is not None:
-        _rewrite_from_backup(record, undone)
+        _rewrite_from_backup(record, undone, root_resolved=root_resolved, hooks=hooks)
         return
     # Pure-rename inverse (or rename_and_rewrite with no clobbered target):
     # the residual step is unlinking the applied name.
-    _verified_unlink(Path(record.original_path), record.source_identity, record.before_sha256)
+    _verified_unlink(
+        Path(record.original_path),
+        record.source_identity,
+        record.before_sha256,
+        survivor=(
+            Path(record.target_path),
+            record.expected_published_identity,
+            record.after_sha256,
+        ),
+        root_resolved=root_resolved,
+        hooks=hooks,
+    )
 
 
-def _verified_unlink(path: Path, identity: ObjectIdentity | None, sha256: str) -> None:
+def _verified_unlink(
+    path: Path,
+    identity: ObjectIdentity | None,
+    sha256: str,
+    *,
+    survivor: tuple[Path, ObjectIdentity | None, str | None] | None,
+    root_resolved: Path,
+    hooks: CommitHooks,
+) -> None:
+    hooks.before_step("unlink", path)
     observed = _observe(path)
     if not _is(observed, identity, sha256):
         msg = f"{path}: object changed between adjudication and unlink; refusing"
         raise WriteError(msg)
+    if survivor is not None:
+        survivor_path, survivor_identity, survivor_sha = survivor
+        if not _is(_observe(survivor_path), survivor_identity, survivor_sha):
+            msg = (
+                f"{survivor_path}: surviving name changed between adjudication "
+                f"and finish; refusing to unlink {path}"
+            )
+            raise WriteError(msg)
+        assert survivor_identity is not None
+        try:
+            check_bound(survivor_path, survivor_identity, root_resolved=root_resolved)
+        except InterferenceError as exc:
+            raise WriteError(str(exc)) from exc
+    assert identity is not None
+    try:
+        check_bound(path, identity, root_resolved=root_resolved)
+    except InterferenceError as exc:
+        raise WriteError(str(exc)) from exc
     try:
         path.unlink()
     except OSError as exc:
@@ -281,7 +354,13 @@ def _verified_unlink(path: Path, identity: ObjectIdentity | None, sha256: str) -
         raise WriteError(msg) from exc
 
 
-def _rewrite_from_backup(record: ManifestRecord, undone: ManifestRecord | None) -> None:
+def _rewrite_from_backup(
+    record: ManifestRecord,
+    undone: ManifestRecord | None,
+    *,
+    root_resolved: Path,
+    hooks: CommitHooks,
+) -> None:
     assert undone is not None  # adjudication verdict required it
     if undone.overwritten_backup_path is None:
         msg = (
@@ -298,4 +377,25 @@ def _rewrite_from_backup(record: ManifestRecord, undone: ManifestRecord | None) 
     if _sha(data) != undone.overwritten_sha256:
         msg = f"{backup}: clobbered-target backup hash mismatch (ERR-004)"
         raise WriteError(msg)
-    atomic_write_bytes(Path(record.original_path), data)
+    target = Path(record.original_path)
+    observed = _observe(target)
+    assert record.source_identity is not None
+    assert record.expected_published_identity is not None
+    if not _is(observed, record.source_identity, record.before_sha256):
+        msg = f"{target}: object changed before backup rewrite; refusing"
+        raise WriteError(msg)
+    if observed.mode is None:
+        msg = f"{target}: mode unavailable for verified backup rewrite"
+        raise WriteError(msg)
+    try:
+        guarded_replace(
+            target,
+            data,
+            expected=record.source_identity,
+            mode=observed.mode,
+            root_resolved=root_resolved,
+            hooks=hooks,
+            survivor=(Path(record.target_path), record.expected_published_identity),
+        )
+    except InterferenceError as exc:
+        raise WriteError(str(exc)) from exc

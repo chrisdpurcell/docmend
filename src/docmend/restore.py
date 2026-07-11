@@ -278,7 +278,12 @@ def _converge_pending_restore(
         )
     if verdict.verdict == "finish-remaining":
         try:
-            finish_remaining(intent, undone=undone)
+            finish_remaining(
+                intent,
+                undone=undone,
+                root_resolved=root_resolved,
+                hooks=hooks,
+            )
         except WriteError as exc:
             return RestoreOutcome(
                 action_id, intent.docmend_id, intent.original_path, "failed", f"ERR-003: {exc}"

@@ -324,6 +324,7 @@ def _adjudicate_pending_intent(
     options: ApplyOptions,
     manifest: ManifestWriter | None,
     run_id: str,
+    hooks: CommitHooks,
 ) -> ApplyOutcome | None:
     """Resume decision for a DANGLING intent (2.0, adr-0019): the shared
     adjudication table classifies the crash-after disk state against the
@@ -368,7 +369,7 @@ def _adjudicate_pending_intent(
         )
     if verdict.verdict == "finish-remaining":
         try:
-            finish_remaining(record)
+            finish_remaining(record, root_resolved=root_resolved, hooks=hooks)
         except WriteError as exc:
             return _failed(action, "ERR-003", str(exc))
     if manifest is not None:
@@ -871,7 +872,7 @@ def execute_plan(
                 # A None verdict means the mutation never happened, so the
                 # action executes normally below (FR-003 guard intact).
                 outcome = _adjudicate_pending_intent(
-                    action, state.record, root_resolved, options, manifest, run_id
+                    action, state.record, root_resolved, options, manifest, run_id, hooks
                 )
             elif state is not None and state.state == "applied":
                 outcome = _reconcile_completed(action, state.record)

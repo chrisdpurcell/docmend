@@ -66,7 +66,7 @@ def test_symlink_inside_name_outside_referent__refused(tmp_path: Path) -> None:
     assert outside.read_bytes() == b"external file\n"
 
 
-def test_carveout_allows_excluded_docmend_destination(tmp_path: Path) -> None:
+def test_carveout__allows_excluded_docmend_destination(tmp_path: Path) -> None:
     root = _corpus(tmp_path)
     artifact_root = root / ".docmend"
     dest = artifact_root / "docmend-run-inventory.json"

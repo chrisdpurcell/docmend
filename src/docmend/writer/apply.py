@@ -16,8 +16,10 @@ failure class maps to §12.1.
 """
 
 import hashlib
+import os
 from collections import Counter
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -28,7 +30,7 @@ from pathspec.patterns.gitignore.spec import GitIgnoreSpecPattern
 from docmend import __version__
 from docmend.config import DocmendConfig
 from docmend.discovery import sniff_bom
-from docmend.lineage import PriorAttempt
+from docmend.lineage import ObjectIdentity, PriorAttempt
 from docmend.observability import get_logger
 from docmend.plan import ArtifactRef, Plan, PlanAction
 from docmend.report import (
@@ -46,10 +48,13 @@ from docmend.transform.dispatch import (
 )
 from docmend.transform.encoding import decode_source, encode_utf8
 from docmend.writer.atomic import (
+    StagedWrite,
     WriteError,
     atomic_write_bytes,
+    publish_staged,
     rename_no_clobber,
     rename_overwrite,
+    stage_bytes,
 )
 from docmend.writer.backup import BackupError, backup_file
 from docmend.writer.gate import ApplyOptions, is_content_rewrite
@@ -143,6 +148,10 @@ def _recompute(
     return encode_utf8(transformed), operations
 
 
+def _identity(st: os.stat_result) -> ObjectIdentity:
+    return ObjectIdentity(dev=st.st_dev, ino=st.st_ino)
+
+
 def _record(
     manifest: ManifestWriter | None,
     action: PlanAction,
@@ -155,6 +164,7 @@ def _record(
     overwritten_backup: Path | None,
     run_id: str,
     outcome: ApplyOutcome,
+    identities: _Identities | None = None,
 ) -> None:
     if manifest is None:
         return
@@ -177,8 +187,22 @@ def _record(
             overwritten_backup_path=str(overwritten_backup)
             if overwritten_backup is not None
             else None,
+            source_identity=identities.source if identities is not None else None,
+            target_identity=identities.target if identities is not None else None,
+            expected_published_identity=identities.expected if identities is not None else None,
         )
     )
+
+
+@dataclass(frozen=True)
+class _Identities:
+    """The three durable object identities an intent persists (adr-0019 F4):
+    what the terminal must repeat verbatim and what post-kill adjudication
+    lstat-compares against."""
+
+    source: ObjectIdentity
+    target: ObjectIdentity | None
+    expected: ObjectIdentity
 
 
 def _record_intent(
@@ -192,12 +216,14 @@ def _record_intent(
     overwritten_sha: str | None,
     overwritten_backup: Path | None,
     run_id: str,
+    identities: _Identities,
 ) -> None:
-    """The 1.3 write-ahead record for a multi-step mutation: appended (and
-    fsync'd) BEFORE the target publish so a hard kill anywhere in the
-    publish→unlink→record window leaves reconcilable evidence. after_sha256
-    carries the EXPECTED output hash — that is what lets resume decide from
-    disk state alone whether the publish happened."""
+    """The 2.0 write-ahead record, appended (and fsync'd) BEFORE any corpus
+    name is touched — for EVERY mutation kind (adr-0019, DMR-04), not only
+    the multi-step one. after_sha256 carries the EXPECTED output hash and the
+    identity fields carry the exact objects the mutation is about to touch —
+    that is what lets adjudication decide from disk state alone whether (and
+    how far) the mutation happened."""
     if manifest is None:
         return
     manifest.append(
@@ -219,6 +245,9 @@ def _record_intent(
             overwritten_backup_path=str(overwritten_backup)
             if overwritten_backup is not None
             else None,
+            source_identity=identities.source,
+            target_identity=identities.target,
+            expected_published_identity=identities.expected,
         )
     )
 
@@ -272,17 +301,24 @@ def _reconcile_intent(
         )
     if _sha(target_data) == record.after_sha256:
         source_data: bytes | None
-        try:
-            source_data = source.read_bytes()
-        except FileNotFoundError:
+        if source == target:
+            # 2.0 journals SAME-PATH mutations (rewrite) too: the publish is
+            # the only step, so a matching after-hash means the action fully
+            # completed — there is no separate source to verify or unlink.
+            # (Task 7's adjudication table replaces this special case.)
             source_data = None
-        except OSError as exc:
-            return _failed(
-                action,
-                "ERR-002",
-                f"{source}: unreadable while reconciling the intent recorded in "
-                f"{record.run_id} ({exc.strerror or exc})",
-            )
+        else:
+            try:
+                source_data = source.read_bytes()
+            except FileNotFoundError:
+                source_data = None
+            except OSError as exc:
+                return _failed(
+                    action,
+                    "ERR-002",
+                    f"{source}: unreadable while reconciling the intent recorded in "
+                    f"{record.run_id} ({exc.strerror or exc})",
+                )
         if source_data is not None and _sha(source_data) != record.before_sha256:
             return _failed(
                 action,
@@ -324,6 +360,10 @@ def _reconcile_intent(
             error=None,
         )
     if record.overwritten_sha256 is not None and _sha(target_data) == record.overwritten_sha256:
+        return None
+    if source == target and _sha(target_data) == record.before_sha256:
+        # Same-path rewrite whose publish never landed: the path still holds
+        # the exact before-bytes — re-execute normally (FR-003 guard intact).
         return None
     return _failed(
         action,
@@ -498,28 +538,67 @@ def _execute_action(
 
     content = is_content_rewrite(action)
     after = _sha(payload) if content else action.source_sha256
-    if kind == "rename_and_rewrite":
-        # The only multi-step mutation (publish target, unlink source): its
-        # write-ahead intent record must be durable before the first step.
-        # Single-step kinds stay one-record — atomic_write_bytes/rename leave
-        # no window in which the corpus is mutated but unmanifested.
-        assert target is not None
-        _record_intent(
+
+    # ---- Journal-every-mutation (adr-0019, DMR-04): capture the identities,
+    # stage any replacement output FIRST (a tool-owned O_EXCL temp is not
+    # corpus mutation), append the fsync'd intent, mutate, append the
+    # terminal. A staging or stat failure is PRE-mutation: it records
+    # `failed` with no intent, asserting no corpus name was touched.
+    staged: StagedWrite | None = None
+    try:
+        source_stat = source.stat()
+        if kind in ("rewrite", "rename_and_rewrite"):
+            staged = stage_bytes(
+                target if kind == "rename_and_rewrite" else source,  # type: ignore[arg-type]
+                payload,
+                mode=source_stat.st_mode,
+            )
+    except (WriteError, OSError) as exc:
+        outcome = _failed(action, "ERR-003", str(exc))
+        _record(
             manifest,
             action,
             kind,
             source,
             target,
             backup_path,
-            after,
+            None,
             overwritten_sha,
             overwritten_backup,
             run_id,
+            outcome,
         )
+        return outcome, False
+
+    identities = _Identities(
+        source=_identity(source_stat),
+        # Captured at the same moment as the overwrite backup read (clobber
+        # implies target existed); Plan C's CommitBoundary binds this to a
+        # descriptor — Plan B persists the evidence model.
+        target=_identity(target.stat()) if clobber and target is not None else None,
+        # Replacement publishes move the STAGED inode onto the target name;
+        # pure renames move the source inode. Either way the identity is
+        # knowable before any corpus name changes.
+        expected=staged.identity if staged is not None else _identity(source_stat),
+    )
+    _record_intent(
+        manifest,
+        action,
+        kind,
+        source,
+        target if target is not None else source,
+        backup_path,
+        after,
+        overwritten_sha,
+        overwritten_backup,
+        run_id,
+        identities,
+    )
     try:
-        mode = source.stat().st_mode
+        mode = source_stat.st_mode
         if kind == "rewrite":
-            atomic_write_bytes(source, payload, mode=mode)
+            assert staged is not None
+            publish_staged(staged, source)
         elif kind == "rename":
             assert target is not None
             if clobber:
@@ -528,7 +607,8 @@ def _execute_action(
                 rename_no_clobber(source, target)
         else:  # rename_and_rewrite
             assert target is not None
-            atomic_write_bytes(target, payload, mode=mode, clobber=clobber)
+            assert staged is not None
+            publish_staged(staged, target, clobber=clobber)
             try:
                 source.unlink()
             except OSError as unlink_exc:
@@ -539,7 +619,7 @@ def _execute_action(
                 # target), then fail honestly with the original untouched.
                 try:
                     if target_bytes is not None:
-                        atomic_write_bytes(target, target_bytes)
+                        atomic_write_bytes(target, target_bytes, mode=mode)
                     else:
                         target.unlink()
                 # PEP 758 (Python 3.14): unparenthesized multi-type except reads as
@@ -557,7 +637,31 @@ def _execute_action(
                 )
                 raise WriteError(msg) from unlink_exc
     except FileExistsError:
-        return _skip(action, "collision"), False  # no-clobber race lost (FR-011)
+        # No-clobber race lost (FR-011): a target appeared inside the
+        # check-to-publish window — external interference with the corpus
+        # (ERR-002). Nothing mutated; the intent must not dangle for a live
+        # run, so it closes with a failed terminal while the REPORT keeps the
+        # collision skip (the reviewable outcome).
+        race_outcome = _failed(
+            action,
+            "ERR-002",
+            f"{target}: no-clobber publish lost a collision race (FR-011); no mutation occurred",
+        )
+        _record(
+            manifest,
+            action,
+            kind,
+            source,
+            target,
+            backup_path,
+            None,
+            overwritten_sha,
+            overwritten_backup,
+            run_id,
+            race_outcome,
+            identities,
+        )
+        return _skip(action, "collision"), False
     except (WriteError, OSError) as exc:
         outcome = _failed(action, "ERR-003", str(exc))
         _record(
@@ -572,6 +676,7 @@ def _execute_action(
             overwritten_backup,
             run_id,
             outcome,
+            identities,
         )
         return outcome, False
 
@@ -596,6 +701,7 @@ def _execute_action(
         overwritten_backup,
         run_id,
         outcome,
+        identities,
     )
     return outcome, False
 

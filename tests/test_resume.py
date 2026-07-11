@@ -77,10 +77,14 @@ def _execute(
 
 
 def _hash_tree(root: Path) -> dict[str, str]:
+    # ".docmend-tmp" staging residue is excluded: a killed run's staged temp
+    # is inert tool-owned residue by design (adr-0019/adr-0021 — randomized
+    # names never block a retry; discovery never scans dotfiles), so corpus
+    # equivalence is judged on documents, not tool residue.
     return {
         str(path.relative_to(root)): _sha(path.read_bytes())
         for path in sorted(root.rglob("*"))
-        if path.is_file()
+        if path.is_file() and not path.name.endswith(".docmend-tmp")
     }
 
 
@@ -98,7 +102,7 @@ def _interrupted_apply(
     shape (atomic writes mean no partial target can exist).
     """
     plan = _plan_for(root, config)
-    real = apply_module.atomic_write_bytes
+    real = apply_module.publish_staged
     calls = {"n": 0}
 
     def exploding(*args: object, **kwargs: object) -> None:
@@ -107,10 +111,10 @@ def _interrupted_apply(
             raise _Interrupt("injected kill")
         real(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(apply_module, "atomic_write_bytes", exploding)
+    monkeypatch.setattr(apply_module, "publish_staged", exploding)
     with pytest.raises(_Interrupt):
         _execute(plan, config, manifest_path)
-    monkeypatch.setattr(apply_module, "atomic_write_bytes", real)
+    monkeypatch.setattr(apply_module, "publish_staged", real)
     return plan, read_records(manifest_path)
 
 
@@ -232,23 +236,21 @@ def test_resume_output_missing__fails_err002(tmp_path: Path) -> None:
     assert outcome.error is not None and outcome.error.error_class == "ERR-002"
 
 
-def test_resume_after_lost_trailing_record__stale_hash_skip_not_corruption(
+def test_resume_after_lost_terminal_record__adopts_completed_mutation(
     tmp_path: Path,
 ) -> None:
-    """The one state a torn trailing manifest line leaves behind: the mutation
-    completed but its record was lost. Resume re-executes that action, the
-    FR-003 hash guard sees the already-converted source, and the outcome is a
-    stale-hash SKIP (reviewable finding) — safe, never a second mutation.
-    Uses a rewrite-in-place `.md` action so the source path survives; a lost
-    RENAME record would surface as an `unreadable` skip instead (source moved),
-    the same reviewable-finding class."""
+    """2.0 (adr-0019): a torn trailing line now loses only the TERMINAL — the
+    fsync'd intent survives, so resume adjudicates the completed mutation from
+    disk state and ADOPTS it (outcome applied, no second mutation). This is
+    exactly the DMR-04 window journaling closes: pre-2.0 the whole record was
+    lost and resume could only stale-hash skip."""
     root = tmp_path / "root"
     materialize(root, [*RECIPES, FileRecipe("z.md", "utf-8", "crlf")], seeded_faker())
     config = DocmendConfig()
     plan = _plan_for(root, config)
     _execute(plan, config, tmp_path / "manifest.jsonl")
     records = read_records(tmp_path / "manifest.jsonl")
-    lost = next(r for r in records if r.original_path.endswith("z.md"))
+    lost = next(r for r in records if r.original_path.endswith("z.md") and r.result == "applied")
     surviving = [r for r in records if r is not lost]
     before = _hash_tree(root)
 
@@ -260,8 +262,38 @@ def test_resume_after_lost_trailing_record__stale_hash_skip_not_corruption(
         resume_records=surviving,
     )
 
-    assert _hash_tree(root) == before
+    assert _hash_tree(root) == before  # adopted, never re-mutated
     outcome = next(o for o in report.outcomes if o.action_id == lost.action_id)
+    assert outcome.status == "applied"
+
+
+def test_resume_after_all_records_lost__stale_hash_skip_not_corruption(
+    tmp_path: Path,
+) -> None:
+    """With BOTH of an action's records lost (interior corruption recovered by
+    hand, or a pre-2.0-style total loss), resume re-executes, the FR-003 hash
+    guard sees the already-converted source, and the outcome is a stale-hash
+    SKIP (reviewable finding) — safe, never a second mutation."""
+    root = tmp_path / "root"
+    materialize(root, [*RECIPES, FileRecipe("z.md", "utf-8", "crlf")], seeded_faker())
+    config = DocmendConfig()
+    plan = _plan_for(root, config)
+    _execute(plan, config, tmp_path / "manifest.jsonl")
+    records = read_records(tmp_path / "manifest.jsonl")
+    lost_action = next(r for r in records if r.original_path.endswith("z.md")).action_id
+    surviving = [r for r in records if r.action_id != lost_action]
+    before = _hash_tree(root)
+
+    report = _execute(
+        plan,
+        config,
+        tmp_path / "resume-manifest.jsonl",
+        run_id=RESUME_RUN_ID,
+        resume_records=surviving,
+    )
+
+    assert _hash_tree(root) == before
+    outcome = next(o for o in report.outcomes if o.action_id == lost_action)
     assert (outcome.status, outcome.skip_reason) == ("skipped", "stale-hash")
 
 
@@ -298,16 +330,16 @@ def _interrupted_after_publish(
     source unlink — the narrow multi-step window. Leaves target published,
     source still present, and a dangling intent record as the only evidence."""
     plan = _plan_for(root, config)
-    real = apply_module.atomic_write_bytes
+    real = apply_module.publish_staged
 
     def publish_then_die(*args: object, **kwargs: object) -> None:
         real(*args, **kwargs)  # type: ignore[arg-type]
         raise _Interrupt("injected kill after target publish")
 
-    monkeypatch.setattr(apply_module, "atomic_write_bytes", publish_then_die)
+    monkeypatch.setattr(apply_module, "publish_staged", publish_then_die)
     with pytest.raises(_Interrupt):
         _execute(plan, config, manifest_path)
-    monkeypatch.setattr(apply_module, "atomic_write_bytes", real)
+    monkeypatch.setattr(apply_module, "publish_staged", real)
     return plan, read_records(manifest_path)
 
 
@@ -359,7 +391,7 @@ def test_rename_and_rewrite_write__intent_record_precedes_final_record(tmp_path:
     assert txt[0].operation == "rename_and_rewrite"
     assert txt[0].after_sha256 == txt[1].after_sha256  # intent carries the EXPECTED hash
     assert txt[0].seq < txt[1].seq
-    assert [r.result for r in by_path["z.md"]] == ["applied"]
+    assert [r.result for r in by_path["z.md"]] == ["intent", "applied"]
 
 
 def test_resume_after_kill_between_publish_and_unlink__completes_the_action(
@@ -513,15 +545,15 @@ def test_resume_intent_over_unclobbered_target__reexecutes_with_overwrite(
     _execute(control_plan, config, tmp_path / "control-manifest.jsonl")
 
     plan = _plan_for(root, config)
-    real = apply_module.atomic_write_bytes
+    real = apply_module.publish_staged
 
     def die_before_publish(*args: object, **kwargs: object) -> None:
         raise _Interrupt("injected kill before target publish")
 
-    monkeypatch.setattr(apply_module, "atomic_write_bytes", die_before_publish)
+    monkeypatch.setattr(apply_module, "publish_staged", die_before_publish)
     with pytest.raises(_Interrupt):
         _execute(plan, config, tmp_path / "manifest.jsonl")
-    monkeypatch.setattr(apply_module, "atomic_write_bytes", real)
+    monkeypatch.setattr(apply_module, "publish_staged", real)
     first = read_records(tmp_path / "manifest.jsonl")
     assert [r.result for r in first] == ["intent"]
     assert first[0].overwritten_sha256 is not None

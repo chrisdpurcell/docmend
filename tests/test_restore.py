@@ -242,7 +242,7 @@ def test_restore_lifo__later_mutations_undone_first(tmp_path: Path) -> None:
     config = DocmendConfig()
     plan = _plan_for(root, config)
     _execute(plan, config, tmp_path, write=True, backup_root=tmp_path / "backups")
-    record1 = _records_for(tmp_path)[0]
+    record1 = next(r for r in _records_for(tmp_path) if r.result == "applied")
     after1_bytes = (root / "legacy.md").read_bytes()
     assert record1.after_sha256 == _sha(after1_bytes)
 
@@ -258,7 +258,7 @@ def test_restore_lifo__later_mutations_undone_first(tmp_path: Path) -> None:
         run_id=record1.run_id,
         action_id=f"{record1.run_id}/a2",
         docmend_id=record1.docmend_id,
-        seq=2,
+        seq=3,
         recorded_at=record1.recorded_at,
         operation="rewrite",
         original_path=record1.original_path,
@@ -294,7 +294,7 @@ def test_restore_modified_since_apply__skipped_never_clobbers(tmp_path: Path) ->
     plan = _plan_for(root, config)
     _execute(plan, config, tmp_path, write=True, backup_root=tmp_path / "backups")
     records = _records_for(tmp_path)
-    assert len(records) == 2
+    assert len([r for r in records if r.result == "applied"]) == 2  # 2.0: + intents
 
     edited = b"edited after apply, never to be lost\n"
     (root / "legacy.md").write_bytes(edited)
@@ -534,7 +534,8 @@ def test_restore_records_its_own_manifest(tmp_path: Path) -> None:
     plan = _plan_for(root, config)
     _execute(plan, config, tmp_path, write=True, backup_root=tmp_path / "backups")
     records = _records_for(tmp_path)
-    assert len(records) == 2
+    applied = [r for r in records if r.result == "applied"]
+    assert len(applied) == 2  # 2.0: intents ride along as evidence
     manifest_out = tmp_path / "restore-manifest.jsonl"
 
     outcomes = run_restore(
@@ -547,8 +548,8 @@ def test_restore_records_its_own_manifest(tmp_path: Path) -> None:
     assert all(o.status == "restored" for o in outcomes)
 
     restore_records = read_records(manifest_out)
-    assert len(restore_records) == len(records)
-    by_original = {r.original_path: r for r in records}
+    assert len(restore_records) == len(applied)
+    by_original = {r.original_path: r for r in applied}
     for inverse in restore_records:
         forward = by_original[inverse.target_path]
         assert inverse.original_path == forward.target_path

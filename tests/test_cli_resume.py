@@ -52,10 +52,13 @@ def make_corpus(root: Path) -> None:
 
 
 def _hashes(root: Path) -> dict[str, str]:
+    # ".docmend-tmp" staging residue is excluded: a killed run's staged temp
+    # is inert tool-owned residue by design (adr-0019/adr-0021); corpus
+    # equivalence is judged on documents, not tool residue.
     return {
         str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
         for p in sorted(root.rglob("*"))
-        if p.is_file()
+        if p.is_file() and not p.name.endswith(".docmend-tmp")
     }
 
 
@@ -71,7 +74,7 @@ class _Interrupt(RuntimeError):
 
 def _interrupt_after(monkeypatch: pytest.MonkeyPatch, n: int) -> None:
     """Let the first `n` mutations succeed, then raise on the next (ERR-001)."""
-    real = apply_module.atomic_write_bytes
+    real = apply_module.publish_staged
     calls = {"n": 0}
 
     def exploding(*args: object, **kwargs: object) -> None:
@@ -80,7 +83,7 @@ def _interrupt_after(monkeypatch: pytest.MonkeyPatch, n: int) -> None:
             raise _Interrupt("injected kill")
         real(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(apply_module, "atomic_write_bytes", exploding)
+    monkeypatch.setattr(apply_module, "publish_staged", exploding)
 
 
 def _sole_manifest_run_id(

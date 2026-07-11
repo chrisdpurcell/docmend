@@ -153,8 +153,9 @@ def test_write_rewrite_in_place__utf8_lf_and_manifest(tmp_path: Path) -> None:
     assert outcome.after_sha256 == sha256_of_file(target_file)
 
     records = read_records(tmp_path / "manifest.jsonl")
-    assert len(records) == 1
-    record = records[0]
+    # 2.0: intent + terminal per mutation; the terminal carries the outcome.
+    assert [r.result for r in records] == ["intent", "applied"]
+    record = records[1]
     assert record.operation == "rewrite"
     assert record.backup_path is not None
     backup_bytes = Path(record.backup_path).read_bytes()
@@ -200,7 +201,7 @@ def test_write_rename_and_rewrite__source_survives_failure(
     def _boom(*_a: object, **_kw: object) -> None:
         raise apply_module.WriteError("simulated publish failure")
 
-    monkeypatch.setattr(apply_module, "atomic_write_bytes", _boom)
+    monkeypatch.setattr(apply_module, "publish_staged", _boom)
 
     report = _execute(plan, config, tmp_path, write=True)
 
@@ -517,7 +518,9 @@ def test_report_counts_reconcile__and_manifest_seq_monotonic(tmp_path: Path) -> 
 
     records = read_records(tmp_path / "manifest.jsonl")
     assert [r.seq for r in records] == list(range(1, len(records) + 1))
-    assert len(records) == counts.get("applied", 0) + counts.get("failed", 0)
+    # 2.0 journal-every-mutation: each applied action is an intent+terminal
+    # pair; skips write nothing (this fixture produces no failed actions).
+    assert len(records) == 2 * counts.get("applied", 0)
 
 
 def test_empty_plan__clean_report(tmp_path: Path) -> None:
@@ -734,3 +737,117 @@ def test_dmr01_colliding_backup_keys__both_preserved_and_restorable(tmp_path: Pa
     ]
     assert (root / "a.md").read_bytes() == md_original
     assert (root / "a.txt").read_bytes() == txt_original
+
+
+class TestJournalEveryMutation:
+    """adr-0019 (DMR-04): EVERY mutation kind appends a fsync'd intent with
+    the durable object identities BEFORE any corpus name is touched, and a
+    terminal repeating the immutable fields after."""
+
+    IMMUTABLE = (
+        "action_id",
+        "docmend_id",
+        "operation",
+        "original_path",
+        "target_path",
+        "before_sha256",
+        "backup_path",
+        "overwritten_backup_path",
+        "overwritten_sha256",
+        "source_identity",
+        "target_identity",
+        "expected_published_identity",
+    )
+
+    def test_every_kind__intent_then_terminal_with_identities(self, tmp_path: Path) -> None:
+        root = tmp_path / "root"
+        materialize(
+            root,
+            [FileRecipe("rw.md", "windows-1252", "crlf", sentences=15)],
+            seeded_faker(),
+        )
+        (root / "mv.txt").write_bytes(b"clean\n")
+        materialize(
+            root,
+            [FileRecipe("both.txt", "windows-1252", "crlf", sentences=15)],
+            seeded_faker(),
+        )
+        config = DocmendConfig()
+        plan = _plan_for(root, config)
+        assert len(plan.actions) == 3
+
+        _execute(plan, config, tmp_path, write=True, backup_root=tmp_path / "backups")
+
+        records = read_records(tmp_path / "manifest.jsonl")
+        by_action: dict[str, list[object]] = {}
+        for record in records:
+            by_action.setdefault(record.action_id, []).append(record)
+        assert len(by_action) == 3
+        for group in by_action.values():
+            intent, terminal = group  # exactly two records per action
+            assert intent.result == "intent"  # type: ignore[union-attr]
+            assert terminal.result == "applied"  # type: ignore[union-attr]
+            assert intent.source_identity is not None  # type: ignore[union-attr]
+            assert intent.expected_published_identity is not None  # type: ignore[union-attr]
+            for field in self.IMMUTABLE:
+                assert getattr(intent, field) == getattr(terminal, field), field
+
+    def test_pure_rename__expected_identity_is_source_inode(self, tmp_path: Path) -> None:
+        """A rename moves the inode: expected_published_identity == the source
+        identity, and the LIVE published file carries that exact inode."""
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "clean.txt").write_bytes(b"already clean\n")
+        config = DocmendConfig()
+        plan = _plan_for(root, config)
+        source_stat = (root / "clean.txt").stat()
+
+        _execute(plan, config, tmp_path, write=True)
+
+        [intent, _terminal] = read_records(tmp_path / "manifest.jsonl")
+        assert intent.expected_published_identity == intent.source_identity
+        assert intent.source_identity is not None
+        assert intent.source_identity.ino == source_stat.st_ino
+        published = (root / "clean.md").stat()
+        assert intent.expected_published_identity is not None
+        assert published.st_ino == intent.expected_published_identity.ino
+
+    def test_rewrite__expected_identity_is_staged_inode_now_live(self, tmp_path: Path) -> None:
+        root = tmp_path / "root"
+        materialize(
+            root, [FileRecipe("legacy.md", "windows-1252", "crlf", sentences=15)], seeded_faker()
+        )
+        config = DocmendConfig()
+        plan = _plan_for(root, config)
+
+        _execute(plan, config, tmp_path, write=True, backup_root=tmp_path / "backups")
+
+        [intent, _terminal] = read_records(tmp_path / "manifest.jsonl")
+        assert intent.expected_published_identity != intent.source_identity
+        live = (root / "legacy.md").stat()
+        assert intent.expected_published_identity is not None
+        assert live.st_ino == intent.expected_published_identity.ino
+
+    def test_pre_mutation_failure__failed_record_without_intent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A staging failure precedes any corpus-name mutation: the manifest
+        records `failed` with NO intent and null identities."""
+        root = tmp_path / "root"
+        materialize(
+            root, [FileRecipe("legacy.md", "windows-1252", "crlf", sentences=15)], seeded_faker()
+        )
+        config = DocmendConfig()
+        plan = _plan_for(root, config)
+
+        def broken_stage(*args: object, **kwargs: object) -> object:
+            raise apply_module.WriteError("simulated staging failure")
+
+        monkeypatch.setattr(apply_module, "stage_bytes", broken_stage)
+        report = _execute(plan, config, tmp_path, write=True, backup_root=tmp_path / "backups")
+
+        assert report.outcomes[0].status == "failed"
+        [record] = read_records(tmp_path / "manifest.jsonl")
+        assert record.result == "failed"
+        assert record.source_identity is None
+        assert record.expected_published_identity is None

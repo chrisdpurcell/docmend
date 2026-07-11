@@ -22,6 +22,7 @@ else in docmend calls os.replace/os.link on library files. Invariants:
 import contextlib
 import os
 import secrets
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,6 +43,22 @@ class StagedWrite:
 
     tmp: Path
     identity: ObjectIdentity
+
+
+def _staged_name_is_ours(staged: StagedWrite) -> bool:
+    """Return whether the staged pathname still names its captured inode.
+
+    Cleanup is best effort, so an observation error is never worth risking the
+    destruction of an unknown object swapped onto the temporary name.
+    """
+    try:
+        stat_result = os.lstat(staged.tmp)
+    except OSError:
+        return False
+    return not stat.S_ISLNK(stat_result.st_mode) and (
+        stat_result.st_dev,
+        stat_result.st_ino,
+    ) == (staged.identity.dev, staged.identity.ino)
 
 
 def fsync_dir(path: Path) -> None:
@@ -82,19 +99,25 @@ def stage_bytes(target: Path, data: bytes, *, mode: int | None = None) -> Staged
     else:
         msg = f"{target}: cannot stage write (could not allocate a staging name in 8 attempts)"
         raise WriteError(msg)
+    stat_result = os.fstat(fd)
+    staged = StagedWrite(
+        tmp=tmp,
+        identity=ObjectIdentity(dev=stat_result.st_dev, ino=stat_result.st_ino),
+    )
     try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-            fh.flush()
-            os.fsync(fh.fileno())
-            st = os.fstat(fh.fileno())
-        if mode is not None:
-            tmp.chmod(mode & 0o7777)
+        with os.fdopen(fd, "wb") as file_handle:
+            file_handle.write(data)
+            file_handle.flush()
+            if mode is not None:
+                # Path-based chmod could follow a raced staging name onto an
+                # interloper; the open descriptor still names our inode.
+                os.fchmod(file_handle.fileno(), mode & 0o7777)
+            os.fsync(file_handle.fileno())
     except OSError as exc:
-        tmp.unlink(missing_ok=True)
+        abort_staged(staged)
         msg = f"{target}: cannot stage write ({exc.strerror or exc})"
         raise WriteError(msg) from exc
-    return StagedWrite(tmp=tmp, identity=ObjectIdentity(dev=st.st_dev, ino=st.st_ino))
+    return staged
 
 
 def publish_staged(staged: StagedWrite, target: Path, *, clobber: bool = True) -> None:
@@ -109,10 +132,12 @@ def publish_staged(staged: StagedWrite, target: Path, *, clobber: bool = True) -
         else:
             target.hardlink_to(tmp)  # FileExistsError on a collision race — caller's policy
     except FileExistsError:
-        tmp.unlink(missing_ok=True)
+        if _staged_name_is_ours(staged):
+            tmp.unlink(missing_ok=True)
         raise
     except OSError as exc:
-        tmp.unlink(missing_ok=True)
+        if _staged_name_is_ours(staged):
+            tmp.unlink(missing_ok=True)
         msg = f"{target}: cannot publish write ({exc.strerror or exc})"
         raise WriteError(msg) from exc
     if not clobber:
@@ -124,12 +149,23 @@ def publish_staged(staged: StagedWrite, target: Path, *, clobber: bool = True) -
         # when it didn't — worse than the residue, so we swallow this one
         # deliberately.
         with contextlib.suppress(OSError):
-            tmp.unlink()
+            if _staged_name_is_ours(staged):
+                tmp.unlink()
     fsync_dir(target.parent)
 
 
-def abort_staged(staged: StagedWrite) -> None:
-    """Discard an unpublished staged write (idempotent)."""
+def abort_staged(staged: StagedWrite, *, root_resolved: Path | None = None) -> None:
+    """Discard an unpublished staged write only while its name is still ours.
+
+    Commit-boundary callers also supply the authorized root. An interposed
+    parent makes even a matching identity unsafe to unlink through.
+    """
+    if root_resolved is not None and not (
+        staged.tmp.parent.resolve() / staged.tmp.name
+    ).is_relative_to(root_resolved):
+        return
+    if not _staged_name_is_ours(staged):
+        return
     staged.tmp.unlink(missing_ok=True)
 
 

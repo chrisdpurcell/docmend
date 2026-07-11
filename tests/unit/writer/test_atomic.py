@@ -197,6 +197,17 @@ def test_write_failure__wraps_oserror(tmp_path: Path, monkeypatch: pytest.Monkey
     assert list(tmp_path.iterdir()) == []
 
 
+def test_stage_open_failure__wraps_oserror(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An environmental failure allocating the staged inode is a WriteError."""
+
+    def fail_open(path: os.PathLike[str] | str, flags: int, mode: int = 0o777) -> int:
+        raise PermissionError(13, "Permission denied", path)
+
+    monkeypatch.setattr(atomic.os, "open", fail_open)
+    with pytest.raises(atomic.WriteError, match="cannot stage write"):
+        atomic.stage_bytes(tmp_path / "doc.md", b"payload")
+
+
 def test_stale_staging_residue__does_not_block_retry(tmp_path: Path) -> None:
     """A hard kill can leave a staging file behind; with the old FIXED temp
     name (.{name}.docmend-tmp) the next attempt's O_EXCL open failed forever.
@@ -277,6 +288,17 @@ class TestStagedWriteApi:
             atomic.publish_staged(staged, target, clobber=False)
         assert target.read_bytes() == b"occupied"
 
+    def test_publish_failure_after_temp_race__interloper_survives(self, tmp_path: Path) -> None:
+        """A publication failure must not delete an object swapped onto the temp name."""
+        target = tmp_path / "doc.md"
+        staged = atomic.stage_bytes(target, b"payload")
+        staged.tmp.unlink()
+        staged.tmp.write_bytes(b"interloper")
+        target.write_bytes(b"occupied")
+        with pytest.raises(FileExistsError):
+            atomic.publish_staged(staged, target, clobber=False)
+        assert staged.tmp.read_bytes() == b"interloper"
+
     def test_abort_staged__removes_temp(self, tmp_path: Path) -> None:
         target = tmp_path / "a.md"
         staged = atomic.stage_bytes(target, b"payload")
@@ -289,3 +311,64 @@ class TestStagedWriteApi:
         staged = atomic.stage_bytes(target, b"payload", mode=0o644)
         atomic.publish_staged(staged, target)
         assert target.stat().st_mode & 0o777 == 0o644
+
+    def test_stage_failure_after_temp_race__interloper_survives(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Failure cleanup is identity-bound when the staged name is replaced."""
+        target = tmp_path / "doc.md"
+
+        def swap_name_and_fail(fd: int) -> None:
+            staged_name = next(tmp_path.glob(".doc.md.*.docmend-tmp"))
+            staged_name.unlink()
+            staged_name.write_bytes(b"interloper")
+            raise OSError(5, "I/O error")
+
+        monkeypatch.setattr(atomic.os, "fsync", swap_name_and_fail)
+        with pytest.raises(atomic.WriteError):
+            atomic.stage_bytes(target, b"payload")
+        [interloper] = list(tmp_path.glob(".doc.md.*.docmend-tmp"))
+        assert interloper.read_bytes() == b"interloper"
+
+    def test_stage_mode_is_descriptor_bound_before_fsync(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The requested mode is applied to the opened inode before its failure window."""
+        observed_modes: list[int] = []
+
+        def inspect_mode_and_fail(fd: int) -> None:
+            observed_modes.append(os.fstat(fd).st_mode & 0o7777)
+            raise OSError(5, "I/O error")
+
+        monkeypatch.setattr(atomic.os, "fsync", inspect_mode_and_fail)
+        with pytest.raises(atomic.WriteError):
+            atomic.stage_bytes(tmp_path / "doc.md", b"payload", mode=0o640)
+        assert observed_modes == [0o640]
+
+
+class TestAbortStagedIdentity:
+    def test_raced_staged_temp__not_unlinked(self, tmp_path: Path) -> None:
+        """Abort never deletes an object swapped onto the staged pathname."""
+        staged = atomic.stage_bytes(tmp_path / "doc.md", b"payload")
+        staged.tmp.unlink()
+        staged.tmp.write_bytes(b"interloper")
+        atomic.abort_staged(staged)
+        assert staged.tmp.read_bytes() == b"interloper"
+
+    def test_own_staged_temp__unlinked_idempotently(self, tmp_path: Path) -> None:
+        staged = atomic.stage_bytes(tmp_path / "doc.md", b"payload")
+        atomic.abort_staged(staged)
+        atomic.abort_staged(staged)
+        assert not staged.tmp.exists()
+
+    def test_interposed_parent__not_unlinked(self, tmp_path: Path) -> None:
+        root = tmp_path / "root"
+        sub = root / "sub"
+        sub.mkdir(parents=True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        staged = atomic.stage_bytes(sub / "doc.md", b"payload")
+        sub.rename(outside / "sub")
+        sub.symlink_to(outside / "sub")
+        atomic.abort_staged(staged, root_resolved=root.resolve())
+        assert (outside / "sub" / staged.tmp.name).read_bytes() == b"payload"

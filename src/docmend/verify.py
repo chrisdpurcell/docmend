@@ -12,13 +12,21 @@ against `schemas/frontmatter.schema.json`.
 import hashlib
 from collections import Counter
 from collections.abc import Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from docmend.frontmatter import validate_frontmatter
 from docmend.inventory import Inventory
 from docmend.report import Report
-from docmend.writer.manifest import ManifestRecord
+from docmend.writer.commit import InterferenceError, bind_file
+from docmend.writer.manifest import (
+    ManifestChain,
+    ManifestInspection,
+    ManifestRecord,
+    reduce_lifecycle,
+)
 
 # LF-only per adr-0012. "none" (a file with no line endings) trivially has no CR
 # and is compliant; every other census result ("crlf"/"cr"/"mixed") carries a CR.
@@ -84,6 +92,147 @@ def check_frontmatter(inventory: Inventory) -> list[VerifyFinding]:
 
 def _sha(data: bytes) -> str:
     return f"sha256:{hashlib.sha256(data).hexdigest()}"
+
+
+def check_discovery(inventory: Inventory) -> list[VerifyFinding]:
+    """Report candidate evidence discovery could not certify as readable."""
+    findings = [
+        VerifyFinding(skip.path, f"discovery-{skip.reason}", skip.detail or skip.reason)
+        for skip in inventory.skipped
+        if skip.reason in ("unreadable", "timeout")
+    ]
+    candidate_evidence = bool(findings or inventory.symlinks)
+    if not inventory.files and candidate_evidence:
+        findings.append(
+            VerifyFinding(
+                inventory.requested_path,
+                "zero-checked",
+                "candidate evidence exists but no readable files were checked",
+            )
+        )
+    return findings
+
+
+def check_manifest_root(chain: ManifestChain, verified_root: Path) -> list[VerifyFinding]:
+    """Require manifest evidence to describe the corpus being verified."""
+    if not chain.sets:
+        return []
+    recorded = chain.sets[0].header.source_root
+    if Path(recorded).resolve() == verified_root.resolve():
+        return []
+    return [
+        VerifyFinding(
+            recorded,
+            "manifest-root",
+            f"manifest source root does not match verified root {verified_root.resolve()}",
+        )
+    ]
+
+
+def manifest_inspection_findings(inspection: ManifestInspection) -> list[VerifyFinding]:
+    """Expose typed containment defects without reading their referenced paths."""
+    return [
+        VerifyFinding(path=finding.path, check=finding.check, detail=finding.detail)
+        for finding in inspection.findings
+    ]
+
+
+def check_lifecycle(chain: ManifestChain) -> list[VerifyFinding]:
+    """Report final mutation states that cannot certify an applied plan."""
+    uncertified = frozenset({"pending-intent", "pending-restore", "restored", "restore-failed"})
+    return [
+        VerifyFinding(action_id, "lifecycle", lifecycle.state)
+        for action_id, lifecycle in sorted(reduce_lifecycle(chain).items())
+        if lifecycle.state in uncertified
+    ]
+
+
+def check_outputs(
+    chain: ManifestChain,
+    *,
+    unsafe_action_ids: AbstractSet[str] = frozenset(),
+) -> list[VerifyFinding]:
+    """Hash each final applied output once, skipping untrusted manifest paths."""
+    findings: list[VerifyFinding] = []
+    for action_id, lifecycle in sorted(reduce_lifecycle(chain).items()):
+        record = lifecycle.record
+        if (
+            lifecycle.state != "applied"
+            or action_id in unsafe_action_ids
+            or record.after_sha256 is None
+        ):
+            continue
+        target = Path(record.target_path)
+        try:
+            live = bind_file(target).data
+        except OSError, InterferenceError:
+            findings.append(
+                VerifyFinding(record.target_path, "hash", "applied output missing or unreadable")
+            )
+            continue
+        if _sha(live) != record.after_sha256:
+            findings.append(
+                VerifyFinding(
+                    record.target_path,
+                    "hash",
+                    "live hash does not match recorded after-hash",
+                )
+            )
+    return findings
+
+
+def _check_backup(
+    path: Path,
+    expected_sha256: str,
+    *,
+    action_id: str,
+    role: Literal["source", "overwritten"],
+) -> VerifyFinding | None:
+    try:
+        bound = bind_file(path)
+    except (OSError, InterferenceError) as exc:
+        return VerifyFinding(
+            action_id,
+            "backup",
+            f"{role} backup missing or unreadable ({exc})",
+        )
+    if _sha(bound.data) == expected_sha256:
+        return None
+    recorded_hash = "before-hash" if role == "source" else "overwritten-hash"
+    return VerifyFinding(
+        action_id,
+        "backup",
+        f"{role} backup hash does not match recorded {recorded_hash}",
+    )
+
+
+def check_backups(
+    chain: ManifestChain,
+    *,
+    unsafe_action_ids: AbstractSet[str] = frozenset(),
+) -> list[VerifyFinding]:
+    """Verify each final applied action's trusted backup references once."""
+    findings: list[VerifyFinding] = []
+    for action_id, lifecycle in sorted(reduce_lifecycle(chain).items()):
+        if lifecycle.state != "applied" or action_id in unsafe_action_ids:
+            continue
+        record = lifecycle.record
+        references: tuple[tuple[str | None, str | None, Literal["source", "overwritten"]], ...] = (
+            (record.backup_path, record.before_sha256, "source"),
+            (record.overwritten_backup_path, record.overwritten_sha256, "overwritten"),
+        )
+        for recorded_path, expected_sha256, role in references:
+            if recorded_path is None or expected_sha256 is None:
+                continue
+            finding = _check_backup(
+                Path(recorded_path),
+                expected_sha256,
+                action_id=action_id,
+                role=role,
+            )
+            if finding is not None:
+                findings.append(finding)
+    return findings
 
 
 def reconcile_manifest(records: Sequence[ManifestRecord]) -> list[VerifyFinding]:

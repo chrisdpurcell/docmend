@@ -52,7 +52,6 @@ from docmend.writer.atomic import (
     StagedWrite,
     WriteError,
     abort_staged,
-    atomic_write_bytes,
     publish_staged,
     rename_overwrite,
     stage_bytes,
@@ -63,9 +62,12 @@ from docmend.writer.commit import (
     BoundFile,
     CommitHooks,
     InterferenceError,
+    _observe_name,  # pyright: ignore[reportPrivateUsage] - shared rollback observation.
     bind_file,
     check_bound,
+    check_destination,
     guarded_rename_no_clobber,
+    guarded_replace,
 )
 from docmend.writer.gate import ApplyOptions, is_content_rewrite, strategy_active
 from docmend.writer.manifest import (
@@ -211,6 +213,61 @@ class _Identities:
     source: ObjectIdentity
     target: ObjectIdentity | None
     expected: ObjectIdentity
+
+
+def _undo_publish(
+    target: Path,
+    expected_identity: ObjectIdentity,
+    target_bound: BoundFile | None,
+    *,
+    survivor: tuple[Path, ObjectIdentity],
+    root_resolved: Path,
+    hooks: CommitHooks,
+) -> bool:
+    """Undo a two-step publish only when the pre-action state is provable.
+
+    A no-clobber rollback removes the published name only after containment,
+    target identity, and the surviving source are re-authorized. A clobber
+    rollback restores the descriptor-bound target bytes and mode through the
+    stage-first replacement primitive; inode resurrection is impossible, so
+    the durable overwritten backup remains the recovery contract.
+    """
+    if target_bound is None:
+        survivor_path, survivor_identity = survivor
+        hooks.before_step("rollback", target)
+        if not (target.parent.resolve() / target.name).is_relative_to(root_resolved):
+            return False
+        observed = _observe_name(target)
+        if observed == "unobservable":
+            return False
+        hooks.before_step("rollback-survivor", survivor_path)
+        try:
+            # The survivor is the final proof before deletion. Losing it here
+            # makes the published output a possible last useful copy.
+            check_bound(survivor_path, survivor_identity, root_resolved=root_resolved)
+        except InterferenceError:
+            return False
+        if observed != expected_identity:
+            return True
+        try:
+            target.unlink()
+        except OSError:
+            return False
+        return True
+    try:
+        guarded_replace(
+            target,
+            target_bound.data,
+            expected=expected_identity,
+            mode=target_bound.mode,
+            root_resolved=root_resolved,
+            hooks=hooks,
+            survivor=survivor,
+            step="rollback",
+        )
+    except InterferenceError, WriteError:
+        return False
+    return True
 
 
 def _record_intent(
@@ -593,29 +650,53 @@ def _execute_action(
         else:  # rename_and_rewrite
             assert target is not None
             assert staged is not None
+            hooks.before_step("publish", target)
+            check_bound(staged.tmp, staged.identity, root_resolved=root_resolved)
+            check_bound(source, bound.identity, root_resolved=root_resolved)
+            if clobber:
+                assert target_bound is not None
+                check_bound(target, target_bound.identity, root_resolved=root_resolved)
+            else:
+                check_destination(target, root_resolved=root_resolved)
             publish_staged(staged, target, clobber=clobber)
+            hooks.before_step("unlink", source)
+            try:
+                check_bound(source, bound.identity, root_resolved=root_resolved)
+            except InterferenceError as source_exc:
+                rolled_back = _undo_publish(
+                    target,
+                    staged.identity,
+                    target_bound,
+                    survivor=(source, bound.identity),
+                    root_resolved=root_resolved,
+                    hooks=hooks,
+                )
+                state = "publish rolled back" if rolled_back else "published output retained"
+                msg = f"{source_exc}; {state}, original's pre-action state unprovable"
+                raise InterferenceError(msg, intermediate=True) from source_exc
+            try:
+                check_bound(target, staged.identity, root_resolved=root_resolved)
+            except InterferenceError as survivor_exc:
+                if clobber:
+                    msg = f"{survivor_exc}; clobbered target unrecovered at a foreign name"
+                    raise InterferenceError(msg, intermediate=True) from survivor_exc
+                raise
             try:
                 source.unlink()
             except OSError as unlink_exc:
-                # codex CR-NEW-004: the target is already published; recording
-                # "failed" while the corpus changed would make the report and
-                # manifest lie. Roll the publish back to the exact pre-action
-                # state (rewrite the clobbered bytes, or remove the published
-                # target), then fail honestly with the original untouched.
-                try:
-                    if target_bound is not None:
-                        atomic_write_bytes(target, target_bound.data, mode=bound.mode)
-                    else:
-                        target.unlink()
-                # PEP 758 (Python 3.14): unparenthesized multi-type except reads as
-                # `except (WriteError, OSError)`. Kept unparenthesized deliberately;
-                # pre-3.14 reviewers misread it as the Python 2 bind form.
-                except WriteError, OSError:
-                    log.error(
-                        "apply residue: target published, source not removed, rollback failed",
-                        path=action.path,
-                        target=str(target),
+                if not _undo_publish(
+                    target,
+                    staged.identity,
+                    target_bound,
+                    survivor=(source, bound.identity),
+                    root_resolved=root_resolved,
+                    hooks=hooks,
+                ):
+                    msg = (
+                        f"{source}: target published but source not removed "
+                        f"({unlink_exc.strerror or unlink_exc}); publish rollback unproven"
                     )
+                    raise InterferenceError(msg, intermediate=True) from unlink_exc
                 msg = (
                     f"{source}: target published but source not removed; publish "
                     f"rolled back ({unlink_exc.strerror or unlink_exc})"

@@ -425,6 +425,19 @@ class TestCommitBoundaryRaces:
         assert plan.actions[0].operations == ["rename"]
         return root, plan, config
 
+    @staticmethod
+    def _planned_rename_rewrite(
+        tmp_path: Path, *, overwrite: bool = False
+    ) -> tuple[Path, Plan, DocmendConfig]:
+        root = tmp_path / "root"
+        materialize(root, [FileRecipe("a.txt", "utf-8", "crlf")], seeded_faker())
+        config = DocmendConfig(
+            rename=RenameConfig(on_collision="overwrite" if overwrite else "skip")
+        )
+        plan = _plan_for(root, config)
+        assert plan.actions[0].operations == ["normalize_newlines", "rename"]
+        return root, plan, config
+
     def test_rewrite__source_swapped_same_bytes_after_intent__refused_nothing_mutated(
         self, tmp_path: Path
     ) -> None:
@@ -597,6 +610,242 @@ class TestCommitBoundaryRaces:
 
         assert report.outcomes[0].skip_reason == "external-interference"
         assert (outside / "sub" / "a.md").read_bytes() == original
+
+    def test_rename_and_rewrite__source_swapped_in_unlink_window__output_retained_dangling(
+        self, tmp_path: Path
+    ) -> None:
+        root, plan, config = self._planned_rename_rewrite(tmp_path)
+        action = plan.actions[0]
+        source = root / action.path
+        assert action.target_path is not None
+        target = root / action.target_path
+
+        def swap(step: str, path: Path) -> None:
+            if step == "unlink":
+                source.unlink()
+                source.write_bytes(b"interloper")
+
+        report = _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+            hooks=CommitHooks(swap),
+        )
+
+        outcome = report.outcomes[0]
+        assert outcome.status == "failed"
+        assert outcome.error is not None and outcome.error.error_class == "ERR-002"
+        assert source.read_bytes() == b"interloper"
+        assert target.exists()
+        assert [record.result for record in read_records(tmp_path / "manifest.jsonl")] == ["intent"]
+
+    def test_rename_and_rewrite__published_target_replaced_before_unlink__proven_failed(
+        self, tmp_path: Path
+    ) -> None:
+        root, plan, config = self._planned_rename_rewrite(tmp_path)
+        action = plan.actions[0]
+        source = root / action.path
+        assert action.target_path is not None
+        target = root / action.target_path
+
+        def swap(step: str, path: Path) -> None:
+            if step == "unlink":
+                target.unlink()
+                target.write_bytes(b"interloper")
+
+        report = _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+            hooks=CommitHooks(swap),
+        )
+
+        assert report.outcomes[0].skip_reason == "external-interference"
+        assert source.exists()
+        assert target.read_bytes() == b"interloper"
+        assert [record.result for record in read_records(tmp_path / "manifest.jsonl")] == [
+            "intent",
+            "failed",
+        ]
+
+    def test_rename_and_rewrite_clobber__published_target_replaced__dangling(
+        self, tmp_path: Path
+    ) -> None:
+        root, plan, config = self._planned_rename_rewrite(tmp_path, overwrite=True)
+        action = plan.actions[0]
+        source = root / action.path
+        assert action.target_path is not None
+        target = root / action.target_path
+        target.write_bytes(b"old target")
+
+        def swap(step: str, path: Path) -> None:
+            if step == "unlink":
+                target.unlink()
+                target.write_bytes(b"interloper")
+
+        report = _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+            hooks=CommitHooks(swap),
+        )
+
+        outcome = report.outcomes[0]
+        assert outcome.status == "failed"
+        assert outcome.error is not None and outcome.error.error_class == "ERR-002"
+        assert source.exists()
+        assert target.read_bytes() == b"interloper"
+        assert [record.result for record in read_records(tmp_path / "manifest.jsonl")] == ["intent"]
+
+    def test_dangling_interference_intent__resume_leaves_it_dangling(self, tmp_path: Path) -> None:
+        root, plan, config = self._planned_rename_rewrite(tmp_path, overwrite=True)
+        action = plan.actions[0]
+        source = root / action.path
+        assert action.target_path is not None
+        target = root / action.target_path
+        target.write_bytes(b"old target")
+
+        def swap(step: str, path: Path) -> None:
+            if step == "unlink":
+                target.unlink()
+                target.write_bytes(b"interloper")
+
+        first_manifest = tmp_path / "manifest.jsonl"
+        _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+            hooks=CommitHooks(swap),
+        )
+        source_before = source.read_bytes()
+        target_before = target.read_bytes()
+        resume_manifest = tmp_path / "resume.jsonl"
+
+        report = execute_plan(
+            plan,
+            config,
+            run_id="run_20260706T000002Z_000090",
+            plan_ref=ArtifactRef(path="plan.json", run_id=PLAN_RUN_ID, sha256="sha256:" + "1" * 64),
+            plan_sha256="sha256:" + "1" * 64,
+            options=ApplyOptions(
+                write=True,
+                backup_root=tmp_path / "backups",
+                preserved_by=None,
+                allow_no_backup=False,
+            ),
+            manifest_path=resume_manifest,
+            started_at=GENERATED_AT,
+            now=lambda: NOW,
+            resume_chain=read_manifest_chain([first_manifest]),
+        )
+
+        outcome = report.outcomes[0]
+        assert outcome.status == "failed"
+        assert outcome.error is not None and outcome.error.error_class == "ERR-002"
+        assert source.read_bytes() == source_before
+        assert target.read_bytes() == target_before
+        assert not resume_manifest.exists()
+
+    def test_rename_and_rewrite__clobber_target_swapped_before_publish__refused(
+        self, tmp_path: Path
+    ) -> None:
+        root, plan, config = self._planned_rename_rewrite(tmp_path, overwrite=True)
+        action = plan.actions[0]
+        source = root / action.path
+        original = source.read_bytes()
+        assert action.target_path is not None
+        target = root / action.target_path
+        target.write_bytes(b"old target")
+
+        def swap(step: str, path: Path) -> None:
+            if step == "publish":
+                content = target.read_bytes()
+                target.unlink()
+                target.write_bytes(content)
+
+        report = _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+            hooks=CommitHooks(swap),
+        )
+
+        assert report.outcomes[0].skip_reason == "external-interference"
+        assert source.read_bytes() == original
+        assert target.read_bytes() == b"old target"
+
+    def test_rename_and_rewrite__target_appears_before_publish__collision_unpreserved(
+        self, tmp_path: Path
+    ) -> None:
+        root, plan, config = self._planned_rename_rewrite(tmp_path)
+        action = plan.actions[0]
+        assert action.target_path is not None
+        target = root / action.target_path
+
+        def appear(step: str, path: Path) -> None:
+            if step == "publish":
+                target.write_bytes(b"late arrival")
+
+        report = _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+            hooks=CommitHooks(appear),
+        )
+
+        assert report.outcomes[0].skip_reason == "collision-unpreserved"
+        assert target.read_bytes() == b"late arrival"
+
+    def test_rename_and_rewrite__survivor_lost_after_unlink_failure__rollback_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root, plan, config = self._planned_rename_rewrite(tmp_path)
+        action = plan.actions[0]
+        source = root / action.path
+        assert action.target_path is not None
+        target = root / action.target_path
+        real_unlink = Path.unlink
+        source_unlinks = 0
+
+        def fail_once(self: Path, missing_ok: bool = False) -> None:
+            nonlocal source_unlinks
+            if self == source:
+                source_unlinks += 1
+                if source_unlinks == 1:
+                    raise OSError(5, "I/O error")
+            real_unlink(self, missing_ok=missing_ok)
+
+        def lose_survivor(step: str, path: Path) -> None:
+            if step == "rollback-survivor":
+                source.unlink()
+
+        monkeypatch.setattr(Path, "unlink", fail_once)
+        report = _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+            hooks=CommitHooks(lose_survivor),
+        )
+
+        outcome = report.outcomes[0]
+        assert outcome.status == "failed"
+        assert outcome.error is not None and outcome.error.error_class == "ERR-002"
+        assert target.exists()
+        assert [record.result for record in read_records(tmp_path / "manifest.jsonl")] == ["intent"]
 
 
 def test_collision_policies__skip_fail_overwrite(tmp_path: Path) -> None:

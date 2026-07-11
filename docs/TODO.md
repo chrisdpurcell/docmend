@@ -13,7 +13,7 @@ Instructions for AI agents:
 
 ## User tasks
 
-- [x] **URGENT:** See `docs/codex-reviews/2026-07-10-2034-all-review-findings.md`. Verify using `/superpowers:receiving-code-review`. Some were corrected and some major dev work has been implemented since this review, so take extra care concerning blast radius, regression review, and determining potential effects on the work that has been completed since the review. — Verified against HEAD `24b57bb`: see [2026-07-10-2251 verification](codex-reviews/2026-07-10-2251-all-findings-verification.md). DMR-01/02 confirmed closed by Plan A; DMR-03..09 and six of seven medium themes confirmed still open with scope unchanged; no Plan A regressions; Plans B–D need no re-planning.
+- [x] **URGENT:** See `docs/codex-reviews/2026-07-10-2034-all-review-findings.md`. Verify using `/superpowers:receiving-code-review`. Some were corrected and some major dev work has been implemented since this review, so take extra care concerning blast radius, regression review, and determining potential effects on the work that has been completed since the review. — Verified against HEAD: see [2026-07-10-2251 verification](codex-reviews/2026-07-10-2251-all-findings-verification.md), including a per-finding appendix covering all 189 raw findings. DMR-01/02 confirmed closed by Plan A; 4 raw findings fixed, 6 partially fixed, 179 still open with scope unchanged; no Plan A regressions; Plans B–D need no re-planning.
 
 ## Agent tasks
 

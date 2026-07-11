@@ -546,6 +546,42 @@ class TestCollisions:
         ids = [a.docmend_id for a in plan.actions]
         assert len(set(ids)) == len(ids)
 
+    def test_rewrite_claims_own_path__later_rename_skips(self, tmp_path: Path) -> None:
+        """DMR-01, rev 0.26 output ledger: an in-place rewrite of a.md claims
+        'a.md' as an output, so a.txt -> a.md must skip even under overwrite -
+        'overwrite' licenses clobbering pre-existing files, never another
+        planned action's output (G-005). Sorted order: a.md < a.txt, so the
+        rewrite claims first."""
+        (tmp_path / "a.md").write_bytes(b"alpha\r\n")  # CRLF: rewrite action
+        (tmp_path / "a.txt").write_bytes(b"bravo\n")  # clean: rename-only
+        from docmend.config import RenameConfig
+
+        config = DocmendConfig(rename=RenameConfig(on_collision="overwrite"))
+        plan = plan_over(tmp_path, config)
+        assert [a.path for a in plan.actions] == ["a.md"]
+        [skip] = [s for s in plan.skips if s.path == "a.txt"]
+        assert skip.reason == "collision"
+        assert "already claimed" in (skip.detail or "")
+
+    def test_rename_claims_target__later_rewrite_skips(self, tmp_path: Path) -> None:
+        """Mirror ordering: 'a.TXT' sorts before 'a.md', so the rename claims
+        the a.md output first and the in-place rewrite of a.md skips - the
+        rename is about to replace those bytes anyway; executing both would
+        be the DMR-01 double-claim."""
+        (tmp_path / "a.TXT").write_bytes(b"bravo\n")
+        (tmp_path / "a.md").write_bytes(b"alpha\r\n")
+        from docmend.config import RenameConfig
+
+        config = DocmendConfig(
+            paths=PathsConfig(include=["**/*.txt", "**/*.TXT", "**/*.md"]),
+            rename=RenameConfig(on_collision="overwrite"),
+        )
+        plan = plan_over(tmp_path, config)
+        assert [a.path for a in plan.actions] == ["a.TXT"]
+        [skip] = [s for s in plan.skips if s.path == "a.md"]
+        assert skip.reason == "collision"
+        assert "already claimed" in (skip.detail or "")
+
 
 class TestWatchdog:
     """FR-019/OQ-028/ERR-009: the content-pass per-file watchdog (DEV-002)."""

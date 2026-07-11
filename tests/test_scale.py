@@ -167,6 +167,7 @@ def test_scale_corpus__pipeline_totals_and_bounded_memory(
         config,
         run_id=APPLY_RUN_ID,
         plan_ref=ArtifactRef(path="plan.json", run_id=PLAN_RUN_ID, sha256="sha256:" + "1" * 64),
+        plan_sha256="sha256:" + "1" * 64,
         options=options,
         manifest_path=manifest_path,
         started_at=GENERATED_AT,

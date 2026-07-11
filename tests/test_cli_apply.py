@@ -484,7 +484,11 @@ class TestApplyArtifactGuard:
         plan_path = _make_plan(corpus)
         derived_manifest = Path(".docmend") / "docmend-X-manifest.jsonl"
         derived_manifest.parent.mkdir(parents=True, exist_ok=True)
-        derived_manifest.write_text("", encoding="utf-8")
+        # 2.0: a readable manifest starts with its header; a header-only file
+        # (valid empty set) with the matching root reaches the guard.
+        from tests.helpers.manifest2 import header_doc, write_set
+
+        write_set(derived_manifest, header_doc(source_root=str(corpus.resolve())))
         result = runner.invoke(
             app,
             [

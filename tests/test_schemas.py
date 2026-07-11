@@ -178,7 +178,7 @@ def _minimal_report() -> dict[str, object]:
 def _minimal_manifest_record() -> dict[str, object]:
     return {
         "schema": "docmend/manifest-record",
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "run_id": RUN_ID,
         "action_id": ACTION_ID,
         "docmend_id": str(uuid.uuid7()),
@@ -192,6 +192,11 @@ def _minimal_manifest_record() -> dict[str, object]:
         "after_sha256": SHA,
         "result": "applied",
         "error": None,
+        "undoes_action_id": None,
+        "undoes_run_id": None,
+        "source_identity": None,
+        "target_identity": None,
+        "expected_published_identity": None,
     }
 
 

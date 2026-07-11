@@ -13,6 +13,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+from tests.helpers.manifest2 import read_records
 
 from corpus import FileRecipe, materialize, seeded_faker
 from docmend import discovery, planning
@@ -22,7 +23,7 @@ from docmend.report import Report
 from docmend.writer import apply as apply_module
 from docmend.writer.apply import execute_plan
 from docmend.writer.gate import ApplyOptions
-from docmend.writer.manifest import ManifestRecord, read_manifest
+from docmend.writer.manifest import ManifestRecord
 
 RUN_ID = "run_20260707T000000Z_0000aa"
 RESUME_RUN_ID = "run_20260707T000000Z_0000ab"
@@ -66,6 +67,7 @@ def _execute(
         config,
         run_id=run_id,
         plan_ref=ArtifactRef(path="plan.json", run_id=PLAN_RUN_ID, sha256="sha256:" + "1" * 64),
+        plan_sha256="sha256:" + "1" * 64,
         options=options,
         manifest_path=manifest_path,
         started_at=GENERATED_AT,
@@ -109,7 +111,7 @@ def _interrupted_apply(
     with pytest.raises(_Interrupt):
         _execute(plan, config, manifest_path)
     monkeypatch.setattr(apply_module, "atomic_write_bytes", real)
-    return plan, read_manifest(manifest_path)
+    return plan, read_records(manifest_path)
 
 
 def test_kill_and_resume__corpus_identical_to_uninterrupted_run(
@@ -147,7 +149,7 @@ def test_kill_and_resume__corpus_identical_to_uninterrupted_run(
     assert statuses["a.txt"] == ("skipped", "already-applied")
     assert statuses["c.txt"] == ("applied", None)
     assert statuses["e.txt"] == ("applied", None)
-    resume_records = read_manifest(tmp_path / "resume-manifest.jsonl")
+    resume_records = read_records(tmp_path / "resume-manifest.jsonl")
     covered = [r.action_id for r in (*first_records, *resume_records) if r.result == "applied"]
     assert sorted(covered) == sorted(a.action_id for a in plan.actions)
     assert len(set(covered)) == len(covered)  # no action recorded twice
@@ -161,7 +163,7 @@ def test_resume_fully_completed_run__all_already_applied_no_manifest(tmp_path: P
     config = DocmendConfig()
     plan = _plan_for(root, config)
     _execute(plan, config, tmp_path / "manifest.jsonl")
-    records = read_manifest(tmp_path / "manifest.jsonl")
+    records = read_records(tmp_path / "manifest.jsonl")
     before = _hash_tree(root)
 
     report = _execute(
@@ -187,7 +189,7 @@ def test_resume_output_changed_since_apply__fails_err002(tmp_path: Path) -> None
     config = DocmendConfig()
     plan = _plan_for(root, config)
     _execute(plan, config, tmp_path / "manifest.jsonl")
-    records = read_manifest(tmp_path / "manifest.jsonl")
+    records = read_records(tmp_path / "manifest.jsonl")
     tampered = Path(records[0].target_path)
     tampered.write_bytes(b"externally edited after apply\n")
     tampered_bytes = tampered.read_bytes()
@@ -214,7 +216,7 @@ def test_resume_output_missing__fails_err002(tmp_path: Path) -> None:
     config = DocmendConfig()
     plan = _plan_for(root, config)
     _execute(plan, config, tmp_path / "manifest.jsonl")
-    records = read_manifest(tmp_path / "manifest.jsonl")
+    records = read_records(tmp_path / "manifest.jsonl")
     Path(records[0].target_path).unlink()
 
     report = _execute(
@@ -245,7 +247,7 @@ def test_resume_after_lost_trailing_record__stale_hash_skip_not_corruption(
     config = DocmendConfig()
     plan = _plan_for(root, config)
     _execute(plan, config, tmp_path / "manifest.jsonl")
-    records = read_manifest(tmp_path / "manifest.jsonl")
+    records = read_records(tmp_path / "manifest.jsonl")
     lost = next(r for r in records if r.original_path.endswith("z.md"))
     surviving = [r for r in records if r is not lost]
     before = _hash_tree(root)
@@ -306,7 +308,7 @@ def _interrupted_after_publish(
     with pytest.raises(_Interrupt):
         _execute(plan, config, manifest_path)
     monkeypatch.setattr(apply_module, "atomic_write_bytes", real)
-    return plan, read_manifest(manifest_path)
+    return plan, read_records(manifest_path)
 
 
 def _interrupted_before_final_record(
@@ -329,7 +331,7 @@ def _interrupted_before_final_record(
     with pytest.raises(_Interrupt):
         _execute(plan, config, manifest_path)
     monkeypatch.setattr(ManifestWriter, "append", real_append)
-    return plan, read_manifest(manifest_path)
+    return plan, read_records(manifest_path)
 
 
 def test_rename_and_rewrite_write__intent_record_precedes_final_record(tmp_path: Path) -> None:
@@ -348,7 +350,7 @@ def test_rename_and_rewrite_write__intent_record_precedes_final_record(tmp_path:
     plan = _plan_for(root, config)
     _execute(plan, config, tmp_path / "manifest.jsonl")
 
-    records = read_manifest(tmp_path / "manifest.jsonl")
+    records = read_records(tmp_path / "manifest.jsonl")
     by_path: dict[str, list[ManifestRecord]] = {}
     for record in records:
         by_path.setdefault(Path(record.original_path).name, []).append(record)
@@ -390,7 +392,7 @@ def test_resume_after_kill_between_publish_and_unlink__completes_the_action(
     assert _hash_tree(root) == _hash_tree(control)
     outcome = next(o for o in report.outcomes if o.action_id == first[0].action_id)
     assert outcome.status == "applied"
-    resume_records = read_manifest(tmp_path / "resume-manifest.jsonl")
+    resume_records = read_records(tmp_path / "resume-manifest.jsonl")
     applied = [r.action_id for r in (*first, *resume_records) if r.result == "applied"]
     assert sorted(applied) == sorted(a.action_id for a in plan.actions)
     assert len(set(applied)) == len(applied)
@@ -428,7 +430,7 @@ def test_resume_after_kill_before_final_record__adopts_completed_mutation(
     assert _hash_tree(root) == _hash_tree(control)
     outcome = next(o for o in report.outcomes if o.action_id == first[0].action_id)
     assert outcome.status == "applied"
-    resume_records = read_manifest(tmp_path / "resume-manifest.jsonl")
+    resume_records = read_records(tmp_path / "resume-manifest.jsonl")
     applied = [r.action_id for r in (*first, *resume_records) if r.result == "applied"]
     assert sorted(applied) == sorted(a.action_id for a in plan.actions)
     assert len(set(applied)) == len(applied)
@@ -520,7 +522,7 @@ def test_resume_intent_over_unclobbered_target__reexecutes_with_overwrite(
     with pytest.raises(_Interrupt):
         _execute(plan, config, tmp_path / "manifest.jsonl")
     monkeypatch.setattr(apply_module, "atomic_write_bytes", real)
-    first = read_manifest(tmp_path / "manifest.jsonl")
+    first = read_records(tmp_path / "manifest.jsonl")
     assert [r.result for r in first] == ["intent"]
     assert first[0].overwritten_sha256 is not None
 
@@ -630,7 +632,7 @@ def test_resume_stale_duplicate_record_out_of_order__newest_wins(tmp_path: Path)
     config = DocmendConfig()
     plan = _plan_for(root, config)
     _execute(plan, config, tmp_path / "manifest.jsonl")
-    records = read_manifest(tmp_path / "manifest.jsonl")
+    records = read_records(tmp_path / "manifest.jsonl")
     stale = records[0].model_copy(
         update={"after_sha256": "sha256:" + "f" * 64, "recorded_at": "2020-01-01T00:00:00+00:00"}
     )

@@ -21,7 +21,7 @@ Cross-file contracts:
   the artifact path). The default excludes make ``.docmend/`` invisible to scans.
 """
 
-import os
+import hashlib
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -421,24 +421,6 @@ def _acquire_run_lock_strict(source_root: Path, *, run_id: str, command: str) ->
         raise typer.Exit(3) from exc
 
 
-def _restore_lock_root(records: list[manifest.ManifestRecord]) -> Path:
-    """The tree `docmend restore` locks (OQ-036, AW-005).
-
-    A 1.2 manifest stamps the apply run's resolved source_root on every record;
-    key the lock on THAT so restore contends with a concurrent apply/plan on the
-    same tree — even when every mutated file lives in a subdirectory whose
-    commonpath narrows below the source root (the gap the old commonpath key left
-    open: a restore keyed on the narrower path slipped past an apply's root lock).
-    A pre-1.2 manifest carries no source_root: fall back to the commonpath of
-    original paths, preserving the legacy behavior for older manifests.
-    """
-    recorded = records[0].source_root
-    if recorded is not None:
-        return Path(recorded)  # already the resolved source root written at apply
-    root = Path(os.path.commonpath([r.original_path for r in records]))
-    return root if root.is_dir() else root.parent
-
-
 class PreservedBy(StrEnum):
     """FR-005 declared byte-preserving strategies external to docmend's own backups."""
 
@@ -624,6 +606,9 @@ def apply(
             config,
             run_id=run_id,
             plan_ref=plan_ref,
+            # The header's plan binding (adr-0019): the hash of the exact plan
+            # ARTIFACT executed, so one manifest chain serves one plan.
+            plan_sha256=f"sha256:{hashlib.sha256(plan_path.read_bytes()).hexdigest()}",
             options=options,
             manifest_path=manifest_path,
             started_at=started_at,
@@ -695,19 +680,21 @@ def _read_resume_records(
     records: list[manifest.ManifestRecord] = []
     for path in paths:
         try:
-            loaded = manifest.read_manifest(path)
+            loaded = manifest.read_manifest_set(path)
+        except manifest.ManifestContainmentError as exc:
+            typer.echo(f"refused [manifest-containment]: {exc}", err=True)
+            raise typer.Exit(3) from exc
         except artifacts.ArtifactError as exc:
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(2) from exc
-        recorded_root = next((r.source_root for r in loaded if r.source_root is not None), None)
-        if recorded_root is not None and recorded_root != root_resolved:
+        if loaded.header.source_root != root_resolved:
             typer.echo(
-                f"error: {path}: manifest source root {recorded_root} does not match "
-                f"the plan's ({root_resolved}) — wrong manifest for this plan (ERR-006)",
+                f"error: {path}: manifest source root {loaded.header.source_root} does not "
+                f"match the plan's ({root_resolved}) — wrong manifest for this plan (ERR-006)",
                 err=True,
             )
             raise typer.Exit(2)
-        records.extend(loaded)
+        records.extend(loaded.records)
     return records
 
 
@@ -778,10 +765,16 @@ def restore(
     )
 
     try:
-        records = manifest.read_manifest(manifest_path)
+        manifest_set = manifest.read_manifest_set(manifest_path)
+    except manifest.ManifestContainmentError as exc:
+        # adr-0012: paths escaping the recorded roots are a safety refusal,
+        # not a mere input error — nothing is read or mutated past this point.
+        typer.echo(f"refused [manifest-containment]: {exc}", err=True)
+        raise typer.Exit(3) from exc
     except artifacts.ArtifactError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(2) from exc
+    records = manifest_set.records
     if not records:
         typer.echo("nothing to restore: manifest holds no records")
         return
@@ -806,16 +799,15 @@ def restore(
             "git/external declaration or the low-risk opt-in)"
         )
 
-    # OQ-036 (fixed MS-4): key on the manifest's recorded source_root so restore
-    # contends with a concurrent apply/plan on the same tree even when the
-    # mutated files nest in a subdirectory (falls back to commonpath for pre-1.2
-    # manifests). See `_restore_lock_root`.
+    # OQ-036/2.0: the lock keys on the VALIDATED header's source_root (adr-0019)
+    # so restore contends with a concurrent apply/plan on the same tree even
+    # when the mutated files nest in a subdirectory.
     run_lock = _acquire_run_lock_strict(
-        _restore_lock_root(records), run_id=run_id, command="restore"
+        Path(manifest_set.header.source_root), run_id=run_id, command="restore"
     )
     try:
         outcomes = run_restore(
-            records,
+            manifest_set,
             run_id=run_id,
             write=write,
             only_ids=frozenset(only_id) if only_id else None,
@@ -913,10 +905,13 @@ def verify(
     findings = check_content(inventory) + check_frontmatter(inventory)
     if manifest_path is not None:
         try:
-            records = manifest.read_manifest(manifest_path)
+            # check_backup_objects=False: verify is read-only — the live-
+            # filesystem half of the F5 trust boundary becomes FINDINGS under
+            # Plan D's verify redesign, never a hard abort here.
+            records = manifest.read_manifest_set(manifest_path, check_backup_objects=False).records
         except artifacts.ArtifactError as exc:
             # Unreadable/corrupt input artifact is an invocation error, not a
-            # finding (adr-0012 exit 2), mirroring restore's read_manifest guard.
+            # finding (adr-0012 exit 2), mirroring restore's read guard.
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(2) from exc
         findings = findings + reconcile_manifest(records)

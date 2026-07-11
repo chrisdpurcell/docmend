@@ -131,9 +131,12 @@ def test_drill_report_and_manifest_agree(drill_corpus: Path) -> None:
     report_path = _artifact(r"report: (\S+)", applied.output)
     manifest_path = _artifact(r"manifest: (\S+)", applied.output)
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    records = [
+    lines = [
         json.loads(line)
         for line in manifest_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+    # 2.0: line 1 is the header envelope; mutation records follow it.
+    assert lines[0]["schema"] == "docmend/manifest-header"
+    records = lines[1:]
     assert report["totals"]["applied"] == sum(1 for r in records if r["result"] == "applied")

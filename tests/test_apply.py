@@ -11,6 +11,7 @@ from collections import Counter
 from pathlib import Path
 
 import pytest
+from tests.helpers.manifest2 import read_records
 
 from corpus import FileRecipe, materialize, seeded_faker
 from docmend import discovery, planning
@@ -24,7 +25,7 @@ from docmend.writer import apply as apply_module
 from docmend.writer.apply import execute_plan
 from docmend.writer.backup import BackupError
 from docmend.writer.gate import ApplyOptions
-from docmend.writer.manifest import read_manifest
+from docmend.writer.manifest import read_manifest_set
 
 RUN_ID = "run_20260706T000000Z_00008f"
 PLAN_RUN_ID = "run_20260706T000000Z_00008e"
@@ -57,6 +58,7 @@ def _execute(plan: Plan, config: DocmendConfig, tmp_path: Path, **kwargs: object
         config,
         run_id=RUN_ID,
         plan_ref=ArtifactRef(path="plan.json", run_id=PLAN_RUN_ID, sha256="sha256:" + "1" * 64),
+        plan_sha256="sha256:" + "1" * 64,
         options=options,
         manifest_path=tmp_path / "manifest.jsonl",
         started_at=GENERATED_AT,
@@ -95,9 +97,10 @@ def test_dry_run_default__writes_nothing_reports_would_apply(tmp_path: Path) -> 
     assert report.totals.applied == report.totals.skipped == report.totals.failed == 0
 
 
-def test_write__records_carry_resolved_source_root(tmp_path: Path) -> None:
-    """Manifest 1.2 (OQ-036): every record carries the apply run's resolved source
-    root so `docmend restore` can key its lock on it (closes the AW-005 gap)."""
+def test_write__header_carries_resolved_source_root(tmp_path: Path) -> None:
+    """Manifest 2.0 (adr-0019, was OQ-036): the HEADER carries the apply run's
+    resolved source root so `docmend restore` can key its lock on it (AW-005);
+    records no longer repeat it per line."""
     root = tmp_path / "root"
     materialize(root, [FileRecipe("a.txt", "utf-8", "crlf")], seeded_faker())
     config = DocmendConfig()
@@ -105,11 +108,11 @@ def test_write__records_carry_resolved_source_root(tmp_path: Path) -> None:
 
     _execute(plan, config, tmp_path, write=True)
 
-    records = read_manifest(tmp_path / "manifest.jsonl")
-    assert records
+    loaded = read_manifest_set(tmp_path / "manifest.jsonl")
+    assert loaded.records
     assert plan.source_root is not None
-    resolved = str(Path(plan.source_root).resolve())
-    assert all(record.source_root == resolved for record in records)
+    assert loaded.header.source_root == str(Path(plan.source_root).resolve())
+    assert loaded.header.kind == "apply"
 
 
 def test_write_rewrite_in_place__utf8_lf_and_manifest(tmp_path: Path) -> None:
@@ -149,7 +152,7 @@ def test_write_rewrite_in_place__utf8_lf_and_manifest(tmp_path: Path) -> None:
     assert outcome.after_sha256 == _sha(expected_bytes)
     assert outcome.after_sha256 == sha256_of_file(target_file)
 
-    records = read_manifest(tmp_path / "manifest.jsonl")
+    records = read_records(tmp_path / "manifest.jsonl")
     assert len(records) == 1
     record = records[0]
     assert record.operation == "rewrite"
@@ -177,7 +180,7 @@ def test_write_rename_only__link_semantics(tmp_path: Path) -> None:
     assert outcome.status == "applied"
     assert outcome.after_sha256 == outcome.before_sha256
 
-    records = read_manifest(tmp_path / "manifest.jsonl")
+    records = read_records(tmp_path / "manifest.jsonl")
     assert records[0].operation == "rename"
     assert records[0].after_sha256 == records[0].before_sha256
 
@@ -208,7 +211,7 @@ def test_write_rename_and_rewrite__source_survives_failure(
     assert outcome.after_sha256 is None
     assert (root / "legacy.txt").read_bytes() == original_bytes
 
-    records = read_manifest(tmp_path / "manifest.jsonl")
+    records = read_records(tmp_path / "manifest.jsonl")
     # 1.3: the write-ahead intent precedes the mutation attempt; the failure
     # closes it, so this dangling-free pair is exactly what resume expects.
     assert [r.result for r in records] == ["intent", "failed"]
@@ -300,7 +303,7 @@ def test_collision_policies__skip_fail_overwrite(tmp_path: Path) -> None:
     ow_outcome = ow_report.outcomes[0]
     assert ow_outcome.status == "applied"
     assert (ow_root / "a.md").read_bytes() == b"clean\n"
-    ow_records = read_manifest((tmp_path / "overwrite-run") / "manifest.jsonl")
+    ow_records = read_records((tmp_path / "overwrite-run") / "manifest.jsonl")
     ow_record = ow_records[0]
     assert ow_record.overwritten_sha256 == old_target_sha
     assert ow_record.overwritten_backup_path is not None
@@ -330,7 +333,7 @@ def test_overwrite_target_unreadable__failed_recorded_in_manifest(tmp_path: Path
     assert report.totals.failed == 1
     assert (root / "a.txt").read_bytes() == original_bytes
 
-    records = read_manifest(tmp_path / "manifest.jsonl")
+    records = read_records(tmp_path / "manifest.jsonl")
     assert len(records) == 1
     assert records[0].result == "failed"
 
@@ -366,7 +369,7 @@ def test_overwrite_target_backup_failure__failed_recorded_in_manifest(
     assert (root / "a.txt").read_bytes() == original_bytes
     assert (root / "a.md").read_bytes() == original_target_bytes
 
-    records = read_manifest(tmp_path / "manifest.jsonl")
+    records = read_records(tmp_path / "manifest.jsonl")
     assert len(records) == 1
     assert records[0].result == "failed"
 
@@ -512,7 +515,7 @@ def test_report_counts_reconcile__and_manifest_seq_monotonic(tmp_path: Path) -> 
     assert report.totals.failed == counts.get("failed", 0)
     assert sum(report.totals.__dict__.values()) == len(report.outcomes)
 
-    records = read_manifest(tmp_path / "manifest.jsonl")
+    records = read_records(tmp_path / "manifest.jsonl")
     assert [r.seq for r in records] == list(range(1, len(records) + 1))
     assert len(records) == counts.get("applied", 0) + counts.get("failed", 0)
 
@@ -604,7 +607,7 @@ def test_rename_and_rewrite_unlink_failure__publish_rolled_back(
     assert outcome_a.error.error_class == "ERR-003"
     assert (root_a / "legacy.txt").read_bytes() == original_bytes_a
     assert not (root_a / "legacy.md").exists()
-    records_a = read_manifest((tmp_path / "a-run") / "manifest.jsonl")
+    records_a = read_records((tmp_path / "a-run") / "manifest.jsonl")
     assert [r.result for r in records_a] == ["intent", "failed"]
     monkeypatch.setattr(Path, "unlink", original_unlink)
 
@@ -699,6 +702,7 @@ def test_dmr01_colliding_backup_keys__both_preserved_and_restorable(tmp_path: Pa
         config,
         run_id=run_id,
         plan_ref=ArtifactRef(path="unused", run_id=run_id, sha256=_sha256(b"")),
+        plan_sha256=_sha256(b""),
         options=ApplyOptions(
             write=True, backup_root=backup_root, preserved_by=None, allow_no_backup=False
         ),
@@ -707,7 +711,7 @@ def test_dmr01_colliding_backup_keys__both_preserved_and_restorable(tmp_path: Pa
     )
     assert report.totals.applied == 2, [o.status for o in report.outcomes]
 
-    records = read_manifest(manifest_path)
+    records = read_records(manifest_path)
     backup_paths = {r.backup_path for r in records if r.backup_path is not None} | {
         r.overwritten_backup_path for r in records if r.overwritten_backup_path is not None
     }
@@ -719,7 +723,7 @@ def test_dmr01_colliding_backup_keys__both_preserved_and_restorable(tmp_path: Pa
     assert stored == {md_original, txt_original, b"alpha\n"}
 
     outcomes = run_restore(
-        records,
+        read_manifest_set(manifest_path),
         run_id="run_20260710T000001Z_00d0a2",
         write=True,
         only_ids=None,

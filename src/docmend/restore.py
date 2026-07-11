@@ -17,9 +17,11 @@ default (0o600) instead of their original permissions.
 
 import hashlib
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+from docmend.lineage import PriorAttempt
 from docmend.observability import get_logger
 from docmend.writer.atomic import (
     WriteError,
@@ -27,7 +29,13 @@ from docmend.writer.atomic import (
     link_no_clobber,
     rename_no_clobber,
 )
-from docmend.writer.manifest import ManifestRecord, ManifestWriter
+from docmend.writer.manifest import (
+    ManifestHeader,
+    ManifestRecord,
+    ManifestSet,
+    ManifestWriter,
+    manifest_sha256,
+)
 
 type RestoreStatus = Literal["restored", "would_restore", "skipped", "failed"]
 
@@ -104,20 +112,25 @@ def _live_matches_after(record: ManifestRecord) -> RestoreOutcome | None:
 
 
 def run_restore(
-    records: list[ManifestRecord],
+    manifest_set: ManifestSet,
     *,
     run_id: str,
     write: bool,
     only_ids: frozenset[str] | None,
     manifest_out: Path,
 ) -> list[RestoreOutcome]:
-    """Replay `records` LIFO by seq, restoring only `result == "applied"` entries.
+    """Replay the set's records LIFO by seq, restoring only `result == "applied"`.
 
     IR-008, adr-0004: dry-run (the default) previews with no mutation; a write
     run appends one inverse manifest record per successful restoration to its
     own run manifest (via `ManifestWriter`, lazily opened like apply's).
+    2.0: the inverse manifest is restore-kind — its header copies the chain's
+    source_root/plan_sha256, links the undone manifest as its prior, and
+    carries `backup_root: null` (a restore run takes no tool backups; its
+    inverse records hold no backup references — Plan B review CR-NEW-003).
     """
     log = get_logger(__name__)
+    records = manifest_set.records
     replay = [
         r
         for r in sorted(records, key=lambda r: r.seq, reverse=True)  # LIFO (IR-008)
@@ -126,7 +139,24 @@ def run_restore(
     outcomes: list[RestoreOutcome] = []
     manifest: ManifestWriter | None = None
     if write and replay:
-        manifest = ManifestWriter(manifest_out, run_id=run_id)
+        undone_sha = manifest_set.sha256 or manifest_sha256(manifest_set.path)
+        manifest = ManifestWriter(
+            manifest_out,
+            header=ManifestHeader(
+                run_id=run_id,
+                kind="restore",
+                source_root=manifest_set.header.source_root,
+                backup_root=None,
+                plan_sha256=manifest_set.header.plan_sha256,
+                prior_manifest_sha256=undone_sha,
+                prior_attempt=PriorAttempt(
+                    run_id=manifest_set.header.run_id,
+                    report_sha256=None,
+                    manifest_sha256=undone_sha,
+                ),
+                created_at=datetime.now(UTC).isoformat(),
+            ),
+        )
     try:
         for record in replay:
             outcome = _restore_one(record, write=write, run_id=run_id, manifest=manifest)
@@ -279,6 +309,10 @@ def _restore_one(
                     "overwritten_sha256": None,
                     "overwritten_backup_path": None,
                     "error": None,
+                    # 2.0 (adr-0019): the inverse names the exact apply action
+                    # it undoes — the reducer never infers this from paths.
+                    "undoes_action_id": record.action_id,
+                    "undoes_run_id": record.run_id,
                 }
             )
         )

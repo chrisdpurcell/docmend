@@ -15,11 +15,11 @@ from pathlib import Path
 
 import pytest
 import structlog
+from tests.helpers.manifest2 import read_records
 from typer.testing import CliRunner
 
 from docmend.cli import app
 from docmend.writer import apply as apply_module
-from docmend.writer.manifest import read_manifest
 
 runner = CliRunner()
 
@@ -198,7 +198,7 @@ class TestKillAndResume:
         covered = [
             r.action_id
             for path in (interrupted_manifest, resume_manifest)
-            for r in read_manifest(path)
+            for r in read_records(path)
             if r.result == "applied"  # intent records are evidence, not coverage
         ]
         assert len(set(covered)) == len(covered) == 3

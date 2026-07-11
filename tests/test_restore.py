@@ -13,10 +13,12 @@ mirroring `tests/test_cli_apply.py`'s fixtures.
 import hashlib
 import logging
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 import structlog
+from tests.helpers.manifest2 import header_doc, read_records, write_set
 from typer.testing import CliRunner
 
 from corpus import FileRecipe, materialize, seeded_faker
@@ -24,7 +26,7 @@ from docmend import lock
 from docmend.cli import app
 from docmend.config import DocmendConfig, RenameConfig
 from docmend.restore import run_restore
-from docmend.writer.manifest import ManifestRecord, read_manifest
+from docmend.writer.manifest import ManifestRecord, ManifestSet, read_manifest_set
 from test_apply import _execute, _plan_for  # pyright: ignore[reportPrivateUsage]
 
 RESTORE_RUN_ID = "run_20260706T020000Z_00009a"
@@ -43,7 +45,14 @@ def _hash_tree(root: Path) -> dict[str, str]:
 
 
 def _records_for(tmp_path: Path) -> list[ManifestRecord]:
-    return read_manifest(tmp_path / "manifest.jsonl")
+    return read_records(tmp_path / "manifest.jsonl")
+
+
+def _set_with(tmp_path: Path, records: list[ManifestRecord]) -> ManifestSet:
+    """The apply run's REAL validated set with its record list swapped for the
+    test's (possibly synthetic) records — run_restore consumes sets in 2.0."""
+    base = read_manifest_set(tmp_path / "manifest.jsonl")
+    return replace(base, records=records)
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +74,7 @@ def test_restore_dry_run__previews_and_touches_nothing(tmp_path: Path) -> None:
     before = _hash_tree(root)
 
     outcomes = run_restore(
-        records,
+        _set_with(tmp_path, records),
         run_id=RESTORE_RUN_ID,
         write=False,
         only_ids=None,
@@ -93,7 +102,7 @@ def test_restore_rewrite__bytes_match_before_hash(tmp_path: Path) -> None:
     assert records[0].operation == "rewrite"
 
     outcomes = run_restore(
-        records,
+        _set_with(tmp_path, records),
         run_id=RESTORE_RUN_ID,
         write=True,
         only_ids=None,
@@ -125,7 +134,7 @@ def test_restore_rewrite__mode_preserved(tmp_path: Path) -> None:
     assert (root / "legacy.md").stat().st_mode & 0o777 == 0o644
 
     outcomes = run_restore(
-        records,
+        _set_with(tmp_path, records),
         run_id=RESTORE_RUN_ID,
         write=True,
         only_ids=None,
@@ -151,7 +160,7 @@ def test_restore_rename__file_moved_back(tmp_path: Path) -> None:
     assert records[0].operation == "rename"
 
     outcomes = run_restore(
-        records,
+        _set_with(tmp_path, records),
         run_id=RESTORE_RUN_ID,
         write=True,
         only_ids=None,
@@ -178,7 +187,7 @@ def test_restore_rename_and_rewrite__original_reproduced(tmp_path: Path) -> None
     assert records[0].operation == "rename_and_rewrite"
 
     outcomes = run_restore(
-        records,
+        _set_with(tmp_path, records),
         run_id=RESTORE_RUN_ID,
         write=True,
         only_ids=None,
@@ -210,7 +219,7 @@ def test_restore_rename_and_rewrite_overwrite__both_halves_reinstated(tmp_path: 
     assert records[0].overwritten_backup_path is not None
 
     outcomes = run_restore(
-        records,
+        _set_with(tmp_path, records),
         run_id=RESTORE_RUN_ID,
         write=True,
         only_ids=None,
@@ -262,7 +271,7 @@ def test_restore_lifo__later_mutations_undone_first(tmp_path: Path) -> None:
     )
 
     outcomes = run_restore(
-        [record1, record2],
+        _set_with(tmp_path, [record1, record2]),
         run_id=RESTORE_RUN_ID,
         write=True,
         only_ids=None,
@@ -291,7 +300,7 @@ def test_restore_modified_since_apply__skipped_never_clobbers(tmp_path: Path) ->
     (root / "legacy.md").write_bytes(edited)
 
     outcomes = run_restore(
-        records,
+        _set_with(tmp_path, records),
         run_id=RESTORE_RUN_ID,
         write=True,
         only_ids=None,
@@ -324,7 +333,7 @@ def test_restore_no_backup_record__skipped(tmp_path: Path) -> None:
     assert records[0].backup_path is None
 
     outcomes = run_restore(
-        records,
+        _set_with(tmp_path, records),
         run_id=RESTORE_RUN_ID,
         write=True,
         only_ids=None,
@@ -353,7 +362,7 @@ def test_restore_backup_hash_mismatch__failed_err004(tmp_path: Path) -> None:
     live_before = (root / "legacy.md").read_bytes()
 
     outcomes = run_restore(
-        records,
+        _set_with(tmp_path, records),
         run_id=RESTORE_RUN_ID,
         write=True,
         only_ids=None,
@@ -382,7 +391,7 @@ def test_restore_overwrite_record__clobbered_target_reinstated(tmp_path: Path) -
     assert records[0].overwritten_backup_path is not None
 
     outcomes = run_restore(
-        records,
+        _set_with(tmp_path, records),
         run_id=RESTORE_RUN_ID,
         write=True,
         only_ids=None,
@@ -411,7 +420,7 @@ def test_restore_overwrite_backup_corrupt__nothing_mutated(tmp_path: Path) -> No
     before = _hash_tree(root)
 
     outcomes = run_restore(
-        records,
+        _set_with(tmp_path, records),
         run_id=RESTORE_RUN_ID,
         write=True,
         only_ids=None,
@@ -442,7 +451,7 @@ def test_restore_source_backup_corrupt__nothing_mutated(tmp_path: Path) -> None:
     target_before = (root / "legacy.md").read_bytes()
 
     outcomes = run_restore(
-        records,
+        _set_with(tmp_path, records),
         run_id=RESTORE_RUN_ID,
         write=True,
         only_ids=None,
@@ -486,7 +495,7 @@ def test_restore_mutation_phase_failure__no_file_lost(
     monkeypatch.setattr(Path, "unlink", _fail_unlink)
 
     outcomes = run_restore(
-        records,
+        _set_with(tmp_path, records),
         run_id=RESTORE_RUN_ID,
         write=True,
         only_ids=None,
@@ -502,7 +511,7 @@ def test_restore_mutation_phase_failure__no_file_lost(
 
     monkeypatch.setattr(Path, "unlink", original_unlink)
     rerun = run_restore(
-        records,
+        _set_with(tmp_path, records),
         run_id=RESTORE_RUN_ID,
         write=True,
         only_ids=None,
@@ -529,11 +538,15 @@ def test_restore_records_its_own_manifest(tmp_path: Path) -> None:
     manifest_out = tmp_path / "restore-manifest.jsonl"
 
     outcomes = run_restore(
-        records, run_id=RESTORE_RUN_ID, write=True, only_ids=None, manifest_out=manifest_out
+        _set_with(tmp_path, records),
+        run_id=RESTORE_RUN_ID,
+        write=True,
+        only_ids=None,
+        manifest_out=manifest_out,
     )
     assert all(o.status == "restored" for o in outcomes)
 
-    restore_records = read_manifest(manifest_out)
+    restore_records = read_records(manifest_out)
     assert len(restore_records) == len(records)
     by_original = {r.original_path: r for r in records}
     for inverse in restore_records:
@@ -662,18 +675,32 @@ class TestRestoreCliInputErrors:
 
         assert result.exit_code == 2, result.output
 
-    def test_restore_empty_manifest__friendly_message_exit_0(
+    def test_restore_header_only_manifest__friendly_message_exit_0(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """An empty manifest (no applied records) is a friendly no-op, not an error."""
+        """2.0: the friendly no-op case is a HEADER-ONLY manifest (a run killed
+        between its header and first record — nothing durably recorded)."""
+        monkeypatch.chdir(tmp_path)
+        empty = write_set(tmp_path / "empty-manifest.jsonl", header_doc(source_root=str(tmp_path)))
+
+        result = runner.invoke(app, ["restore", "--manifest", str(empty)])
+
+        assert result.exit_code == 0, result.output
+        assert "nothing to restore" in result.output
+
+    def test_restore_zero_byte_manifest__malformed_exit_2(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """2.0: a zero-byte file has no header — malformed input (ERR-008),
+        never a silent no-op (a real 2.0 manifest always starts with its header)."""
         monkeypatch.chdir(tmp_path)
         empty = tmp_path / "empty-manifest.jsonl"
         empty.write_text("")
 
         result = runner.invoke(app, ["restore", "--manifest", str(empty)])
 
-        assert result.exit_code == 0, result.output
-        assert "nothing to restore" in result.output
+        assert result.exit_code == 2, result.output
+        assert "no header" in result.output
 
 
 class TestRestoreCliWrites:
@@ -758,7 +785,7 @@ class TestRestoreCliWrites:
         plan_path = _make_plan_cli(corpus)
         _apply_cli(plan_path)
         manifest_path = _manifest_path(tmp_path)
-        records = read_manifest(manifest_path)
+        records = read_records(manifest_path)
         by_path = {Path(r.original_path).name: r for r in records}
         keep_id = by_path["a.txt"].docmend_id
 
@@ -772,54 +799,10 @@ class TestRestoreCliWrites:
         assert (corpus / "b.md").exists()  # untouched by the filtered-out record
 
 
-def _lock_record(*, source_root: str | None, original_path: str) -> ManifestRecord:
-    return ManifestRecord(
-        run_id=RESTORE_RUN_ID,
-        action_id=f"{RESTORE_RUN_ID}/a1",
-        docmend_id="01980000-0000-7000-8000-000000000001",
-        seq=1,
-        recorded_at="2026-07-06T02:00:00+00:00",
-        operation="rewrite",
-        original_path=original_path,
-        target_path=original_path,
-        backup_path=None,
-        before_sha256="sha256:" + "a" * 64,
-        after_sha256="sha256:" + "b" * 64,
-        result="applied",
-        error=None,
-        source_root=source_root,
-    )
-
-
-class TestRestoreLockKey:
-    """OQ-036: restore's lock key derivation (`_restore_lock_root`)."""
-
-    def test_prefers_recorded_source_root_over_commonpath(self, tmp_path: Path) -> None:
-        """With a 1.2 source_root recorded, restore keys on IT — not the commonpath
-        of original paths, which narrows below the root when every mutated file
-        shares a subdirectory (the AW-005 divergence gap)."""
-        from docmend.cli import _restore_lock_root  # pyright: ignore[reportPrivateUsage]
-
-        root = tmp_path / "root"
-        (root / "sub").mkdir(parents=True)
-        record = _lock_record(source_root=str(root), original_path=str(root / "sub" / "a.txt"))
-
-        assert _restore_lock_root([record]) == root
-        assert _restore_lock_root([record]) != root / "sub"  # the pre-fix commonpath key
-
-    def test_legacy_manifest_without_source_root__falls_back_to_commonpath(
-        self, tmp_path: Path
-    ) -> None:
-        """A pre-1.2 manifest has no source_root; the old commonpath behavior is
-        retained so legacy manifests still lock and restore correctly."""
-        from docmend.cli import _restore_lock_root  # pyright: ignore[reportPrivateUsage]
-
-        base = tmp_path / "a" / "b"
-        base.mkdir(parents=True)
-        r1 = _lock_record(source_root=None, original_path=str(base / "x.txt"))
-        r2 = _lock_record(source_root=None, original_path=str(base / "y.txt"))
-
-        assert _restore_lock_root([r1, r2]) == base
+# 2.0: restore's lock keys on the VALIDATED header's source_root (adr-0019);
+# the per-record source_root field and the pre-1.2 commonpath fallback are gone
+# with the clean break. Lock behavior is covered end-to-end by
+# TestRestoreCliLock below (including the nested-commonpath regression).
 
 
 class TestRestoreCliLock:

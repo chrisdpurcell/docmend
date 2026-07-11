@@ -28,6 +28,7 @@ from pathspec.patterns.gitignore.spec import GitIgnoreSpecPattern
 from docmend import __version__
 from docmend.config import DocmendConfig
 from docmend.discovery import sniff_bom
+from docmend.lineage import PriorAttempt
 from docmend.observability import get_logger
 from docmend.plan import ArtifactRef, Plan, PlanAction
 from docmend.report import (
@@ -52,7 +53,12 @@ from docmend.writer.atomic import (
 )
 from docmend.writer.backup import BackupError, backup_file
 from docmend.writer.gate import ApplyOptions, is_content_rewrite
-from docmend.writer.manifest import ManifestOperation, ManifestRecord, ManifestWriter
+from docmend.writer.manifest import (
+    ManifestHeader,
+    ManifestOperation,
+    ManifestRecord,
+    ManifestWriter,
+)
 
 
 def _sha(data: bytes) -> str:
@@ -600,11 +606,14 @@ def execute_plan(
     *,
     run_id: str,
     plan_ref: ArtifactRef,
+    plan_sha256: str,
     options: ApplyOptions,
     manifest_path: Path,
     started_at: str,
     now: Callable[[], str] = lambda: datetime.now(UTC).isoformat(),
     resume_records: list[ManifestRecord] | None = None,
+    prior_manifest_sha256: str | None = None,
+    prior_attempt: PriorAttempt | None = None,
 ) -> Report:
     log = get_logger(__name__)
     assert plan.source_root is not None  # CLI refused earlier (ERR-006)
@@ -635,10 +644,24 @@ def execute_plan(
     outcomes: list[ApplyOutcome] = []
     manifest: ManifestWriter | None = None
     if options.write and plan.actions:
-        # source_root stamped onto every record (OQ-036) — restore keys its lock
-        # on it, so it must match plan/apply's key: the RESOLVED root.
+        # 2.0: the run's envelope lives in the header (adr-0019) — restore keys
+        # its lock on header.source_root, so it must match plan/apply's key:
+        # the RESOLVED root. backup_root is the F5 trust anchor.
         manifest = ManifestWriter(
-            manifest_path, run_id=run_id, source_root=str(root_resolved), now=now
+            manifest_path,
+            header=ManifestHeader(
+                run_id=run_id,
+                kind="apply",
+                source_root=str(root_resolved),
+                backup_root=str(options.backup_root.resolve())
+                if options.backup_root is not None
+                else None,
+                plan_sha256=plan_sha256,
+                prior_manifest_sha256=prior_manifest_sha256,
+                prior_attempt=prior_attempt,
+                created_at=now(),
+            ),
+            now=now,
         )
     try:
         abort = False

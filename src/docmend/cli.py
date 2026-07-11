@@ -889,14 +889,19 @@ def _write_refusal_report(
 def restore(
     ctx: typer.Context,
     manifest_path: Annotated[
-        Path | None,
-        typer.Option("--manifest", help="Manifest to replay (DR-004 NDJSON)."),
+        list[Path] | None,
+        typer.Option(
+            "--manifest",
+            help="Manifest(s) to undo (DR-004 NDJSON; repeatable — pass the whole "
+            "attempt chain of a multiply-resumed run).",
+        ),
     ] = None,
     run_id_arg: Annotated[
-        str | None,
+        list[str] | None,
         typer.Option(
             "--run-id",
-            help="Resolve .docmend/docmend-<ID>-manifest.jsonl (OQ-034 sidecar convention).",
+            help="Resolve .docmend/docmend-<ID>-manifest.jsonl (OQ-034 sidecar "
+            "convention; repeatable, combinable with --manifest).",
         ),
     ] = None,
     only_id: Annotated[
@@ -908,18 +913,21 @@ def restore(
     ] = False,
     dry_run_flag: Annotated[bool, typer.Option("--dry-run", help="Preview (the default).")] = False,
 ) -> None:
-    """Replay manifest records LIFO to undo an apply run (IR-008, §18.6).
+    """Undo an apply chain LIFO (IR-008, adr-0019, §18.6).
 
-    Exit codes (§18.5): 0 clean; 1 findings (skips/failures); 2 input error
-    (bad manifest); 3 safety refusal (lock).
+    Exit codes (§18.5): 0 clean; 1 findings (skips/failures, or --id matching
+    nothing); 2 input error (bad manifest); 3 safety refusal (lock or
+    containment).
     """
     opts = _global_options(ctx)
     if write and (dry_run_flag or opts.dry_run):
         raise typer.BadParameter("--write and --dry-run are mutually exclusive")
-    if (manifest_path is None) == (run_id_arg is None):
-        raise typer.BadParameter("provide exactly one of --manifest or --run-id")
-    if manifest_path is None:
-        manifest_path = Path(ARTIFACT_DIR_NAME) / f"docmend-{run_id_arg}-manifest.jsonl"
+    if not manifest_path and not run_id_arg:
+        raise typer.BadParameter("provide at least one of --manifest or --run-id")
+    manifest_paths = list(manifest_path or [])
+    manifest_paths.extend(
+        Path(ARTIFACT_DIR_NAME) / f"docmend-{rid}-manifest.jsonl" for rid in run_id_arg or []
+    )
 
     now = datetime.now(UTC)
     run_id = new_run_id(now)
@@ -933,7 +941,7 @@ def restore(
     )
 
     try:
-        manifest_set = manifest.read_manifest_set(manifest_path)
+        chain = manifest.read_manifest_chain(manifest_paths)
     except manifest.ManifestContainmentError as exc:
         # adr-0012: paths escaping the recorded roots are a safety refusal,
         # not a mere input error — nothing is read or mutated past this point.
@@ -942,7 +950,7 @@ def restore(
     except artifacts.ArtifactError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(2) from exc
-    records = manifest_set.records
+    records = [r for s in chain.sets for r in s.records]
     if not records:
         typer.echo("nothing to restore: manifest holds no records")
         return
@@ -967,15 +975,15 @@ def restore(
             "git/external declaration or the low-risk opt-in)"
         )
 
-    # OQ-036/2.0: the lock keys on the VALIDATED header's source_root (adr-0019)
-    # so restore contends with a concurrent apply/plan on the same tree even
-    # when the mutated files nest in a subdirectory.
+    # OQ-036/2.0: the lock keys on the VALIDATED chain's source_root (adr-0019,
+    # identical across the chain by rule) so restore contends with a concurrent
+    # apply/plan on the same tree even when the mutated files nest deeper.
     run_lock = _acquire_run_lock_strict(
-        Path(manifest_set.header.source_root), run_id=run_id, command="restore"
+        Path(chain.sets[0].header.source_root), run_id=run_id, command="restore"
     )
     try:
         outcomes = run_restore(
-            manifest_set,
+            chain,
             run_id=run_id,
             write=write,
             only_ids=frozenset(only_id) if only_id else None,
@@ -984,6 +992,14 @@ def restore(
     finally:
         run_lock.release()
 
+    if only_id and not outcomes:
+        # A typo'd/stale --id must preserve the operator's stated intent as a
+        # finding, never a silent success (2026-07-10 review medium theme).
+        typer.echo(
+            "restore: no manifest record matches the requested id(s)",
+            err=True,
+        )
+        raise typer.Exit(1)
     counts = Counter(outcome.status for outcome in outcomes)
     typer.echo(
         f"restored: {counts.get('restored', 0)}  would-restore: {counts.get('would_restore', 0)}  "

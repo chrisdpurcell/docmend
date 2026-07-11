@@ -25,8 +25,14 @@ from corpus import FileRecipe, materialize, seeded_faker
 from docmend import lock
 from docmend.cli import app
 from docmend.config import DocmendConfig, RenameConfig
-from docmend.restore import run_restore
-from docmend.writer.manifest import ManifestRecord, ManifestSet, read_manifest_set
+from docmend.restore import RestoreOutcome, run_restore
+from docmend.writer.manifest import (
+    ManifestChain,
+    ManifestRecord,
+    manifest_sha256,
+    read_manifest_chain,
+    read_manifest_set,
+)
 from test_apply import _execute, _plan_for  # pyright: ignore[reportPrivateUsage]
 
 RESTORE_RUN_ID = "run_20260706T020000Z_00009a"
@@ -37,10 +43,13 @@ def _sha(data: bytes) -> str:
 
 
 def _hash_tree(root: Path) -> dict[str, str]:
+    # ".docmend-tmp" staging residue is excluded: a killed run's staged temp
+    # is inert tool-owned residue by design (adr-0019/adr-0021); corpus
+    # equivalence is judged on documents, not tool residue.
     return {
         str(path.relative_to(root)): _sha(path.read_bytes())
         for path in sorted(root.rglob("*"))
-        if path.is_file()
+        if path.is_file() and not path.name.endswith(".docmend-tmp")
     }
 
 
@@ -48,11 +57,13 @@ def _records_for(tmp_path: Path) -> list[ManifestRecord]:
     return read_records(tmp_path / "manifest.jsonl")
 
 
-def _set_with(tmp_path: Path, records: list[ManifestRecord]) -> ManifestSet:
-    """The apply run's REAL validated set with its record list swapped for the
-    test's (possibly synthetic) records — run_restore consumes sets in 2.0."""
+def _set_with(tmp_path: Path, records: list[ManifestRecord]) -> ManifestChain:
+    """A single-set CHAIN over the apply run's REAL validated set with its
+    record list swapped for the test's (possibly synthetic) records —
+    run_restore consumes chains in 2.0."""
     base = read_manifest_set(tmp_path / "manifest.jsonl")
-    return replace(base, records=records)
+    filled = replace(base, records=records, sha256=manifest_sha256(base.path))
+    return ManifestChain(sets=[filled])
 
 
 # ---------------------------------------------------------------------------
@@ -548,8 +559,12 @@ def test_restore_records_its_own_manifest(tmp_path: Path) -> None:
     assert all(o.status == "restored" for o in outcomes)
 
     restore_records = read_records(manifest_out)
-    assert len(restore_records) == len(applied)
+    # 2.0 (adr-0019): restore journals too — one intent+terminal pair per
+    # inverse, each naming the exact apply action it undoes.
+    assert len(restore_records) == 2 * len(applied)
+    assert [r.result for r in restore_records] == ["intent", "applied"] * len(applied)
     by_original = {r.original_path: r for r in applied}
+    by_action = {r.action_id: r for r in applied}
     for inverse in restore_records:
         forward = by_original[inverse.target_path]
         assert inverse.original_path == forward.target_path
@@ -557,6 +572,11 @@ def test_restore_records_its_own_manifest(tmp_path: Path) -> None:
         assert inverse.before_sha256 == (forward.after_sha256 or forward.before_sha256)
         assert inverse.after_sha256 == forward.before_sha256
         assert inverse.backup_path is None
+        assert inverse.undoes_action_id in by_action
+        assert inverse.undoes_run_id == forward.run_id
+        if inverse.result == "intent":
+            assert inverse.source_identity is not None
+            assert inverse.expected_published_identity is not None
 
 
 # ---------------------------------------------------------------------------
@@ -625,20 +645,40 @@ class TestRestoreCliFlagConflicts:
 
 
 class TestRestoreCliInputErrors:
-    def test_restore_manifest_and_run_id__mutually_exclusive_exit_2(
+    def test_restore_without_inputs__exit_2(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """IR-008: exactly one of --manifest/--run-id is required."""
+        """IR-008/2.0: at least one of --manifest/--run-id is required; the
+        two are COMBINABLE (an attempt chain may span both input forms)."""
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "m.jsonl").write_text("")
-
-        result = runner.invoke(
-            app, ["restore", "--manifest", "m.jsonl", "--run-id", "run_20260706T000000Z_000001"]
-        )
-        assert result.exit_code == 2, result.output
 
         result = runner.invoke(app, ["restore"])
         assert result.exit_code == 2, result.output
+
+    def test_restore_manifest_and_run_id_combined__one_chain(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A resumed run's two manifests restore as ONE chain regardless of
+        which input form names each file."""
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "clean.txt").write_bytes(b"already clean\n")
+        plan_path = _make_plan_cli(corpus)
+        _apply_cli(plan_path)
+        manifest_path = _manifest_path(tmp_path)
+        run_id = manifest_path.name.removeprefix("docmend-").removesuffix("-manifest.jsonl")
+
+        result = runner.invoke(
+            app, ["restore", "--manifest", str(manifest_path), "--run-id", run_id]
+        )
+        # The same file supplied twice is a duplicate-run chain error — but
+        # naming ONE attempt via either form alone succeeds identically:
+        assert result.exit_code == 2, result.output
+        by_flag = runner.invoke(app, ["restore", "--manifest", str(manifest_path)])
+        by_id = runner.invoke(app, ["restore", "--run-id", run_id])
+        assert by_flag.exit_code == 0, by_flag.output
+        assert by_id.exit_code == 0, by_id.output
 
     def test_restore_run_id__resolves_sidecar_convention(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -885,3 +925,394 @@ class TestRestoreCapabilityLine:
         result = runner.invoke(app, ["restore", "--manifest", str(manifest_path)])
 
         assert "renames-only" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# Interrupted-restore convergence (adr-0019 adjudication; Plan B review CR-005)
+# ---------------------------------------------------------------------------
+
+
+class _Kill(RuntimeError):
+    """Injected kill — not WriteError/OSError, so _restore_one cannot absorb it."""
+
+
+def _applied_chain(tmp_path: Path, recipe_kind: str) -> tuple[Path, Path]:
+    """A real write apply over one file of the requested mutation kind;
+    returns (corpus root, apply manifest path)."""
+    import docmend.restore as restore_module
+
+    del restore_module
+    root = tmp_path / "root"
+    if recipe_kind == "rewrite":
+        materialize(
+            root, [FileRecipe("legacy.md", "windows-1252", "crlf", sentences=15)], seeded_faker()
+        )
+    elif recipe_kind == "rename":
+        root.mkdir()
+        (root / "clean.txt").write_bytes(b"already clean\n")
+    else:  # rename_and_rewrite
+        materialize(
+            root, [FileRecipe("legacy.txt", "windows-1252", "crlf", sentences=15)], seeded_faker()
+        )
+    config = DocmendConfig()
+    plan = _plan_for(root, config)
+    _execute(plan, config, tmp_path, write=True, backup_root=tmp_path / "backups")
+    return root, tmp_path / "manifest.jsonl"
+
+
+def _interrupted_restore(
+    tmp_path: Path,
+    apply_manifest: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    patch_name: str,
+    after: bool,
+) -> Path:
+    """Run a write restore with a kill injected around `patch_name` in the
+    restore module; returns the interrupted restore manifest path."""
+    import docmend.restore as restore_module
+
+    real = getattr(restore_module, patch_name)
+
+    def dying(*args: object, **kwargs: object) -> None:
+        if after:
+            real(*args, **kwargs)
+        raise _Kill(f"injected kill {'after' if after else 'before'} {patch_name}")
+
+    monkeypatch.setattr(restore_module, patch_name, dying)
+    restore_out = tmp_path / "restore-manifest.jsonl"
+    with pytest.raises(_Kill):
+        run_restore(
+            read_manifest_chain([apply_manifest]),
+            run_id=RESTORE_RUN_ID,
+            write=True,
+            only_ids=None,
+            manifest_out=restore_out,
+        )
+    monkeypatch.setattr(restore_module, patch_name, real)
+    return restore_out
+
+
+RERUN_ID = "run_20260706T030000Z_0000b1"
+
+
+def _rerun(apply_manifest: Path, restore_manifest: Path, out: Path) -> list[RestoreOutcome]:
+    return run_restore(
+        read_manifest_chain([apply_manifest, restore_manifest]),
+        run_id=RERUN_ID,
+        write=True,
+        only_ids=None,
+        manifest_out=out,
+    )
+
+
+class TestInterruptedRestoreConvergence:
+    def test_rewrite_killed_before_publish__rerun_restores(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root, apply_manifest = _applied_chain(tmp_path, "rewrite")
+        before_restore = _hash_tree(root)
+        restore_manifest = _interrupted_restore(
+            tmp_path, apply_manifest, monkeypatch, patch_name="publish_staged", after=False
+        )
+        assert _hash_tree(root) == before_restore  # kill was pre-mutation
+        [dangling] = read_records(restore_manifest)
+        assert dangling.result == "intent"
+
+        outcomes = _rerun(apply_manifest, restore_manifest, tmp_path / "rerun-manifest.jsonl")
+
+        assert [o.status for o in outcomes] == ["restored"]
+        record = read_records(apply_manifest)[1]
+        assert _sha((root / "legacy.md").read_bytes()) == record.before_sha256
+
+    def test_rewrite_killed_after_publish__rerun_adopts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root, apply_manifest = _applied_chain(tmp_path, "rewrite")
+        restore_manifest = _interrupted_restore(
+            tmp_path, apply_manifest, monkeypatch, patch_name="publish_staged", after=True
+        )
+        record = read_records(apply_manifest)[1]
+        assert _sha((root / "legacy.md").read_bytes()) == record.before_sha256  # mutated
+
+        outcomes = _rerun(apply_manifest, restore_manifest, tmp_path / "rerun-manifest.jsonl")
+
+        assert [o.status for o in outcomes] == ["restored"]
+        # Adoption: the rerun appended ONLY the closure terminal, no re-mutation.
+        rerun_records = read_records(tmp_path / "rerun-manifest.jsonl")
+        assert [r.result for r in rerun_records] == ["applied"]
+
+    def test_rename_killed_mid_link_unlink__rerun_finishes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The both-names lossless intermediate: kill between link and unlink."""
+        import docmend.restore as restore_module
+
+        root, apply_manifest = _applied_chain(tmp_path, "rename")
+
+        def link_then_die(source: Path, target: Path) -> None:
+            restore_module.link_no_clobber(source, target)
+            raise _Kill("injected kill between link and unlink")
+
+        monkeypatch.setattr(restore_module, "rename_no_clobber", link_then_die)
+        restore_out = tmp_path / "restore-manifest.jsonl"
+        with pytest.raises(_Kill):
+            run_restore(
+                read_manifest_chain([apply_manifest]),
+                run_id=RESTORE_RUN_ID,
+                write=True,
+                only_ids=None,
+                manifest_out=restore_out,
+            )
+        monkeypatch.undo()
+        assert (root / "clean.md").exists() and (root / "clean.txt").exists()  # both names
+
+        outcomes = _rerun(apply_manifest, restore_out, tmp_path / "rerun-manifest.jsonl")
+
+        assert [o.status for o in outcomes] == ["restored"]
+        assert not (root / "clean.md").exists()
+        assert (root / "clean.txt").read_bytes() == b"already clean\n"
+
+    def test_rnr_killed_after_reinstate__rerun_finishes_cleanup(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root, apply_manifest = _applied_chain(tmp_path, "rename_and_rewrite")
+        restore_manifest = _interrupted_restore(
+            tmp_path, apply_manifest, monkeypatch, patch_name="publish_staged", after=True
+        )
+        # Reinstatement landed; the applied target still present.
+        assert (root / "legacy.txt").exists() and (root / "legacy.md").exists()
+
+        outcomes = _rerun(apply_manifest, restore_manifest, tmp_path / "rerun-manifest.jsonl")
+
+        assert [o.status for o in outcomes] == ["restored"]
+        assert not (root / "legacy.md").exists()
+        record = read_records(apply_manifest)[1]
+        assert _sha((root / "legacy.txt").read_bytes()) == record.before_sha256
+
+    def test_identity_probe__reinstated_original_replaced__rerun_refuses(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CR-005 restore identity probe: after the kill, the reinstated
+        original is replaced by a NEW inode with identical bytes — the rerun
+        must refuse (ERR-002) and leave the applied target untouched."""
+        root, apply_manifest = _applied_chain(tmp_path, "rename_and_rewrite")
+        restore_manifest = _interrupted_restore(
+            tmp_path, apply_manifest, monkeypatch, patch_name="publish_staged", after=True
+        )
+        original = root / "legacy.txt"
+        same_bytes = original.read_bytes()
+        original.unlink()
+        original.write_bytes(same_bytes)  # identical bytes, different inode
+
+        outcomes = _rerun(apply_manifest, restore_manifest, tmp_path / "rerun-manifest.jsonl")
+
+        assert [o.status for o in outcomes] == ["failed"]
+        assert outcomes[0].detail is not None and "ERR-002" in outcomes[0].detail
+        assert (root / "legacy.md").exists()  # cleanup was refused, nothing destroyed
+
+
+class TestRestoreSelectorMiss:
+    def test_id_matching_nothing__stderr_finding_exit_1(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """2026-07-10 review medium theme: a typo'd/stale --id must surface as
+        a finding (exit 1), never a silent all-zero success."""
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "clean.txt").write_bytes(b"already clean\n")
+        plan_path = _make_plan_cli(corpus)
+        _apply_cli(plan_path)
+        manifest_path = _manifest_path(tmp_path)
+
+        result = runner.invoke(
+            app,
+            [
+                "restore",
+                "--manifest",
+                str(manifest_path),
+                "--write",
+                "--id",
+                "01980000-0000-7000-8000-00000000dead",
+            ],
+        )
+
+        assert result.exit_code == 1, result.output
+        assert "no manifest record matches" in result.output
+
+
+class TestReducerDrivenStates:
+    def test_dangling_apply_intent__skipped_finding(self, tmp_path: Path) -> None:
+        """Adjudicating APPLY intents is resume's job — restore surfaces the
+        dangling intent as a finding instead of guessing."""
+        root, apply_manifest = _applied_chain(tmp_path, "rewrite")
+        del root
+        # Truncate the terminal: the intent dangles.
+        lines = apply_manifest.read_text().splitlines()
+        apply_manifest.write_text("\n".join(lines[:-1]) + "\n")
+
+        outcomes = run_restore(
+            read_manifest_chain([apply_manifest]),
+            run_id=RESTORE_RUN_ID,
+            write=True,
+            only_ids=None,
+            manifest_out=tmp_path / "restore-manifest.jsonl",
+        )
+
+        assert [o.status for o in outcomes] == ["skipped"]
+        assert outcomes[0].detail is not None
+        assert "resume the apply run" in outcomes[0].detail
+
+    def test_fully_restored_chain__already_restored_skips(self, tmp_path: Path) -> None:
+        root, apply_manifest = _applied_chain(tmp_path, "rewrite")
+        del root
+        first_out = tmp_path / "restore-manifest.jsonl"
+        first = run_restore(
+            read_manifest_chain([apply_manifest]),
+            run_id=RESTORE_RUN_ID,
+            write=True,
+            only_ids=None,
+            manifest_out=first_out,
+        )
+        assert [o.status for o in first] == ["restored"]
+
+        rerun = run_restore(
+            read_manifest_chain([apply_manifest, first_out]),
+            run_id=RERUN_ID,
+            write=True,
+            only_ids=None,
+            manifest_out=tmp_path / "rerun-manifest.jsonl",
+        )
+
+        assert [(o.status, o.detail) for o in rerun] == [("skipped", "already-restored")]
+        assert not (tmp_path / "rerun-manifest.jsonl").exists()  # nothing recorded
+
+    def test_staging_failure__failed_record_without_intent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import docmend.restore as restore_module
+
+        root, apply_manifest = _applied_chain(tmp_path, "rewrite")
+        del root
+
+        def broken_stage(*args: object, **kwargs: object) -> object:
+            raise WriteError("simulated staging failure")
+
+        from docmend.writer.atomic import WriteError
+
+        monkeypatch.setattr(restore_module, "stage_bytes", broken_stage)
+        restore_out = tmp_path / "restore-manifest.jsonl"
+        outcomes = run_restore(
+            read_manifest_chain([apply_manifest]),
+            run_id=RESTORE_RUN_ID,
+            write=True,
+            only_ids=None,
+            manifest_out=restore_out,
+        )
+
+        assert [o.status for o in outcomes] == ["failed"]
+        [record] = read_records(restore_out)
+        assert record.result == "failed"
+        assert record.source_identity is None  # pre-mutation failure: no intent
+
+
+class TestRestoreContainmentRefusal:
+    def test_out_of_root_record__exit_3_before_any_mutation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DMR-03 closure at the CLI: a crafted manifest whose recorded paths
+        escape its own source_root is a SAFETY REFUSAL (exit 3, adr-0012) —
+        nothing is read or mutated past validation."""
+        monkeypatch.chdir(tmp_path)
+        victim = tmp_path / "outside-victim.txt"
+        victim.write_bytes(b"must never be touched\n")
+        from tests.helpers.manifest2 import header_doc, record_doc, write_set
+
+        crafted = write_set(
+            tmp_path / "crafted.jsonl",
+            header_doc(source_root=str(tmp_path / "corpus")),
+            record_doc(1, original_path=str(victim), target_path=str(victim)),
+        )
+
+        result = runner.invoke(app, ["restore", "--manifest", str(crafted), "--write"])
+
+        assert result.exit_code == 3, result.output
+        assert "manifest-containment" in result.output
+        assert victim.read_bytes() == b"must never be touched\n"
+
+
+class TestRestoreInputEdges:
+    def test_backup_deleted_before_restore__f5_refuses_at_validation(self, tmp_path: Path) -> None:
+        """A deleted backup object is caught by the F5 trust boundary AT CHAIN
+        VALIDATION — before run_restore reads anything (Plan B review CR-002;
+        stricter than the old per-record ERR-004 arm, which now covers only
+        content corruption of a present, regular backup file)."""
+        from docmend.writer.manifest import ManifestContainmentError
+
+        root, apply_manifest = _applied_chain(tmp_path, "rewrite")
+        del root
+        # Read without object checks to locate the backup, then delete it.
+        loaded = read_manifest_set(apply_manifest, check_backup_objects=False)
+        record = next(r for r in loaded.records if r.result == "applied")
+        assert record.backup_path is not None
+        Path(record.backup_path).unlink()
+
+        with pytest.raises(ManifestContainmentError, match="missing"):
+            read_manifest_chain([apply_manifest])
+
+    def test_backup_corrupted_before_restore__failed_err004(self, tmp_path: Path) -> None:
+        """Content corruption of a present regular backup file passes F5's
+        structural checks and fails the per-record hash verification."""
+        root, apply_manifest = _applied_chain(tmp_path, "rewrite")
+        del root
+        loaded = read_manifest_set(apply_manifest, check_backup_objects=False)
+        record = next(r for r in loaded.records if r.result == "applied")
+        assert record.backup_path is not None
+        Path(record.backup_path).write_bytes(b"corrupted backup bytes\n")
+
+        outcomes = run_restore(
+            read_manifest_chain([apply_manifest]),
+            run_id=RESTORE_RUN_ID,
+            write=True,
+            only_ids=None,
+            manifest_out=tmp_path / "restore-manifest.jsonl",
+        )
+
+        assert [o.status for o in outcomes] == ["failed"]
+        assert outcomes[0].detail is not None and "ERR-004" in outcomes[0].detail
+
+    def test_applied_file_deleted__unreadable_skip(self, tmp_path: Path) -> None:
+        root, apply_manifest = _applied_chain(tmp_path, "rewrite")
+        (root / "legacy.md").unlink()
+
+        outcomes = run_restore(
+            read_manifest_chain([apply_manifest]),
+            run_id=RESTORE_RUN_ID,
+            write=True,
+            only_ids=None,
+            manifest_out=tmp_path / "restore-manifest.jsonl",
+        )
+
+        assert [(o.status, o.detail) for o in outcomes] == [
+            ("skipped", "unreadable: applied file missing or unreadable")
+        ]
+
+    def test_failed_apply_state__nothing_to_undo(self, tmp_path: Path) -> None:
+        from tests.helpers.manifest2 import chain_of, record_doc
+
+        from docmend.writer.manifest import ManifestRecord as MR
+
+        intent = MR.model_validate(record_doc(1, result="intent"))
+        failed = MR.model_validate(
+            record_doc(1, seq=2, result="failed", after_sha256=None)
+            | {"error": {"class": "ERR-003", "message": "boom"}}
+        )
+        outcomes = run_restore(
+            chain_of([intent, failed]),
+            run_id=RESTORE_RUN_ID,
+            write=False,
+            only_ids=None,
+            manifest_out=tmp_path / "restore-manifest.jsonl",
+        )
+        assert outcomes == []

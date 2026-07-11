@@ -25,7 +25,7 @@ from docmend.writer import apply as apply_module
 from docmend.writer.apply import execute_plan
 from docmend.writer.backup import BackupError
 from docmend.writer.gate import ApplyOptions
-from docmend.writer.manifest import read_manifest_set
+from docmend.writer.manifest import read_manifest_chain, read_manifest_set
 
 RUN_ID = "run_20260706T000000Z_00008f"
 PLAN_RUN_ID = "run_20260706T000000Z_00008e"
@@ -728,7 +728,7 @@ def test_dmr01_colliding_backup_keys__both_preserved_and_restorable(tmp_path: Pa
     assert stored == {md_original, txt_original, b"alpha\n"}
 
     outcomes = run_restore(
-        read_manifest_set(manifest_path),
+        read_manifest_chain([manifest_path]),
         run_id="run_20260710T000001Z_00d0a2",
         write=True,
         only_ids=None,

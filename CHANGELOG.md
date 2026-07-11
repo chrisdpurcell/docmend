@@ -2,6 +2,17 @@
 
 All notable changes to docmend are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Safety-core remediation, plan A of four (spec rev 0.26; 2026-07-10 comprehensive review findings DMR-01/DMR-02; ADRs 0019–0021). Targets the eventual v2.0.0.
+
+### Fixed
+
+- One plan can no longer overwrite its own recovery backups (DMR-01): planning reserves every action's effective output path — in-place and rename alike — so colliding actions skip at plan time, and backups are stored under write-once keys namespaced by run, action, and role, so even a crafted plan cannot make two byte streams share a key.
+- docmend's own artifacts can no longer destroy corpus inputs (DMR-02): every `scan --report`, `plan --out`, and `apply --report` destination passes a source-aware guard before the pipeline runs — both the directory entry publication replaces and its resolved referent must be outside the corpus, in-corpus destinations are refused (exit 3) except destinations under the canonical `.docmend/` root that the effective excludes still cover, and destinations aliasing an invocation's input artifacts are refused outright.
+- Staging names are randomized (`O_EXCL`, collision-retried) for both corpus writes and JSON artifacts: kill residue no longer blocks retries, the predictable `<name>.tmp` truncation target is gone, artifact staging cleans up on every failure class including serialization errors, and artifact file modes are unchanged (umask-derived, as before).
+- The apply report now finalizes while the run lock is held, so a run's artifacts and corpus effects commit under one coordination boundary.
+
 ## [1.0.2] - 2026-07-07
 
 Safety hardening from the 2026-07-07 cross-repo alignment review, ahead of broad real-library mutation. The repository boundary with the workstation-side tooling is recorded in `docs/adr/adr-0018-doc-processing-repository-boundary.md` (accepted 2026-07-07).

@@ -5,19 +5,26 @@ prevent deterministic ordering. Once the graph is orderable, missing or
 inconsistent certification evidence is returned as a verify finding.
 """
 
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
+from types import MappingProxyType
 from typing import Literal
 
 from docmend import artifacts
 from docmend.artifacts import ArtifactError
 from docmend.lineage import PriorAttempt
 from docmend.plan import Plan
-from docmend.report import Report
+from docmend.report import ApplyOutcome, Report
 from docmend.verify import VerifyFinding
 from docmend.verify_report import VerificationInput
-from docmend.writer.manifest import ManifestInspection, ManifestSet, inspect_manifest_chain
+from docmend.writer.manifest import (
+    ManifestInspection,
+    ManifestSet,
+    inspect_manifest_chain,
+    reduce_lifecycle,
+)
 
 
 @dataclass(frozen=True)
@@ -38,6 +45,27 @@ class VerificationEvidence:
     attempts: tuple[AttemptEvidence, ...]
     inputs: tuple[VerificationInput, ...]
     findings: tuple[VerifyFinding, ...]
+
+
+type CertifiedOutcome = Literal["applied", "failed", "skipped", "not-attempted"]
+type ReportObservation = Literal["applied", "failed", "skipped", "not-attempted", "already-applied"]
+
+
+@dataclass(frozen=True)
+class CoverageResult:
+    outcomes: Mapping[str, CertifiedOutcome]
+    findings: tuple[VerifyFinding, ...]
+
+
+_ALLOWED_REPORT_TRANSITIONS = frozenset(
+    {
+        ("not-attempted", "skipped"),
+        ("not-attempted", "failed"),
+        ("not-attempted", "applied"),
+        ("failed", "applied"),
+        ("applied", "already-applied"),
+    }
+)
 
 
 def _resolve_predecessor(
@@ -297,5 +325,180 @@ def load_verification_evidence(
         manifest_inspection=inspection,
         attempts=ordered_attempts,
         inputs=tuple(inputs),
+        findings=tuple(findings),
+    )
+
+
+def _report_observation(outcome: ApplyOutcome) -> ReportObservation | None:
+    if outcome.status == "would_apply":
+        return None
+    if outcome.status == "skipped" and outcome.skip_reason == "already-applied":
+        return "already-applied"
+    if outcome.status == "applied":
+        return "applied"
+    if outcome.status == "failed":
+        return "failed"
+    if outcome.status == "not-attempted":
+        return "not-attempted"
+    return "skipped"
+
+
+def check_plan_coverage(evidence: VerificationEvidence) -> CoverageResult:
+    """Reduce ordered mutation and report evidence to one outcome per plan action."""
+    if evidence.plan is None or evidence.plan_sha256 is None:
+        raise ArtifactError("plan coverage requires a supplied plan artifact")
+
+    plan_counts = Counter(action.action_id for action in evidence.plan.actions)
+    plan_actions = set(plan_counts)
+    findings: list[VerifyFinding] = [
+        VerifyFinding(action_id, "coverage", "plan contains duplicate action IDs")
+        for action_id, count in sorted(plan_counts.items())
+        if count > 1
+    ]
+
+    lifecycle = reduce_lifecycle(evidence.manifest_inspection.chain)
+    evidence_actions = set(lifecycle)
+    outcomes: dict[str, CertifiedOutcome] = {}
+    nonterminal_actions: set[str] = set()
+    for action_id, state in sorted(lifecycle.items()):
+        if state.state == "applied":
+            outcomes[action_id] = "applied"
+        elif state.state == "failed":
+            outcomes[action_id] = "failed"
+        else:
+            nonterminal_actions.add(action_id)
+            findings.append(
+                VerifyFinding(
+                    action_id,
+                    "coverage",
+                    f"manifest lifecycle is {state.state}; plan is not fully applied",
+                )
+            )
+
+    manifest_applied = {
+        record.action_id
+        for manifest_set in evidence.manifest_inspection.chain.sets
+        if manifest_set.header.kind == "apply"
+        for record in manifest_set.records
+        if record.result == "applied" and record.undoes_action_id is None
+    }
+    report_states: dict[str, CertifiedOutcome] = {}
+    preview_actions: set[str] = set()
+    for attempt in evidence.attempts:
+        if attempt.kind == "restore" or attempt.report is None:
+            continue
+        counts = Counter(outcome.action_id for outcome in attempt.report.outcomes)
+        for action_id, count in sorted(counts.items()):
+            if count > 1:
+                findings.append(
+                    VerifyFinding(
+                        action_id,
+                        "coverage",
+                        f"attempt {attempt.run_id} reports the plan action more than once",
+                    )
+                )
+        seen_in_report: set[str] = set()
+        for outcome in attempt.report.outcomes:
+            action_id = outcome.action_id
+            evidence_actions.add(action_id)
+            if action_id in seen_in_report:
+                continue
+            seen_in_report.add(action_id)
+            observation = _report_observation(outcome)
+            if observation is None:
+                preview_actions.add(action_id)
+                continue
+            if observation in ("applied", "already-applied") and action_id not in manifest_applied:
+                findings.append(
+                    VerifyFinding(
+                        action_id,
+                        "coverage",
+                        f"report claims {observation} without manifest-applied authority",
+                    )
+                )
+                continue
+            previous = report_states.get(action_id)
+            if previous is None:
+                report_states[action_id] = (
+                    "applied" if observation == "already-applied" else observation
+                )
+                continue
+            transition = (previous, observation)
+            if transition not in _ALLOWED_REPORT_TRANSITIONS:
+                findings.append(
+                    VerifyFinding(
+                        action_id,
+                        "coverage",
+                        f"illegal report transition {previous} -> {observation}",
+                    )
+                )
+                continue
+            if observation != "already-applied":
+                report_states[action_id] = observation
+
+    for action_id, report_state in sorted(report_states.items()):
+        mutation_state = lifecycle.get(action_id)
+        if mutation_state is None:
+            outcomes[action_id] = report_state
+            continue
+        expected: CertifiedOutcome | None
+        if mutation_state.state == "applied":
+            expected = "applied"
+        elif mutation_state.state == "failed":
+            expected = "failed"
+        elif mutation_state.state in ("pending-restore", "restored", "restore-failed"):
+            expected = "applied"
+        else:
+            expected = None
+        if expected is not None and report_state != expected:
+            findings.append(
+                VerifyFinding(
+                    action_id,
+                    "coverage",
+                    f"report final state {report_state} contradicts manifest lifecycle "
+                    f"{mutation_state.state}",
+                )
+            )
+        elif expected is None:
+            findings.append(
+                VerifyFinding(
+                    action_id,
+                    "coverage",
+                    f"report terminal {report_state} cannot close manifest lifecycle "
+                    f"{mutation_state.state}",
+                )
+            )
+
+    preview_only = {
+        action_id
+        for action_id in preview_actions
+        if action_id not in outcomes and action_id not in nonterminal_actions
+    }
+    for action_id in sorted(preview_only):
+        findings.append(
+            VerifyFinding(
+                action_id,
+                "coverage-uncertified",
+                "dry-run evidence does not certify a terminal plan outcome",
+            )
+        )
+
+    ordered_plan_actions = dict.fromkeys(action.action_id for action in evidence.plan.actions)
+    for action_id in ordered_plan_actions:
+        if (
+            action_id not in outcomes
+            and action_id not in preview_only
+            and action_id not in nonterminal_actions
+        ):
+            findings.append(
+                VerifyFinding(action_id, "coverage", "plan action has no terminal outcome")
+            )
+    for action_id in sorted(evidence_actions - plan_actions):
+        findings.append(
+            VerifyFinding(action_id, "coverage", "artifact evidence names no plan action")
+        )
+
+    return CoverageResult(
+        outcomes=MappingProxyType(dict(outcomes)),
         findings=tuple(findings),
     )

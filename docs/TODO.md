@@ -20,7 +20,7 @@ Instructions for AI agents:
 - [ ] Remediate the confirmed rollout blockers in the [2026-07-10 comprehensive review synthesis](codex-reviews/2026-07-10-2034-comprehensive-review-synthesis.md) per the approved [safety-core design](superpowers/specs/2026-07-10-safety-core-remediation-design.md) (spec rev 0.26/0.27, ADRs 0019-0021).
 
   - [x] Plan A — foundations (DMR-01/02): output ledger, write-once backup keys, artifact destination guard, randomized staging, in-lock report finalization. Implemented, final-reviewed, pushed (`b9d5195..6ae7547`).
-  - [ ] Plan B — manifest 2.0: header/chain/attempt lineage, journal-every-mutation with durable identities, ManifestSet validation, one lifecycle reducer + adjudication, resume/restore rewrite (DMR-03/04). Write the plan next session; also mechanically updates the stale scale test's manifest-shape assertions.
+  - [ ] Plan B — manifest 2.0: header/chain/attempt lineage, journal-every-mutation with durable identities, ManifestSet validation, one lifecycle reducer + adjudication, resume/restore rewrite (DMR-03/04). Plan written: [safety-core-b-manifest-2](superpowers/plans/2026-07-10-safety-core-b-manifest-2.md) — awaiting the owner's plan-review round before implementation (Plan A precedent); also mechanically updates the stale scale test's manifest-shape assertions (Task 14).
   - [ ] Plan C — commit boundary: descriptor identity binding, action-time overwrite invariant, WriteSafetyContext + preview/write split (DMR-06/07).
   - [ ] Plan D — verify redesign: false-clean closure set, `verify --plan`, verify-report artifact, coupled-medium exits (DMR-05).
   - [ ] After A-D: sub-projects 2-4 (scale/DMR-08, release/DMR-09, observability + docs), then the v2.0.0 `dev` to `main` release PR.

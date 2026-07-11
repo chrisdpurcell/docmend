@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.14 (`uv`-managed), Typer CLI, pydantic v2 strict models, pathspec, pytest.
 
-Revision note: revised per `docs/codex-reviews/2026-07-10-safety-core-a-foundations-plan-review.md` round 1 — F1 (every pasted test now uses valid `run_[0-9a-f]{6}` IDs, the live modules' module-level `runner`/`make_corpus`/`_make_plan` conventions, typed signatures, and deterministic spy setup), F2 (the carve-out is licensed per actual destination against the effective excludes — the probe is gone), F3 (the guard checks both the lexical directory entry and the resolved referent, with mirror symlink tests), F4 (JSON staging cleans up on every failure class via `finally`, keeps `mkstemp`'s 0600 mode, no umask mutation), F5 (writer staging retries `EEXIST` as a name collision with a deterministic collision test).
+Revision note: revised per `docs/codex-reviews/2026-07-10-safety-core-a-foundations-plan-review.md` round 1 — F1 (every pasted test now uses valid `run_[0-9a-f]{6}` IDs, the live modules' module-level `runner`/`make_corpus`/`_make_plan` conventions, typed signatures, and deterministic spy setup), F2 (the carve-out is licensed per actual destination against the effective excludes — the probe is gone), F3 (the guard checks both the lexical directory entry and the resolved referent, with mirror symlink tests), F4 (JSON staging cleans up on every failure class via `finally`, no umask mutation), F5 (writer staging retries `EEXIST` as a name collision with a deterministic collision test). Revised again per round 2 — F6 (owner decision recorded): the lexical+resolved containment rule is now stated in the approved contract (`adr-0021` amendment + SPEC-VHHB rev 0.27, IR-007), and the mode-0600 policy is dropped — artifact modes stay umask-derived via a kernel-masked `0o666` create mode (no `os.umask()` calls), with permission policy deferred to sub-project 4.
 
 ## Global Constraints
 
@@ -510,7 +510,7 @@ git commit -m "fix(atomic): randomized EEXIST-retried staging so kill residue ne
 **Interfaces:**
 
 - Consumes: nothing new.
-- Produces: unchanged `write_json_artifact(document, path)` signature; staging becomes `mkstemp`-random in the destination directory (closing DMR-02's predictable-truncation vector), cleanup covers **every** failure class including serialization errors, and artifacts adopt `mkstemp`'s 0600 mode (single-user tool; aligned with rev 0.26's metadata-permissions direction — the old umask-derived mode was an accident of `open()`, not a contract).
+- Produces: unchanged `write_json_artifact(document, path)` signature; staging becomes randomized `O_EXCL` in the destination directory (closing DMR-02's predictable-truncation vector), cleanup covers **every** failure class including serialization errors, and artifact modes stay **umask-derived exactly as today** — the temp is created with mode `0o666` which the kernel masks at `os.open`, so no `os.umask()` call and no policy change (permission policy is deferred to sub-project 4; plan-review F6).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -530,6 +530,10 @@ def test_artifact_staging__randomized_and_retry_safe(tmp_path: Path) -> None:
     assert legacy_residue.read_bytes() == b"victim bytes that must survive"
     leftovers = sorted(p.name for p in tmp_path.iterdir())
     assert leftovers == ["out.json", "out.json.tmp"]  # staging temp cleaned up
+    # F6: modes stay umask-derived — no artifact-mode policy is decided here.
+    umask = os.umask(0)
+    os.umask(umask)
+    assert (dest.stat().st_mode & 0o777) == (0o666 & ~umask)
 
 
 def test_artifact_staging__serialization_failure_leaves_no_residue(tmp_path: Path) -> None:
@@ -542,7 +546,7 @@ def test_artifact_staging__serialization_failure_leaves_no_residue(tmp_path: Pat
     assert list(tmp_path.iterdir()) == []
 ```
 
-(Add `import json`, `import pytest`, and `from docmend import artifacts` to the module's imports if not already present.)
+(Add `import json`, `import os`, `import pytest`, and `from docmend import artifacts` to the module's imports if not already present.)
 
 - [ ] **Step 2: Run them to verify they fail**
 
@@ -550,21 +554,33 @@ Run: `uv run pytest tests/test_inventory_artifact.py -k "staging" -v` Expected: 
 
 - [ ] **Step 3: Rewrite `write_json_artifact`**
 
-In `src/docmend/artifacts.py`, add `import tempfile` to the imports and replace the function:
+In `src/docmend/artifacts.py`, add `import secrets` to the imports and replace the function:
 
 ```python
 def write_json_artifact(document: dict[str, object], path: Path) -> None:
     """Atomically write one JSON-document artifact (random O_EXCL temp + fsync +
     os.replace). Staging is randomized per attempt (rev 0.26, adr-0021): the
     old fixed '<name>.tmp' sibling was a predictable truncation target and a
-    permanent retry blocker after a hard kill. The temp is unlinked on EVERY
-    unpublished exit — json.dump's TypeError/ValueError included, not only
-    OSError. Artifacts keep mkstemp's 0600 mode: this is a single-user tool
-    and the old umask-derived mode was an accident of open(), not a contract.
+    permanent retry blocker after a hard kill; EEXIST on a candidate is a name
+    collision to retry, never an environmental failure. The temp is unlinked
+    on EVERY unpublished exit — json.dump's TypeError/ValueError included, not
+    only OSError. The 0o666 create mode is masked by the process umask AT
+    os.open (kernel-side), so artifact modes stay exactly what plain open()
+    produced before — permission POLICY is deliberately not decided here
+    (deferred to the observability sub-project; plan-review F6/adr-0021
+    amendment).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    tmp = Path(tmp_name)
+    for _ in range(8):
+        tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        except FileExistsError:
+            continue
+        break
+    else:
+        msg = f"{path}: could not allocate a staging name in 8 attempts"
+        raise OSError(msg)
     published = False
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -1384,12 +1400,8 @@ Safety-core remediation, plan A of four (spec rev 0.26; 2026-07-10 comprehensive
 
 - One plan can no longer overwrite its own recovery backups (DMR-01): planning reserves every action's effective output path — in-place and rename alike — so colliding actions skip at plan time, and backups are stored under write-once keys namespaced by run, action, and role, so even a crafted plan cannot make two byte streams share a key.
 - docmend's own artifacts can no longer destroy corpus inputs (DMR-02): every `scan --report`, `plan --out`, and `apply --report` destination passes a source-aware guard before the pipeline runs — both the directory entry publication replaces and its resolved referent must be outside the corpus, in-corpus destinations are refused (exit 3) except destinations under the canonical `.docmend/` root that the effective excludes still cover, and destinations aliasing an invocation's input artifacts are refused outright.
-- Staging names are randomized (`O_EXCL`, collision-retried) for both corpus writes and JSON artifacts: kill residue no longer blocks retries, the predictable `<name>.tmp` truncation target is gone, and artifact staging cleans up on every failure class including serialization errors.
+- Staging names are randomized (`O_EXCL`, collision-retried) for both corpus writes and JSON artifacts: kill residue no longer blocks retries, the predictable `<name>.tmp` truncation target is gone, artifact staging cleans up on every failure class including serialization errors, and artifact file modes are unchanged (umask-derived, as before).
 - The apply report now finalizes while the run lock is held, so a run's artifacts and corpus effects commit under one coordination boundary.
-
-### Changed
-
-- Run-artifact JSON files are now created with mode 0600 (previously umask-derived): docmend is a single-user tool and the tighter mode aligns with rev 0.26's metadata-permissions direction.
 ```
 
 - [ ] **Step 3: Verify markdown gates**
@@ -1410,4 +1422,4 @@ git push origin dev
 
 - **Spec coverage (Plan A scope):** FR-006 backup keys + ledger → Tasks 1/2/5; IR-007 guard + staging → Tasks 3/4/6/7/8/9; §18.5 exit-3 classification → Tasks 7–9. FR-011's action-time invariant is Plan C; DR-003/DR-004 field changes are Plan B; the scan/plan `timeout`-skip exit-1 medium is Plan D scope.
 - **Type consistency:** `BackupRole` defined Task 1, consumed Task 2; `guard_artifact_destination` signature defined Task 6 (with `artifact_root`/`exclude` — no probe, no `allowed_root`), consumed via `_guard_artifact_paths` (Task 7) by Tasks 8–9; `_action_seq` defined and consumed within Task 2; `Operation` imported in Task 2's test from `docmend.transform.dispatch`.
-- **Plan-review round 1 dispositions:** F1 closed (hex run IDs `00d0a1`/`00d0a2`/`0a1ed9`; live `runner`/`make_corpus`/`_make_plan` conventions; typed spies installed after plan creation; explicit keyword calls, no kwargs spreading); F2 closed (per-destination exclude match; negation tests at guard and CLI levels); F3 closed (lexical + resolved candidates; mirror symlink tests, non-mutating refusal asserted); F4 closed (`finally`-based cleanup, serialization-failure test, 0600 kept, no umask mutation); F5 closed (bounded EEXIST retry, deterministic two-token collision test).
+- **Plan-review round 1 dispositions:** F1 closed (hex run IDs `00d0a1`/`00d0a2`/`0a1ed9`; live `runner`/`make_corpus`/`_make_plan` conventions; typed spies installed after plan creation; explicit keyword calls, no kwargs spreading); F2 closed (per-destination exclude match; negation tests at guard and CLI levels); F3 closed (lexical + resolved candidates; mirror symlink tests, non-mutating refusal asserted); F4 closed (`finally`-based cleanup, serialization-failure test, umask-derived modes preserved via kernel-masked `0o666`, no umask mutation); F5 closed (bounded EEXIST retry, deterministic two-token collision test); F6 closed (lexical+resolved containment recorded in `adr-0021` + spec rev 0.27 with owner approval; 0600 policy removed, permissions deferred to sub-project 4 as the approved design already stated).

@@ -8,11 +8,13 @@
 
 **Revision note (round 2):** revised per plan-review round 2. CR-001: the action-time window test's migrated form acquires the safety context while the target is absent and creates it inside the context (the round-1 ordering would have refused at the gate once Task 9 migrates the tests). CR-002: the attestation binds digests of the ACTUAL `Plan` and `DocmendConfig` the gate evaluated (recomputed at `confirm_apply` from the presented objects), plus `report_path` with a `confirm_report` seam; `ManifestSet.records`/`ManifestChain.sets` become tuples so `safety.chain` is immutable. CR-003: check-then-`atomic_write_bytes` re-opened the stage-window race — a new `guarded_replace` primitive stages FIRST, then checks staged inode + target identity + containment immediately before publish; used by `_undo_publish`, restore's clobbered-target reinstatement, and adjudication. CR-004: when the SOURCE name loses the bound original after a link, the published link is its possibly-last name and is never removed (lossless intermediate, dangling intent) — the round-1 rollback destroyed it; `_rollback_link` distinguishes identity-lost (proven, nothing ours remains) from containment-lost-with-identity-intact (unproven); `abort_staged` is now identity-checked so a raced staged temp is never blind-unlinked. CR-NEW-001: new Task 7 routes `finish_remaining`'s mutations (both resume and restore invoke them) through the same boundary — its docstring already named Plan C as the closer of that window. CR-NEW-002: the resume composition test premise is corrected (an external-interference verdict leaves the intent dangling; no closure terminal); the restore retry premise was false against a REAL, previously unshipped defect found while verifying it — the chain validator wholesale-rejected the producer's own pre-mutation standalone `failed` shape, making any run with an ordinary staging/backup failure unresumable — fixed, tested, and pushed as `8c2d5f4` with the design's lifecycle sentence disambiguated, so the test premise now stands. CR-NEW-003: the new restore CLI flags are withdrawn; restore instead loads the project's `docmend.toml` via the existing default discovery (no new public interface; flagged below for owner sign-off). This revision also restores the full inline content of every task — the first round-2 commit (`f501c26`) had compressed unchanged tasks to references against the superseded round-1 text, leaving the document non-self-contained.
 
-**Architecture:** One new module `src/docmend/writer/commit.py` owns the commit boundary (adr-0020): `bind_file` reads an object's bytes exactly once through an `O_RDONLY | O_NOFOLLOW | O_NONBLOCK` descriptor and captures its identity; `check_bound` is the at-commit half — `lstat` (never following symlinks), exact `(st_dev, st_ino)` compare, and a full-path containment re-resolve — called immediately before each pathname mutation step; `check_destination` is its absent-name counterpart; `guarded_replace` is the stage-first replacement primitive. The same module owns `WriteSafetyContext`, the sealed capability (adr-0004 amendment) whose only factories acquire the run lock, evaluate the apply gate / perform the restore chain preflight, run the artifact destination guard, bind an immutable attestation of exactly what they authorized (model digests included), and stay held through manifest close and report publication. `writer/apply.py`, `restore.py`, and `writer/adjudicate.py` consume both halves; `cli.py` rewires to the split entrypoints. Plan B already persists the identities in intent records — this plan hardens their *capture* (descriptor-bound, was `os.stat` by design) and adds the *at-commit re-checks*.
+**Revision note (round 3):** revised per plan-review round 3, all findings verified. CR-002: `ManifestHeader`/`ManifestRecord` become `frozen=True` pydantic models (the writer already stamps via `model_copy`, so producers are unaffected) with an inner-field-mutation regression, and the tuple migration enumerates ALL construction sites (`manifest.py:494/690/703`, `tests/helpers/manifest2.py`, `tests/test_restore.py:66`). CR-003: `guarded_replace` gains a `survivor` parameter verified INSIDE the primitive, immediately before publish — the earlier survivor checks ran before staging, leaving the survivor swappable during it. CR-004: `_rollback_link`/`_undo_publish` check containment FIRST (an identity observation through an interposed parent proves nothing about the real location), `_observe_name` returns a four-state observation so permission/IO errors are "unobservable" (unproven) rather than collapsing into absence, and `abort_staged` gains an optional containment root. CR-006: the round-2 default-discovery claim was inverted a second way — list flags REPLACE the config set, so defaults can re-license `.docmend/**` an operator-replaced set had withdrawn; the fix persists the apply run's effective excludes in the manifest 2.0 header (pre-release additive field) and the restore factory licenses against the RECORDED excludes, with a change-control step for the wire-model addition. CR-NEW-001: adjudication's `_observe` becomes descriptor-bound (identity and bytes from one object) and `_verified_unlink` verifies the required survivor before destroying anything. CR-NEW-004: `publish_staged`'s internal cleanup paths route through identity-checked removal (blind `tmp.unlink` could delete an interloper after a staged-name race). CR-NEW-005: the dry-run report publishes no-clobber (adr-0021: a dry run leaves prior artifacts untouched). CR-NEW-006: the sealed constructor gives `_attest` a `None` default so the sealing `TypeError` — not Python argument binding — is what rejects direct construction. Also fixed: the plan document itself now passes the repo's markdownlint (MD049 underscore emphasis) and Prettier.
+
+**Architecture:** One new module `src/docmend/writer/commit.py` owns the commit boundary (adr-0020): `bind_file` reads an object's bytes exactly once through an `O_RDONLY | O_NOFOLLOW | O_NONBLOCK` descriptor and captures its identity; `check_bound` is the at-commit half — `lstat` (never following symlinks), exact `(st_dev, st_ino)` compare, and a full-path containment re-resolve — called immediately before each pathname mutation step; `check_destination` is its absent-name counterpart; `guarded_replace` is the stage-first replacement primitive. The same module owns `WriteSafetyContext`, the sealed capability (adr-0004 amendment) whose only factories acquire the run lock, evaluate the apply gate / perform the restore chain preflight, run the artifact destination guard, bind an immutable attestation of exactly what they authorized (model digests included), and stay held through manifest close and report publication. `writer/apply.py`, `restore.py`, and `writer/adjudicate.py` consume both halves; `cli.py` rewires to the split entrypoints. Plan B already persists the identities in intent records — this plan hardens their _capture_ (descriptor-bound, was `os.stat` by design) and adds the _at-commit re-checks_.
 
 **Tech Stack:** Python 3.14 (PEP 758 in the codebase), pydantic v2 strict models, typer CLI, pytest + coverage, `os.open`/`os.fstat`/`os.lstat` POSIX identity primitives.
 
-**Design sources (binding):** `docs/adr/adr-0020-commit-boundary-object-identity.md`; `docs/superpowers/specs/2026-07-10-safety-core-remediation-design.md` §"Commit Boundary (DMR-06/07)" and §"Read/write entrypoint split (F8)"; spec rev 0.26 FR-003/FR-005/FR-011/§13.5. Change control is already landed (spec rev 0.26/0.27, adr-0004 amended, adr-0020 accepted) — no *behavioral* spec/ADR edits in this plan; §17.3 traceability maintenance (Appendix B obligation) is Task 12.
+**Design sources (binding):** `docs/adr/adr-0020-commit-boundary-object-identity.md`; `docs/superpowers/specs/2026-07-10-safety-core-remediation-design.md` §"Commit Boundary (DMR-06/07)" and §"Read/write entrypoint split (F8)"; spec rev 0.26 FR-003/FR-005/FR-011/§13.5. Change control is already landed (spec rev 0.26/0.27, adr-0004 amended, adr-0020 accepted) — no _behavioral_ spec/ADR edits in this plan; §17.3 traceability maintenance (Appendix B obligation) is Task 12.
 
 ## Global Constraints
 
@@ -24,7 +26,7 @@
 - The `lstat`-to-`rename` interval is the ACCEPTED residual window (adr-0020 stated limitation) — do not attempt Linux-only `renameat2` hardening.
 - Identity comparison is EXACT `(st_dev, st_ino)`; a device change refuses, never substitutes (docstring contract in `lineage.py`).
 - Manifest 2.0 invariants from Plan B are untouched: intent-before-mutation for every kind, terminal repeats immutable fields, staging precedes intent so `expected_published_identity` is knowable pre-mutation. Standalone pre-mutation `failed` records are chain-legal (`8c2d5f4`).
-- **Terminal-honesty rule (CR-004, binding for every task):** a `failed` terminal may be appended ONLY when the corpus is provably in its pre-action state (spec §10.4: Failed means the original is intact). When a mutation step has already landed and its rollback cannot be *proven* (identity-checked at every rollback touch), the intent stays DANGLING and the action reports `failed` (ERR-002) — resume/restore adjudication owns the intermediate, exactly what the adr-0019 table exists for.
+- **Terminal-honesty rule (CR-004, binding for every task):** a `failed` terminal may be appended ONLY when the corpus is provably in its pre-action state (spec §10.4: Failed means the original is intact). When a mutation step has already landed and its rollback cannot be _proven_ (identity-checked at every rollback touch), the intent stays DANGLING and the action reports `failed` (ERR-002) — resume/restore adjudication owns the intermediate, exactly what the adr-0019 table exists for.
 - **Last-copy rule (CR-004 round 2, binding):** no rollback or cleanup step may remove a name that holds the bound original when the original's OTHER name is not provably intact — a published hardlink can be the last surviving name of the validated object, and deleting it is data loss disguised as tidiness. When in doubt, keep the lossless intermediate and leave the intent dangling.
 - **Replacement writes stage first (CR-003 round 2, binding):** never check-then-`atomic_write_bytes` on a corpus name — the function stages internally and publishes later, re-opening the window. Use `guarded_replace` (stage → check staged inode + target identity + containment → publish).
 
@@ -36,12 +38,13 @@
 | `src/docmend/writer/atomic.py` (modify) | `abort_staged` becomes identity-checked (CR-004) |
 | `src/docmend/writer/apply.py` (modify) | Source/target binding, action-time overwrite invariant, per-step checks, boundary-checked rollback, hooks threading, `preview_plan`/`execute_plan` split via shared `_run_plan` |
 | `src/docmend/writer/adjudicate.py` (modify) | `finish_remaining` mutations routed through the boundary — containment, hooks, `guarded_replace` (CR-NEW-001) |
-| `src/docmend/writer/manifest.py` (modify) | `ManifestSet.records`/`ManifestChain.sets` become tuples — the validated chain is immutable (CR-002) |
+| `src/docmend/writer/manifest.py` (modify) | Deep immutability: `frozen=True` on `ManifestHeader`/`ManifestRecord` + tuple containers at every construction site (CR-002); header gains `effective_excludes` (CR-006) |
+| `src/docmend/schemas/manifest-header.schema.json` (modify) | Required `effective_excludes` array — pre-release 2.0 extension (CR-006) |
 | `src/docmend/restore.py` (modify) | Live-target binding, per-step inverse checks with survivor verification, dangling-intent policy for intermediates, `preview_restore`/`run_restore` split via shared `_run_restore` |
 | `src/docmend/report.py` (modify) | `ApplySkipReason` gains the two new reasons |
 | `src/docmend/writer/gate.py` (modify) | `_strategy_active` → public `strategy_active`; `_overwrite_preservation` docstring demoted to "early feedback, no longer load-bearing" |
 | `src/docmend/artifacts.py` (modify) | `write_report`/`write_json_artifact` gain a `clobber` passthrough (no-clobber refusal reports, CR-007) |
-| `src/docmend/cli.py` (modify) | apply/restore rewired to preview/factory entrypoints; refusal callback; restore loads the default-discovery config for its effective excludes (CR-006/CR-NEW-003 — no new flags) |
+| `src/docmend/cli.py` (modify) | apply/restore rewired to preview/factory entrypoints; refusal callback; dry-run report publishes no-clobber (CR-NEW-005); restore loads no config — the carve-out authority is the recorded header (CR-006/CR-NEW-003) |
 | `docs/specs/docmend.md` (modify, Task 12 only) | §17.3 traceability rows + Document History entry — status accuracy for Plans A/B/C, no behavioral text |
 | `tests/unit/writer/test_commit.py` (create) | Primitive + factory + sealing + attestation unit tests, pairwise predicate matrix |
 | `tests/unit/writer/test_adjudicate.py` (modify) | Boundary coverage for `finish_remaining` (containment, replace-window, mode) |
@@ -56,11 +59,13 @@ Interference windows and who tests them (design §Testing + review rounds 1-2): 
 ### Task 1: Commit-boundary primitives in `writer/commit.py`
 
 **Files:**
+
 - Create: `src/docmend/writer/commit.py`
 - Modify: `src/docmend/writer/atomic.py` (`abort_staged`)
 - Test: `tests/unit/writer/test_commit.py`, `tests/unit/writer/test_atomic.py`
 
 **Interfaces:**
+
 - Consumes: `ObjectIdentity` from `docmend.lineage`; `WriteError`, `StagedWrite`, `stage_bytes`, `publish_staged`, `abort_staged`, `link_no_clobber`, `fsync_dir` from `docmend.writer.atomic`.
 - Produces (later tasks rely on these exact signatures):
   - `class InterferenceError(Exception)` with `__init__(self, message: str, *, intermediate: bool = False)` and attribute `intermediate: bool` — `True` means the disk is NOT provably pre-action state (terminal-honesty rule applies)
@@ -68,8 +73,8 @@ Interference windows and who tests them (design §Testing + review rounds 1-2): 
   - `def bind_file(path: Path) -> BoundFile` — raises `InterferenceError` (symlink/non-regular) or `OSError` (missing/unreadable); never blocks on special files (CR-005)
   - `def check_bound(path: Path, identity: ObjectIdentity, *, root_resolved: Path) -> None` — raises `InterferenceError`
   - `def check_destination(path: Path, *, root_resolved: Path) -> None` — absent-name containment (CR-003); raises `InterferenceError`
-  - `def _observe_name(path: Path) -> ObjectIdentity | None` — lstat observation shared by rollback logic (also imported by `apply.py` Task 5)
-  - `def guarded_replace(target: Path, data: bytes, *, expected: ObjectIdentity, mode: int, root_resolved: Path, hooks: CommitHooks, step: str = "replace-target") -> None` — stage-first replacement (CR-003 round 2); raises `InterferenceError`, `WriteError`
+  - `type NameObservation = ObjectIdentity | Literal["absent", "symlink", "unobservable"]` and `def _observe_name(path: Path) -> NameObservation` — four-state lstat observation (CR-004 round 3: EACCES/EIO is "unobservable", never absence) shared by rollback logic (also imported by `apply.py` Task 5)
+  - `def guarded_replace(target: Path, data: bytes, *, expected: ObjectIdentity, mode: int, root_resolved: Path, hooks: CommitHooks, survivor: tuple[Path, ObjectIdentity] | None = None, step: str = "replace-target") -> None` — stage-first replacement (CR-003 rounds 2-3); the survivor is verified INSIDE the primitive, immediately before publish; raises `InterferenceError`, `WriteError`
   - `@dataclass(frozen=True) class CommitHooks: before_step: Callable[[str, Path], None]` with `NO_HOOKS: Final[CommitHooks]` module constant
   - `def guarded_rename_no_clobber(source: Path, target: Path, source_identity: ObjectIdentity, *, root_resolved: Path, hooks: CommitHooks) -> None` — raises `FileExistsError` (collision race, caller's policy), `InterferenceError` (possibly `intermediate=True`), `WriteError`
 
@@ -407,6 +412,72 @@ class TestGuardedReplace:
             )
         assert f.read_bytes() == b"interloper"  # never clobbered
         assert not list(tmp_path.glob(".doc.md.*.docmend-tmp"))  # staged temp cleaned
+
+    def test_survivor_replaced_inside_stage_window__refused(self, tmp_path: Path) -> None:
+        """CR-003 round 3: when replacing `target` makes `survivor` the last
+        valid copy, the survivor must hold the expected object AT PUBLISH
+        TIME — a pre-staging check can be invalidated during staging, after
+        which the replace orphans the only remaining good inode."""
+        target = tmp_path / "applied.md"
+        target.write_bytes(b"applied")
+        survivor = tmp_path / "original.txt"
+        bound = bind_file(target)
+        survivor.hardlink_to(target)  # the restore-shape: one inode, two names
+
+        def swap(step: str, path: Path) -> None:
+            if step == "replace-target":
+                survivor.unlink()
+                survivor.write_bytes(b"interloper")
+
+        with pytest.raises(InterferenceError):
+            guarded_replace(
+                target, b"clobbered", expected=bound.identity, mode=bound.mode,
+                root_resolved=tmp_path.resolve(), hooks=CommitHooks(swap),
+                survivor=(survivor, bound.identity),
+            )
+        assert target.read_bytes() == b"applied"  # last good copy intact
+        assert survivor.read_bytes() == b"interloper"  # theirs, untouched
+
+
+class TestRollbackObservation:
+    def test_unobservable_name__rollback_unproven(self, tmp_path: Path) -> None:
+        """CR-004 round 3: an lstat ERROR (here EACCES via a no-x parent) is
+        not absence — rollback must report unproven, never 'nothing ours
+        remains'."""
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        source = sub / "a.txt"
+        source.write_bytes(b"content")
+        identity = bind_file(source).identity
+        target = sub / "a.md"
+        target.hardlink_to(source)
+        sub.chmod(0o000)
+        try:
+            from docmend.writer.commit import _rollback_link
+
+            assert _rollback_link(target, identity, tmp_path.resolve()) is False
+        finally:
+            sub.chmod(0o755)
+```
+
+And extend `TestAbortStagedIdentity` / add the `publish_staged` cleanup regression in `tests/unit/writer/test_atomic.py`:
+
+```python
+    def test_publish_failure_after_temp_race__interloper_survives(
+        self, tmp_path: Path
+    ) -> None:
+        """CR-NEW-004: publish_staged's failure cleanup must not blind-unlink
+        the staged NAME — after a race it holds someone else's object. Force
+        the no-clobber publish to fail (target pre-created) with the temp
+        already swapped."""
+        target = tmp_path / "doc.md"
+        staged = stage_bytes(target, b"payload")
+        staged.tmp.unlink()
+        staged.tmp.write_bytes(b"interloper")  # raced: same name, new inode
+        target.write_bytes(b"occupied")  # forces FileExistsError on the link
+        with pytest.raises(FileExistsError):
+            publish_staged(staged, target, clobber=False)
+        assert staged.tmp.read_bytes() == b"interloper"  # never deleted
 ```
 
 And in `tests/unit/writer/test_atomic.py`:
@@ -431,8 +502,7 @@ class TestAbortStagedIdentity:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run pytest tests/unit/writer/test_commit.py tests/unit/writer/test_atomic.py -q`
-Expected: FAIL — `ModuleNotFoundError: No module named 'docmend.writer.commit'` / `abort_staged` unlinks blindly. No hang (thread-guarded FIFO test).
+Run: `uv run pytest tests/unit/writer/test_commit.py tests/unit/writer/test_atomic.py -q` Expected: FAIL — `ModuleNotFoundError: No module named 'docmend.writer.commit'` / `abort_staged` unlinks blindly. No hang (thread-guarded FIFO test).
 
 - [ ] **Step 3: Write the implementation**
 
@@ -607,31 +677,41 @@ def check_destination(path: Path, *, root_resolved: Path) -> None:
         raise InterferenceError(msg)
 
 
-def _observe_name(path: Path) -> ObjectIdentity | None:
-    """lstat a name into an identity; None when the name is absent or holds
-    a symlink (either way: not the regular-file object we bound)."""
+type NameObservation = ObjectIdentity | Literal["absent", "symlink", "unobservable"]
+
+
+def _observe_name(path: Path) -> NameObservation:
+    """lstat a name into a four-state observation (CR-004 round 3): an
+    identity, "absent" (ENOENT/ENOTDIR — the name provably does not exist),
+    "symlink" (not the regular-file object we bound), or "unobservable"
+    (EACCES, EIO, ... — the name may WELL exist; treating an error as
+    absence would let rollback overclaim a proven state)."""
     try:
         st = os.lstat(path)
-    except OSError:
-        return None
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return "absent"
+        return "unobservable"
     if stat.S_ISLNK(st.st_mode):
-        return None
+        return "symlink"
     return ObjectIdentity(dev=st.st_dev, ino=st.st_ino)
 
 
 def _rollback_link(target: Path, expected: ObjectIdentity, root_resolved: Path) -> bool:
     """Undo a just-created link ONLY while the name provably still holds our
     inode (CR-004: rollback itself must not bypass the boundary). Returns
-    True when the pre-action state is proven. Granular (CR-004 round 2):
-    identity lost at the name -> nothing of ours remains there -> proven;
-    identity INTACT but containment lost (parent interposed) -> our inode is
-    reachable only through a path we no longer trust -> unproven, do NOT
-    unlink through it."""
+    True when the pre-action state is proven. Ordering matters (CR-004
+    round 3): containment is checked FIRST — under an interposed parent the
+    lstat observes some OTHER location's object, so an identity mismatch
+    there proves nothing about the real one; every conclusion below is
+    conditional on the parent chain still being the one we linked into."""
+    if not (target.parent.resolve() / target.name).is_relative_to(root_resolved):
+        return False  # parent interposed: no observation through it is trustworthy
     observed = _observe_name(target)
+    if observed == "unobservable":
+        return False  # CR-004 rd 3: an error is not absence
     if observed != expected:
-        return True
-    if not target.resolve().is_relative_to(root_resolved):
-        return False
+        return True  # absent/symlink/replaced: nothing of ours remains at the name
     try:
         target.unlink()
     except OSError:
@@ -701,22 +781,31 @@ def guarded_replace(
     mode: int,
     root_resolved: Path,
     hooks: CommitHooks,
+    survivor: tuple[Path, ObjectIdentity] | None = None,
     step: str = "replace-target",
 ) -> None:
     """Replace an EXISTING object's bytes without the stage-window race
     (CR-003 round 2): check-then-atomic_write_bytes lets an interloper
     arriving DURING the internal staging be clobbered. Order here: stage
     first, then — immediately before the publish — verify the staged inode,
-    the target's identity, and containment. Every replacement write on a
-    corpus name in docmend goes through this, including rollback and
-    adjudication finishes."""
+    the target's identity, containment, AND the survivor (CR-003 round 3):
+    when replacing this name makes another name the last valid copy (a
+    restore's reinstated original), that name must still hold the expected
+    object AT PUBLISH TIME, not merely before staging began — a survivor
+    check that runs before this primitive stages can be invalidated during
+    the staging it precedes. Every replacement write on a corpus name in
+    docmend goes through this, including rollback and adjudication
+    finishes."""
     staged = stage_bytes(target, data, mode=mode)
     hooks.before_step(step, target)
     try:
         check_bound(staged.tmp, staged.identity, root_resolved=root_resolved)
         check_bound(target, expected, root_resolved=root_resolved)
+        if survivor is not None:
+            survivor_path, survivor_identity = survivor
+            check_bound(survivor_path, survivor_identity, root_resolved=root_resolved)
     except InterferenceError:
-        abort_staged(staged)  # identity-checked (CR-004) — a raced temp survives
+        abort_staged(staged, root_resolved=root_resolved)  # identity+containment-checked
         raise
     publish_staged(staged, target)
 ```
@@ -724,26 +813,49 @@ def guarded_replace(
 Modify `src/docmend/writer/atomic.py` (add `import stat`):
 
 ```python
-def abort_staged(staged: StagedWrite) -> None:
-    """Discard an unpublished staged write (idempotent) — identity-checked
-    (plan C review CR-004): after a staged-temp replacement race the name
-    holds someone else's object; a blind unlink would destroy it."""
+def _staged_name_is_ours(staged: StagedWrite) -> bool:
+    """lstat the staged NAME against the staged identity — after a
+    replacement race the name holds someone else's object (CR-004) and no
+    cleanup may touch it. An lstat error is treated as not-ours: cleanup is
+    best-effort residue removal, never worth destroying an unknown."""
     try:
         st = os.lstat(staged.tmp)
     except OSError:
-        return
-    if stat.S_ISLNK(st.st_mode) or (st.st_dev, st.st_ino) != (
+        return False
+    return not stat.S_ISLNK(st.st_mode) and (st.st_dev, st.st_ino) == (
         staged.identity.dev,
         staged.identity.ino,
-    ):
+    )
+
+
+def abort_staged(staged: StagedWrite, *, root_resolved: Path | None = None) -> None:
+    """Discard an unpublished staged write (idempotent) — identity-checked
+    (plan C review CR-004): after a staged-temp replacement race the name
+    holds someone else's object; a blind unlink would destroy it. When
+    `root_resolved` is given (the commit-boundary callers), containment is
+    re-resolved too (CR-004 round 3): an interposed parent makes even a
+    matching identity untrustworthy to unlink through."""
+    if root_resolved is not None and not (
+        staged.tmp.parent.resolve() / staged.tmp.name
+    ).is_relative_to(root_resolved):
+        return
+    if not _staged_name_is_ours(staged):
         return
     staged.tmp.unlink(missing_ok=True)
 ```
 
+Also in `atomic.py` (review round 3, CR-NEW-004): `publish_staged`'s three internal cleanup paths — the `FileExistsError` arm, the `OSError` arm, and the post-link residue removal — currently call `tmp.unlink(missing_ok=True)` / `tmp.unlink()` blind. Each becomes:
+
+```python
+        if _staged_name_is_ours(staged):
+            staged.tmp.unlink(missing_ok=True)
+```
+
+(with the post-link arm keeping its `contextlib.suppress(OSError)` wrapper and its existing lossless-residue comment). A staged-name replacement followed by a publication failure now leaves the interloper's file intact — the residue is ours to leak, never theirs to delete.
+
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `uv run pytest tests/unit/writer/test_commit.py tests/unit/writer/test_atomic.py -q`
-Expected: PASS (all, within seconds — no FIFO hang)
+Run: `uv run pytest tests/unit/writer/test_commit.py tests/unit/writer/test_atomic.py -q` Expected: PASS (all, within seconds — no FIFO hang)
 
 - [ ] **Step 5: Full gate, then commit**
 
@@ -760,11 +872,13 @@ git commit -m "feat(writer): commit-boundary primitives — descriptor identity,
 ### Task 2: Apply binds the source through a descriptor
 
 **Files:**
+
 - Modify: `src/docmend/writer/apply.py` (the `_execute_action` read/validate head and the identity-capture block)
 - Modify: `src/docmend/report.py:31-39` (`ApplySkipReason`)
 - Test: `tests/test_apply.py`
 
 **Interfaces:**
+
 - Consumes: `bind_file`, `BoundFile`, `InterferenceError`, `NO_HOOKS` from Task 1.
 - Produces: `_execute_action` holds a `bound: BoundFile` for the source; `data`/`mode`/`identities.source` all derive from it. `ApplySkipReason` includes `"external-interference"` and `"collision-unpreserved"`.
 
@@ -813,8 +927,7 @@ class TestCommitBoundarySourceBinding:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run pytest tests/test_apply.py -k CommitBoundarySourceBinding -q`
-Expected: FAIL — no `external-interference` reason exists; symlinked source currently reads through the link.
+Run: `uv run pytest tests/test_apply.py -k CommitBoundarySourceBinding -q` Expected: FAIL — no `external-interference` reason exists; symlinked source currently reads through the link.
 
 - [ ] **Step 3: Extend `ApplySkipReason`**
 
@@ -884,8 +997,7 @@ Every later `source_stat.st_mode` use becomes `bound.mode`. Import `bind_file`, 
 
 - [ ] **Step 5: Run the new tests, then the full apply/resume suites**
 
-Run: `uv run pytest tests/test_apply.py tests/test_resume.py -q`
-Expected: PASS — the identity VALUES are unchanged for the honest path (`bind_file` fstat == the old `source.stat()` for a regular file), so no Plan B assertion moves.
+Run: `uv run pytest tests/test_apply.py tests/test_resume.py -q` Expected: PASS — the identity VALUES are unchanged for the honest path (`bind_file` fstat == the old `source.stat()` for a regular file), so no Plan B assertion moves.
 
 - [ ] **Step 6: Full gate, then commit**
 
@@ -899,11 +1011,13 @@ git commit -m "feat(apply): bind the source to one O_NOFOLLOW descriptor (adr-00
 ### Task 3: Action-time overwrite invariant + target descriptor binding
 
 **Files:**
+
 - Modify: `src/docmend/writer/apply.py` (the collision-policy block and the clobber block, current lines 395-462; `identities.target`)
 - Modify: `src/docmend/writer/gate.py` (`_strategy_active` → public `strategy_active`; `_overwrite_preservation` docstring)
 - Test: `tests/test_apply.py`
 
 **Interfaces:**
+
 - Consumes: `bind_file` from Task 1; `strategy_active` from gate.
 - Produces: the clobber path is entered ONLY under an active preservation strategy (CR-001); `target_bound: BoundFile | None` in `_execute_action`; `overwritten_sha`/backup bytes/`identities.target` all derive from it. Task 4/5's pre-`os.replace` target checks compare against `target_bound.identity`.
 
@@ -981,8 +1095,7 @@ class TestCommitBoundaryTargetBinding:
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `uv run pytest tests/test_apply.py -k "ActionTimeOverwrite or TargetBinding" -q`
-Expected: FAIL — the late-target case currently clobbers (recording only a hash); the symlink case follows the link.
+Run: `uv run pytest tests/test_apply.py -k "ActionTimeOverwrite or TargetBinding" -q` Expected: FAIL — the late-target case currently clobbers (recording only a hash); the symlink case follows the link.
 
 - [ ] **Step 3: Publish `strategy_active` and enforce the invariant**
 
@@ -1066,10 +1179,12 @@ git commit -m "feat(apply): action-time overwrite invariant + descriptor-bound t
 ### Task 4: Per-step commit checks — rewrite and rename paths
 
 **Files:**
+
 - Modify: `src/docmend/writer/apply.py` (mutation block for `rewrite`/`rename`; hooks threading through `execute_plan` → `_execute_action`; the `FileExistsError` handler; the new `InterferenceError` handler)
 - Test: `tests/test_apply.py`
 
 **Interfaces:**
+
 - Consumes: `check_bound`, `check_destination`, `guarded_rename_no_clobber`, `CommitHooks`, `NO_HOOKS`, `InterferenceError`.
 - Produces: `execute_plan(..., hooks: CommitHooks = NO_HOOKS)` threaded to `_execute_action(..., hooks)`; the race-lost skip reason is now `"collision-unpreserved"`; the `InterferenceError` handler implements the terminal-honesty rule — `intermediate=False` closes the intent with a failed ERR-002 terminal and skips `external-interference`; `intermediate=True` leaves the intent dangling and reports the action `failed`.
 
@@ -1215,8 +1330,7 @@ class TestCommitBoundaryRaces:
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `uv run pytest tests/test_apply.py -k CommitBoundaryRaces -q`
-Expected: FAIL — `_execute` has no `hooks` parameter yet.
+Run: `uv run pytest tests/test_apply.py -k CommitBoundaryRaces -q` Expected: FAIL — `_execute` has no `hooks` parameter yet.
 
 - [ ] **Step 3: Thread hooks and add the checks**
 
@@ -1295,10 +1409,12 @@ git commit -m "feat(apply): at-commit identity checks for rewrite/rename — sur
 ### Task 5: Per-step commit checks — `rename_and_rewrite` windows and boundary-checked rollback
 
 **Files:**
+
 - Modify: `src/docmend/writer/apply.py` (the `rename_and_rewrite` arm; new `_undo_publish` helper replacing the inline CR-NEW-004 rollback)
 - Test: `tests/test_apply.py`, `tests/test_resume.py`
 
 **Interfaces:**
+
 - Consumes: everything from Task 4 plus `guarded_replace`, `_observe_name` from `commit`.
 - Produces: `_undo_publish(target, expected_identity, target_bound, root_resolved) -> bool` — boundary-checked publish rollback returning `True` when the pre-action state is proven (CR-004); the two-step kind checks staged temp + source + target before publish, and source + published-target survivor before the unlink.
 
@@ -1394,8 +1510,7 @@ git commit -m "feat(apply): at-commit identity checks for rewrite/rename — sur
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `uv run pytest tests/test_apply.py -k rename_and_rewrite -q`
-Expected: the new tests FAIL (no checks in that arm yet).
+Run: `uv run pytest tests/test_apply.py -k rename_and_rewrite -q` Expected: the new tests FAIL (no checks in that arm yet).
 
 - [ ] **Step 3: Write `_undo_publish` and rewrite the arm**
 
@@ -1415,11 +1530,16 @@ def _undo_publish(
     exact, not inode-exact — os.replace cannot resurrect an inode; the
     recorded overwritten backup carries the recovery contract (FR-006)."""
     if target_bound is None:
+        # Containment FIRST (CR-004 round 3): under an interposed parent the
+        # observation below describes some OTHER location — an identity
+        # mismatch there proves nothing about the real published name.
+        if not (target.parent.resolve() / target.name).is_relative_to(root_resolved):
+            return False
         observed = _observe_name(target)
+        if observed == "unobservable":
+            return False  # an lstat error is not absence (CR-004 rd 3)
         if observed != expected_identity:
-            return True  # nothing of ours remains at the name
-        if not target.resolve().is_relative_to(root_resolved):
-            return False  # our inode behind an interposed parent (CR-004 rd 2)
+            return True  # absent/symlink/replaced: nothing of ours remains
         try:
             target.unlink()
         except OSError:
@@ -1504,10 +1624,12 @@ git commit -m "feat(apply): rename_and_rewrite commit windows — guarded rollba
 ### Task 6: Restore binds the live target and checks every inverse step
 
 **Files:**
+
 - Modify: `src/docmend/restore.py` (`run_restore` signature gains `hooks`; `_restore_one` preflight and mutation block; `_live_matches_after` deleted; explicit `restore-failed` handling)
 - Test: `tests/test_restore.py`
 
 **Interfaces:**
+
 - Consumes: `bind_file`, `check_bound`, `check_destination`, `guarded_replace`, `guarded_rename_no_clobber`, `CommitHooks`, `NO_HOOKS`, `InterferenceError`.
 - Produces: `run_restore(chain, *, run_id, write, only_ids, manifest_out, hooks: CommitHooks = NO_HOOKS)`; `_restore_one(record, *, write, run_id, manifest, root_resolved, hooks)`. (Task 10 later splits preview/write — signatures here stay additive.)
 
@@ -1560,8 +1682,7 @@ class TestRestoreCommitBoundary:
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `uv run pytest tests/test_restore.py -k RestoreCommitBoundary -q`
-Expected: FAIL — no `hooks` parameter; same-bytes swap currently restores.
+Run: `uv run pytest tests/test_restore.py -k RestoreCommitBoundary -q` Expected: FAIL — no `hooks` parameter; same-bytes swap currently restores.
 
 - [ ] **Step 3: Rewire `_restore_one`**
 
@@ -1613,13 +1734,15 @@ Expected: FAIL — no `hooks` parameter; same-bytes swap currently restores.
                 check_destination(original, root_resolved=root_resolved)  # CR-003
                 link_no_clobber(target, original)
                 mutated = True
-                # Survivor check (CR-003): the reinstated original must still
-                # be ours before the target is replaced under it; the
-                # replacement itself is stage-first (guarded_replace).
-                check_bound(original, live.identity, root_resolved=root_resolved)
+                # Survivor binding (CR-003 round 3): the reinstated original
+                # must still be ours AT PUBLISH TIME — guarded_replace checks
+                # it inside the primitive, after staging, immediately before
+                # the replace (a pre-staging check could be invalidated
+                # during the staging it precedes).
                 guarded_replace(
                     target, clobbered, expected=live.identity, mode=mode,
                     root_resolved=root_resolved, hooks=hooks,
+                    survivor=(original, live.identity),
                 )
             else:
                 guarded_rename_no_clobber(
@@ -1634,15 +1757,19 @@ Expected: FAIL — no `hooks` parameter; same-bytes swap currently restores.
             publish_staged(staged, original, clobber=False)
             mutated = True
             hooks.before_step("unlink", target)
-            # Survivor check (CR-003): the reinstated original must exist
-            # with the staged identity before the applied target goes away.
-            check_bound(original, reinstated_identity, root_resolved=root_resolved)
             if clobbered is not None:
+                # Survivor binding at publish time (CR-003 round 3).
                 guarded_replace(
                     target, clobbered, expected=live.identity, mode=mode,
                     root_resolved=root_resolved, hooks=hooks,
+                    survivor=(original, reinstated_identity),
                 )
             else:
+                # Survivor check (CR-003): the reinstated original must exist
+                # with the staged identity immediately before the applied
+                # target goes away (no staging here — the unlink follows the
+                # checks directly).
+                check_bound(original, reinstated_identity, root_resolved=root_resolved)
                 check_bound(target, live.identity, root_resolved=root_resolved)
                 target.unlink()
     except InterferenceError as exc:
@@ -1702,11 +1829,13 @@ git commit -m "feat(restore): descriptor-bound inverse commits — survivor chec
 ### Task 7: Adjudication finishes go through the boundary (CR-NEW-001)
 
 **Files:**
+
 - Modify: `src/docmend/writer/adjudicate.py` (`finish_remaining`, `_verified_unlink`, `_rewrite_from_backup`)
 - Modify: `src/docmend/writer/apply.py` (`_adjudicate_pending_intent` forwards `root_resolved` + hooks), `src/docmend/restore.py` (`_converge_pending_restore` likewise)
 - Test: `tests/unit/writer/test_adjudicate.py`
 
 **Interfaces:**
+
 - Consumes: `guarded_replace`, `CommitHooks`, `NO_HOOKS`, `InterferenceError` from Task 1.
 - Produces: `finish_remaining(record, *, undone=None, root_resolved: Path, hooks: CommitHooks = NO_HOOKS) -> None` — every residual mutation carries the same guarantees as live commits. `finish_remaining`'s current docstring names this exact seam: "the adjudicate-to-act window is the accepted residual until Plan C's CommitBoundary".
 
@@ -1739,16 +1868,37 @@ class TestFinishRemainingBoundary:
         ...  # chmod the applied file 0o640 before finish; assert the
         # reinstated clobbered bytes carry 0o640 (guarded_replace mode
         # comes from the observed object, closing a silent 0o600 regression).
+
+    def test_finish_unlink__survivor_swapped_since_adjudication__refused(
+        self, tmp_path: Path
+    ) -> None:
+        """CR-NEW-001 round 3: the finish rows unlink a redundant name
+        because the OTHER name holds the document — swap that survivor after
+        adjudication (via the unlink hook) and the finish must refuse rather
+        than remove the last valid copy."""
+        ...  # finish-remaining apply state (both names, one inode); hook at
+        # "unlink" replaces the published target with a same-bytes new
+        # inode; expect WriteError, source name still present.
+
+    def test_observe__identity_and_bytes_from_one_descriptor(self, tmp_path: Path) -> None:
+        """CR-NEW-001 round 3: _observe must not lstat one object and read
+        another. Deterministic seam: patch os.lstat? No — assert structurally
+        instead: _observe of a regular file returns an observation whose
+        sha matches bytes read through the SAME open (compare against a
+        concurrent swap using a monkeypatched os.open counter is overkill;
+        the structural assertion is that _observe performs exactly one
+        os.open and no pathname read_bytes — enforce with a small spy on
+        Path.read_bytes raising if called)."""
+        ...
 ```
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `uv run pytest tests/unit/writer/test_adjudicate.py -k Boundary -q`
-Expected: FAIL — `finish_remaining` has no `root_resolved`/`hooks` parameters.
+Run: `uv run pytest tests/unit/writer/test_adjudicate.py -k Boundary -q` Expected: FAIL — `finish_remaining` has no `root_resolved`/`hooks` parameters.
 
 - [ ] **Step 3: Route the mutations through the boundary**
 
-```python
+````python
 def finish_remaining(
     record: ManifestRecord,
     *,
@@ -1767,15 +1917,33 @@ def finish_remaining(
     ...  # dispatch unchanged; the two primitives change:
 
 
+First, `_observe` itself becomes descriptor-bound (review round 3, CR-NEW-001): today it lstats and then `read_bytes()` by pathname, so the identity and the content can come from two DIFFERENT objects when a swap lands between the calls. Rewrite it on the `bind_file` pattern — one `O_RDONLY|O_NOFOLLOW|O_NONBLOCK` open, `fstat` for the identity, bytes read through the same descriptor — returning the existing observation shape (absent/symlink states preserved for the verdict rows). Every adjudication verdict then reasons about one object per name.
+
+```python
 def _verified_unlink(
     path: Path,
     identity: ObjectIdentity | None,
     sha256: str,
     *,
+    survivor: tuple[Path, ObjectIdentity | None, str] | None,
     root_resolved: Path,
     hooks: CommitHooks,
 ) -> None:
+    """Destroy one name only after re-verifying (a) the object being
+    destroyed, (b) containment at the act instant, and (c) the SURVIVOR that
+    makes the destruction safe (review round 3, CR-NEW-001): the finish rows
+    unlink a redundant name precisely because the other name holds the
+    document — if that other name was swapped since adjudication, this
+    unlink would remove the last valid copy."""
     hooks.before_step("unlink", path)
+    if survivor is not None:
+        survivor_path, survivor_identity, survivor_sha = survivor
+        if not _is(_observe(survivor_path), survivor_identity, survivor_sha):
+            msg = (
+                f"{survivor_path}: surviving name changed between adjudication "
+                f"and finish; refusing to unlink {path}"
+            )
+            raise WriteError(msg)
     observed = _observe(path)
     if not _is(observed, identity, sha256):
         msg = f"{path}: object changed between adjudication and unlink; refusing"
@@ -1788,8 +1956,11 @@ def _verified_unlink(
     except OSError as exc:
         msg = f"{path}: cannot finish adjudicated unlink ({exc.strerror or exc})"
         raise WriteError(msg) from exc
+````
 
+`finish_remaining`'s dispatch supplies the survivor for each row: the apply rows unlink the SOURCE name, whose survivor is the published target — `(Path(record.target_path), record.expected_published_identity, record.after_sha256)`; the inverse rows unlink the APPLIED name, whose survivor is the reinstated original — `(Path(record.target_path), record.expected_published_identity, record.after_sha256)` on the inverse record (its `target_path` IS the original). The row that rewrites instead of unlinking passes the same survivor through `guarded_replace`:
 
+```python
 def _rewrite_from_backup(
     record: ManifestRecord,
     undone: ManifestRecord | None,
@@ -1801,10 +1972,12 @@ def _rewrite_from_backup(
     target = Path(record.original_path)
     st = target.lstat()  # observed object's own mode (silent-0o600 fix)
     assert record.source_identity is not None  # adjudication verdict verified it
+    assert record.expected_published_identity is not None
     try:
         guarded_replace(
             target, data, expected=record.source_identity, mode=st.st_mode,
             root_resolved=root_resolved, hooks=hooks,
+            survivor=(Path(record.target_path), record.expected_published_identity),
         )
     except InterferenceError as exc:
         raise WriteError(str(exc)) from exc  # callers' existing WriteError contract
@@ -1827,17 +2000,21 @@ git commit -m "feat(adjudicate): finish-remaining mutations through the commit b
 ### Task 8: Attested `WriteSafetyContext` and the two sealed factories
 
 **Files:**
+
 - Modify: `src/docmend/writer/commit.py` (append the F8 half)
-- Modify: `src/docmend/writer/manifest.py` (`ManifestSet.records: tuple[ManifestRecord, ...]`, `ManifestChain.sets: tuple[ManifestSet, ...]` — constructors wrap with `tuple(...)`; adjust `tests/helpers/manifest2.chain_of` accordingly)
-- Test: `tests/unit/writer/test_commit.py`
+- Modify: `src/docmend/writer/manifest.py` — deep immutability (review round 3, CR-002): `ManifestHeader` and `ManifestRecord` gain `frozen=True` in their `ConfigDict` (safe: `ManifestWriter.append` already stamps via `model_copy`, and every terminal producer uses `model_copy(update=...)`); `ManifestSet.records` becomes `tuple[ManifestRecord, ...]` and `ManifestChain.sets` becomes `tuple[ManifestSet, ...]` at EVERY construction site — `read_manifest_set` (manifest.py:494), the empty chain (manifest.py:690), `_order_chain`'s result (manifest.py:703), `tests/helpers/manifest2.chain_of`, and `tests/test_restore.py:66`. `ManifestHeader` also gains `effective_excludes: tuple[str, ...]` (CR-006, below).
+- Modify: `src/docmend/schemas/manifest-header.schema.json` — required array field `effective_excludes` (pre-release 2.0 extension: the clean-break format has never shipped, so no version bump)
+- Modify: `docs/superpowers/specs/2026-07-10-safety-core-remediation-design.md` + `docs/adr/adr-0019-manifest-2-recovery-model.md` (change-control step below)
+- Test: `tests/unit/writer/test_commit.py`, `tests/unit/writer/test_manifest.py`
 
 **Interfaces:**
+
 - Consumes: `docmend.lock` (`acquire`, `LockHeldError`), `docmend.writer.gate` (`ApplyOptions`, `evaluate_gate`, `GateRefusal`), `docmend.artifacts.guard_artifact_destination`, `docmend.writer.manifest` (`ManifestChain`, `read_manifest_chain`, `manifest_sha256`), `docmend.plan.Plan`, `pathspec`, `hashlib`, `pydantic.BaseModel`.
 - Produces (Tasks 9-10 rely on these exactly):
   - `class SafetyRefusedError(Exception)` — base; `LockRefusedError(SafetyRefusedError)`, `DestinationRefusedError(SafetyRefusedError)`, `WriteRefusedError(SafetyRefusedError)` with attribute `refusals: list[GateRefusal]`
   - `@final class WriteSafetyContext` — sealed AND attested over the ACTUAL gated inputs (CR-002 round 2): methods `confirm_apply(*, plan, config, plan_sha256, source_root, run_id, options, manifest_path) -> None` (recomputes the plan/config model digests from the PRESENTED objects and compares to the digests the factory computed from the objects it GATED), `confirm_restore(*, run_id, manifest_out) -> None`, `confirm_report(report_path: Path) -> None`, property `chain: ManifestChain` (restore contexts only; immutable by the tuple change)
   - `apply_write_context(plan, config, *, source_root, options, plan_sha256, run_id, manifest_path, report_path, manifest_dir, input_artifacts=(), artifact_root=None, lock_state_dir=None, on_refusal=None) -> Iterator[WriteSafetyContext]` (contextmanager)
-  - `restore_write_context(manifest_paths, *, run_id, manifest_out, exclude, artifact_root=None, lock_state_dir=None) -> Iterator[WriteSafetyContext]` (contextmanager) — performs the chain preflight ITSELF (CR-002)
+  - `restore_write_context(manifest_paths, *, run_id, manifest_out, artifact_root=None, lock_state_dir=None) -> Iterator[WriteSafetyContext]` (contextmanager) — performs the chain preflight ITSELF (CR-002) and licenses the carve-out against the chain root header's RECORDED `effective_excludes` (CR-006 round 3; no caller-supplied exclude exists to disagree with it)
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1939,16 +2116,21 @@ class TestWriteSafetyContext:
         bad = tmp_path / "m.jsonl"
         bad.write_text("not a manifest\n")
         with pytest.raises(ArtifactError):
-            with restore_write_context([bad], run_id=..., manifest_out=...,
-                                       exclude=DEFAULT_EXCLUDE_SPEC):
+            with restore_write_context([bad], run_id=..., manifest_out=...):
                 raise AssertionError("must not yield")
 
     def test_restore_chain_is_immutable(self, tmp_path: Path) -> None:
-        """CR-002 round 2: the validated chain cannot be mutated between
-        preflight and run_restore — sets/records are tuples."""
+        """CR-002 rounds 2-3: the validated chain cannot be mutated between
+        preflight and run_restore — the containers are tuples AND the inner
+        pydantic models are frozen (tuples alone left every header/record
+        field assignable through safety.chain)."""
         with restore_write_context([m1], ...) as safety:
             with pytest.raises((TypeError, AttributeError)):
                 safety.chain.sets[0].records.append(anything)  # type: ignore[union-attr]
+            with pytest.raises(ValidationError):  # pydantic frozen-instance error
+                safety.chain.sets[0].records[0].target_path = "/elsewhere"  # type: ignore[misc]
+            with pytest.raises(ValidationError):
+                safety.chain.sets[0].header.source_root = "/elsewhere"  # type: ignore[misc]
 
     def test_restore_factory__locks_chain_root_guards_out_exposes_chain(
         self, tmp_path: Path
@@ -1961,12 +2143,34 @@ class TestWriteSafetyContext:
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `uv run pytest tests/unit/writer/test_commit.py -k WriteSafety -q`
-Expected: FAIL — names don't exist.
+Run: `uv run pytest tests/unit/writer/test_commit.py -k WriteSafety -q` Expected: FAIL — names don't exist.
 
 - [ ] **Step 3: Implement**
 
-In `manifest.py`, change `ManifestSet.records` to `tuple[ManifestRecord, ...]` and `ManifestChain.sets` to `tuple[ManifestSet, ...]`; wrap the constructor arguments in `tuple(...)` at the two construction sites; update `tests/helpers/manifest2.chain_of` to build tuples. Append to `src/docmend/writer/commit.py`:
+In `manifest.py` (review round 3, CR-002 + CR-006):
+
+1. Add `frozen=True` to BOTH `ManifestHeader.model_config` and `ManifestRecord.model_config`. Every producer already writes new state via `model_copy(update=...)` — the writer's stamping included — so this is purely a read-side hardening; a direct field assignment now raises pydantic's frozen-instance `ValidationError`.
+2. Change `ManifestSet.records` to `tuple[ManifestRecord, ...]` and `ManifestChain.sets` to `tuple[ManifestSet, ...]`, wrapping with `tuple(...)` at ALL FIVE construction sites: `read_manifest_set` (line 494), the empty chain (line 690), `_order_chain`'s caller (line 703), `tests/helpers/manifest2.chain_of`, and `tests/test_restore.py:66`.
+3. Add to `ManifestHeader` (CR-006 — consumed by Task 10's restore factory, produced by Task 9's apply header):
+
+```python
+    # The apply run's EFFECTIVE exclude patterns (adr-0021/plan-C CR-006):
+    # the .docmend/ carve-out license restore's artifact guard applies must
+    # be judged against the excludes that governed THIS run — list flags
+    # REPLACE the config set, so no later invocation can reconstruct them;
+    # the header is the only durable witness. tuple + before-validator so
+    # the frozen model holds no mutable list.
+    effective_excludes: tuple[str, ...]
+
+    @field_validator("effective_excludes", mode="before")
+    @classmethod
+    def _excludes_to_tuple(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+```
+
+and the matching required array field in `src/docmend/schemas/manifest-header.schema.json`. The manifest 2.0 format has never shipped (the clean break lands with v2.0.0), so this is a pre-release extension of 2.0, not a version bump — Plan B's manifest fixtures (`tests/helpers/manifest2.header_doc`) gain the field with the stock excludes as default. 4. **Change-control step:** append one sentence to the design's manifest 2.0 wire-model section and one to adr-0019's "More Information" ("the header additionally records the run's effective exclude patterns — plan C review CR-006: restore's artifact-destination carve-out must be licensed against the excludes that governed the apply, which per-invocation replacement flags make unreconstructable later"), each with a dated revision-note line. Flagged in the decisions list for owner sign-off — it is an additive wire-model field inside an unreleased format, mirroring the round-2 precedent.
+
+Append to `src/docmend/writer/commit.py`:
 
 ```python
 class SafetyRefusedError(Exception):
@@ -2036,8 +2240,15 @@ class WriteSafetyContext:
 
     __slots__ = ("_active", "_attest")
 
-    def __init__(self, *, _token: object | None = None, _attest: _Attestation) -> None:
-        if _token is not _FACTORY_TOKEN:
+    def __init__(
+        self, *, _token: object | None = None, _attest: _Attestation | None = None
+    ) -> None:
+        # _attest defaults to None deliberately (review round 3, CR-NEW-006):
+        # without a default, bare WriteSafetyContext() dies on Python
+        # argument binding with a "missing keyword-only argument" TypeError
+        # and the sealing message below is never reached — the sealing test
+        # matches on "factory-sealed", so the seal itself must be what fires.
+        if _token is not _FACTORY_TOKEN or _attest is None:
             msg = (
                 "WriteSafetyContext is factory-sealed (F8): enter "
                 "apply_write_context() or restore_write_context()"
@@ -2221,29 +2432,33 @@ def restore_write_context(
     *,
     run_id: str,
     manifest_out: Path,
-    exclude: PathSpec[GitIgnoreSpecPattern],
     artifact_root: Path | None = None,
     lock_state_dir: Path | None = None,
 ) -> Iterator[WriteSafetyContext]:
     """The ONLY way to a write-capable restore (F8): this factory performs
     the ManifestSet/chain preflight ITSELF (review CR-002) — it consumes
     manifest PATHS and runs read_manifest_chain, so the chain the engine
-    mutates from (exposed as `safety.chain`, tuple-frozen) is the one the
+    mutates from (exposed as `safety.chain`, deep-frozen) is the one the
     preflight proved; a caller-constructed ManifestChain cannot reach the
     capability. ArtifactError / ManifestContainmentError propagate for the
     CLI's existing exit-2/exit-3 mapping. The lock keys on the validated
-    chain's source_root (adr-0019). `exclude` is the operator's EFFECTIVE
-    exclude set (review CR-006): the `.docmend/` carve-out license must
-    reflect the real configuration — defaults would LICENSE a destination
-    whose exclusion the operator removed, the unsafe direction."""
+    chain's source_root (adr-0019). The `.docmend/` carve-out license is
+    judged against the chain root header's RECORDED effective excludes
+    (review CR-006 round 3): per-invocation replacement flags make the
+    apply-time exclude set unreconstructable later — default-discovery
+    loading could re-license a destination the operator's replaced set had
+    withdrawn (adr-0021's wholesale-withdrawal clause), so the header is
+    the only honest authority and there is deliberately no caller-supplied
+    exclude parameter to disagree with it."""
     chain = read_manifest_chain(list(manifest_paths))
-    source_root = Path(chain.sets[0].header.source_root)
+    root_header = chain.sets[0].header
+    source_root = Path(root_header.source_root)
     _guard_or_refuse(
         manifest_out,
         corpus_root=source_root,
         input_artifacts=[s.path for s in chain.sets],
         artifact_root=artifact_root,
-        exclude=exclude,
+        exclude=PathSpec.from_lines(GitIgnoreSpecPattern, root_header.effective_excludes),
     )
     try:
         run_lock = lock.acquire(
@@ -2292,6 +2507,7 @@ git commit -m "feat(writer): attested WriteSafetyContext — gated-model digests
 ### Task 9: Apply engine split (`preview_plan` / `execute_plan`) + CLI rewire + test migration
 
 **Files:**
+
 - Modify: `src/docmend/writer/apply.py` (rename `execute_plan` body to `_run_plan`; two public wrappers)
 - Modify: `src/docmend/cli.py` (the `apply` command's lock/gate/execute section, current lines 608-670)
 - Modify: `src/docmend/artifacts.py` (`write_report`/`write_json_artifact` gain `clobber: bool = True`)
@@ -2299,6 +2515,7 @@ git commit -m "feat(writer): attested WriteSafetyContext — gated-model digests
 - Modify/Test: `tests/test_apply.py`, `tests/test_resume.py`, `tests/test_idempotency.py`, `tests/test_scale.py`, `tests/test_cli_apply.py`, `tests/test_cli_resume.py`
 
 **Interfaces:**
+
 - Produces:
   - `preview_plan(plan, config, *, run_id, plan_ref, started_at, now=..., resume_chain=None, prior_attempt=None) -> Report` — read-only, synthesizes `ApplyOptions(write=False, backup_root=None, preserved_by=None, allow_no_backup=False)` internally; no manifest, no gate, no capability.
   - `execute_plan(plan, config, *, run_id, plan_ref, plan_sha256, options, manifest_path, started_at, safety: WriteSafetyContext, now=..., resume_chain=None, prior_manifest_sha256=None, prior_attempt=None, hooks=NO_HOOKS) -> Report` — first statement is the attestation confirmation (below), then `if not options.write: raise ValueError("execute_plan is the mutation entrypoint; use preview_plan (F8)")`.
@@ -2333,7 +2550,13 @@ class TestEntrypointSplit:
 
 - [ ] **Step 2: Split the engine**
 
-In `apply.py`: rename the current `execute_plan` to `_run_plan(...)` (same parameters plus `hooks`; `manifest_path` becomes `Path | None`, only dereferenced when `options.write and plan.actions` — assert there), then:
+In `apply.py`: rename the current `execute_plan` to `_run_plan(...)` (same parameters plus `hooks`; `manifest_path` becomes `Path | None`, only dereferenced when `options.write and plan.actions` — assert there). `_run_plan`'s `ManifestHeader` construction gains the CR-006 witness field from the config it already holds:
+
+```python
+                effective_excludes=tuple(config.paths.exclude),
+```
+
+and `restore.py`'s `_run_restore` header construction copies the chain root's: `effective_excludes=root_header.effective_excludes` (a restore run performs no discovery of its own; the license context is the apply's). Then:
 
 ```python
 def preview_plan(
@@ -2468,19 +2691,15 @@ def restore_safety(
     run_id: str,
     manifest_out: Path,
     state_dir: Path,
-    exclude: PathSpec[GitIgnoreSpecPattern] | None = None,
 ) -> Iterator[WriteSafetyContext]:
-    spec = exclude if exclude is not None else PathSpec.from_lines(
-        GitIgnoreSpecPattern, DocmendConfig().paths.exclude
-    )
     with restore_write_context(
         manifest_paths, run_id=run_id, manifest_out=manifest_out,
-        exclude=spec, lock_state_dir=state_dir,
+        lock_state_dir=state_dir,
     ) as safety:
         yield safety
 ```
 
-(Test helpers may default to the stock excludes — tests build stock-config corpora; the production seam is Task 10's CLI config threading.)
+(No exclude parameter anywhere: the factory reads the chain root header's recorded `effective_excludes` — CR-006 round 3. Tests vary the license by writing headers with different `effective_excludes` values via `tests/helpers/manifest2.header_doc`.)
 
 - [ ] **Step 5: Rewire the CLI `apply` command**
 
@@ -2544,10 +2763,24 @@ Replace cli.py's current lock/gate/execute section (lines 608-670). The CLI-side
                 plan, config, run_id=run_id, plan_ref=plan_ref, started_at=started_at,
                 resume_chain=resume_chain, prior_attempt=prior_attempt,
             )
-            artifacts.write_report(result, report_path)
+            try:
+                # adr-0021 decision driver (review round 3, CR-NEW-005): a
+                # dry run leaves PRIOR artifacts untouched — its own report
+                # publishes no-clobber, so an operator-selected --report
+                # naming an existing file keeps that file.
+                artifacts.write_report(result, report_path, clobber=False)
+            except FileExistsError as exc:
+                typer.echo(
+                    f"error: report not written: {report_path} already exists "
+                    f"(dry runs leave prior artifacts untouched; adr-0021)",
+                    err=True,
+                )
+                raise typer.Exit(2) from exc
         finally:
             run_lock.release()
 ```
+
+Add the matching CLI regression: dry-run apply with `--report` naming an existing file → exit 2, the pre-existing file byte-identical, the stderr note present (CR-NEW-005).
 
 (`plan_sha` = hoist the existing `f"sha256:{hashlib.sha256(plan_path.read_bytes()).hexdigest()}"` into one local used by resume-loading, the factory, and `execute_plan` — it is currently computed twice. `guard_inputs` = hoist the existing `input_artifacts` list.) `_write_refusal_report` switches to the no-clobber write:
 
@@ -2617,15 +2850,17 @@ git commit -m "feat(apply): preview/write entrypoint split — attested WriteSaf
 ### Task 10: Restore engine split (`preview_restore` / `run_restore`) + CLI rewire with effective config
 
 **Files:**
+
 - Modify: `src/docmend/restore.py` (rename `run_restore` body to `_run_restore`; two public wrappers)
 - Modify: `src/docmend/cli.py` (the `restore` command: effective-config loading, lock/execute section, current lines 990-1005)
 - Test: `tests/test_restore.py`, `tests/test_restore_drill.py`, plus the restore CLI tests (follow the existing layout)
 
 **Interfaces:**
+
 - Produces:
   - `preview_restore(chain, *, run_id, only_ids) -> list[RestoreOutcome]` — read-only (`write=False` path, no manifest); takes the caller's chain (reading is not gated).
   - `run_restore(*, run_id, only_ids, manifest_out, safety: WriteSafetyContext, hooks=NO_HOOKS) -> list[RestoreOutcome]` — NO chain parameter: the engine mutates from `safety.chain`, the factory-validated immutable object (CR-002); first statement `safety.confirm_restore(run_id=run_id, manifest_out=manifest_out)`.
-  - The restore CLI loads the effective excludes via the standard default config discovery — NO new CLI options (CR-NEW-003).
+  - The restore CLI loads no configuration: the carve-out authority is the chain root header's recorded `effective_excludes`, read inside the factory (CR-006 round 3) — no new CLI options (CR-NEW-003 stays closed).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2646,16 +2881,22 @@ class TestRestoreEntrypointSplit:
     def test_preview_restore__no_manifest_written_no_mutation(self, tmp_path: Path) -> None:
         ...
 
-    def test_exclusion_removed__in_corpus_manifest_out_refused(self, tmp_path: Path) -> None:
-        """CR-006 + adr-0021's required rejection test at the restore seam:
-        with an operator exclude set that no longer covers `.docmend/**`,
-        an in-corpus manifest_out loses its carve-out license and the
-        factory refuses (DestinationRefusedError) — defaults would have
-        wrongly licensed it."""
-        ...  # build a chain whose source_root contains ./.docmend; pass
-        # exclude=PathSpec.from_lines(GitIgnoreSpecPattern, ["*.bak"]);
-        # expect DestinationRefusedError; with the stock excludes the same
-        # factory call succeeds.
+    def test_recorded_exclusion_replaced__in_corpus_manifest_out_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """CR-006 round 3 + adr-0021's required rejection test at the restore
+        seam: the license authority is the chain root header's RECORDED
+        effective excludes. A chain whose apply ran with a replacement
+        exclude set (no `.docmend/**` coverage) withdraws the carve-out
+        wholesale — an in-corpus manifest_out refuses
+        (DestinationRefusedError) even though default-discovery excludes
+        would have licensed it (the exact inversion rounds 2's approach
+        missed: list flags REPLACE, so no later config load can know)."""
+        ...  # write a chain via manifest2.write_set whose header carries
+        # effective_excludes=("*.bak",) and source_root containing
+        # ./.docmend; expect DestinationRefusedError from
+        # restore_write_context; an otherwise-identical chain with the
+        # stock excludes recorded succeeds.
 ```
 
 - [ ] **Step 2: Split the engine**
@@ -2688,18 +2929,9 @@ def run_restore(
 
 - [ ] **Step 3: Rewire the CLI `restore` command**
 
-The CLI's existing up-front `read_manifest_chain` stays for BOTH modes (capability message, empty check, dry-run input); the write path hands the PATHS to the factory, whose own validation is authoritative (the second parse is the price of an unforgeable preflight — restore is rare and manifests are line-bounded). The effective excludes come from the standard default discovery, with NO new CLI options (review round 2, CR-NEW-003 — IR-008's binding interface gains nothing):
+The CLI's existing up-front `read_manifest_chain` stays for BOTH modes (capability message, empty check, dry-run input); the write path hands the PATHS to the factory, whose own validation is authoritative (the second parse is the price of an unforgeable preflight — restore is rare and manifests are line-bounded). Restore loads NO configuration at all (review round 3, CR-006: the carve-out authority is the chain root header's recorded `effective_excludes`, read inside the factory — round 2's default-discovery loading was inverted a second way, since replacement `--exclude` flags at apply time withdraw licenses no later config load can know about; IR-008's interface still gains nothing, keeping CR-NEW-003 closed):
 
 ```python
-    # Effective excludes for the artifact-destination carve-out (CR-006):
-    # the default discovery (./docmend.toml when present, else defaults) —
-    # deliberately NO new restore CLI options (IR-008 unchanged; review
-    # CR-NEW-003). An operator who removed the .docmend/** exclusion in
-    # their project config gets the refusal that removal implies; one who
-    # relies on per-invocation --exclude flags at scan/plan time gets the
-    # file+defaults view, the conservative direction for a carve-out
-    # LICENSE (fewer licensed destinations, never more).
-    config = _load_effective_config(None, None, None)
     manifest_out = artifact_dir / f"docmend-{run_id}-manifest.jsonl"
     if write:
         try:
@@ -2707,7 +2939,6 @@ The CLI's existing up-front `read_manifest_chain` stays for BOTH modes (capabili
                 manifest_paths,
                 run_id=run_id,
                 manifest_out=manifest_out,
-                exclude=PathSpec.from_lines(GitIgnoreSpecPattern, config.paths.exclude),
                 artifact_root=Path(ARTIFACT_DIR_NAME).resolve(),
             ) as safety:
                 outcomes = run_restore(
@@ -2737,7 +2968,7 @@ The CLI's existing up-front `read_manifest_chain` stays for BOTH modes (capabili
             run_lock.release()
 ```
 
-If the owner prefers an explicit `--config` on restore, that is an IR-008 amendment decision — raise it as an OQ rather than deciding here.
+(The round-2 idea of loading a config on restore is gone entirely — the recorded header is strictly more authoritative than any restore-time reconstruction, and IR-008's interface is untouched.)
 
 - [ ] **Step 4: Migrate restore tests**
 
@@ -2755,6 +2986,7 @@ git commit -m "feat(restore): preview/write split — capability-bound chain, de
 ### Task 11: Changelog
 
 **Files:**
+
 - Modify: `CHANGELOG.md` ([Unreleased])
 
 - [ ] **Step 1: Changelog**
@@ -2768,7 +3000,8 @@ Under `## [Unreleased]`, update the intro line to "plans A, B and C of four" / "
 - **Overwrite preservation is an action-time invariant (DMR-07):** a target discovered at action time is clobbered only under an active byte-preserving strategy and is backed up through its own descriptor with an identity check immediately before `os.replace`; a target appearing later is published no-clobber and skipped `collision-unpreserved` — never silently overwritten. The gate's plan-time overwrite check remains as early feedback only.
 - **Failed terminals are proofs (spec §10.4):** a `failed` manifest terminal is appended only when the pre-action state is proven — rollbacks are themselves identity-checked, replacement writes stage first, no rollback ever removes the last surviving name of a validated object, and an unprovable intermediate keeps its journal intent for resume/restore adjudication instead of asserting a clean failure.
 - **Post-crash adjudication finishes carry the same boundary:** `finish-remaining` residual steps re-resolve containment at the act instant, use stage-first replacement writes, and preserve the observed object's mode.
-- **Read/write entrypoint split (F8):** `preview_plan`/`preview_restore` are the read-only engines (dry-run behavior unchanged); `execute_plan`/`run_restore` now require a `WriteSafetyContext` — a sealed capability whose only factories acquire the run lock, evaluate the apply gate / perform the restore chain preflight themselves, guard the run's artifact destinations (restore's output manifest is now guarded too, licensed against the project's `docmend.toml` excludes via the standard default discovery), and attest exactly which plan/config/chain, root, run, options, and destinations they authorized (model digests, not caller-supplied hashes). Library callers cannot reach corpus mutation without the ceremony, or with a ceremony for different inputs; the CLI's public interface is unchanged.
+- **Read/write entrypoint split (F8):** `preview_plan`/`preview_restore` are the read-only engines (dry-run behavior unchanged, except a dry run's report now publishes no-clobber — a pre-existing artifact at the destination is preserved, per adr-0021); `execute_plan`/`run_restore` now require a `WriteSafetyContext` — a sealed capability whose only factories acquire the run lock, evaluate the apply gate / perform the restore chain preflight themselves, guard the run's artifact destinations, and attest exactly which plan/config/chain, root, run, options, and destinations they authorized (model digests, not caller-supplied hashes; the validated chain is deep-frozen). Library callers cannot reach corpus mutation without the ceremony, or with a ceremony for different inputs; the CLI's public interface is unchanged.
+- **The manifest header records the run's effective excludes:** restore's artifact-destination carve-out is licensed against the excludes that governed the APPLY run, read from the chain root header — per-invocation replacement flags made the apply-time exclude set unreconstructable by any later config load (adr-0021's wholesale-withdrawal clause).
 - A gate-refused `apply` publishes its refusal report inside the run lock and never replaces a pre-existing report artifact.
 - New skip reasons: `external-interference`, `collision-unpreserved`. No new exit codes; no schema version changes (the report schema's `skip_reason` is an open string).
 ```
@@ -2785,6 +3018,7 @@ git commit -m "docs(changelog): plan C — commit boundary, action-time overwrit
 ### Task 12: Spec §17.3 traceability sync (CR-009)
 
 **Files:**
+
 - Modify: `docs/specs/docmend.md` (§17.3 rows + one Document History entry — status accuracy only, no behavioral text)
 
 - [ ] **Step 1: Update the rows Plan C implements**
@@ -2820,7 +3054,8 @@ git commit -m "docs(spec): §17.3 traceability sync for plans A-C (review CR-009
 - Design §Commit Boundary F2/F3 → Tasks 1-6; the strategy re-check closes the gate→action window (CR-001) and the migrated test provably exercises it (Task 9). Residual-window statement → Task 11 + `commit.py` docstring. Deterministic hooks for every listed window plus rounds 1-2 additions → mapping table in File Structure.
 - Design §F8 → Tasks 8-10 — the capability attests the GATED models by digest (CR-002 round 2), the restore preflight is factory-owned with a tuple-frozen chain, and adjudication's finish path (invoked by both gated engines) carries the same boundary (CR-NEW-001), so no mutation surface remains outside adr-0020's checks: live commits (Tasks 2-6), rollbacks (Tasks 1/5), staged-temp cleanup (Task 1), and adjudicated finishes (Task 7).
 - adr-0020 Confirmation list: every named race test exists; the same-bytes/different-inode probes have live-window counterparts; the dangling-intent → resume-adjudication composition test reflects the ACTUAL interference contract (no closure terminal — CR-NEW-002).
-- adr-0021's exclusion-removed rejection test exists at the restore seam (Task 10).
+- adr-0021's exclusion-removed rejection test exists at the restore seam (Task 10), now against the RECORDED header excludes (round 3).
+- Round-3 destructive-step audit: every destroy-or-replace now verifies (a) the destroyed object, (b) containment at the act instant, and (c) the survivor that makes destruction safe — live commits (`guarded_rename_no_clobber`, `guarded_replace(survivor=...)`), rollbacks (containment-first, four-state observation, unobservable ⇒ unproven), staged-temp cleanup (identity-checked in `abort_staged` AND inside `publish_staged`'s own failure paths), and adjudicated finishes (`_verified_unlink(survivor=...)`, descriptor-bound `_observe`).
 - Already landed during review (not plan tasks): the chain validator's standalone-failed rejection — a live Plan B defect making any run with a pre-mutation failure unresumable — fixed as `8c2d5f4` with chain + e2e regressions and the design's lifecycle sentence disambiguated (CR-NEW-002).
-- Deliberate decisions for the reviewer: (1) `WriteSafetyContext` lives in `writer/commit.py` (one new module, per the design's file map); (2) the action-time strategy re-check fires on write runs only — preview options are synthesized without the operator's strategy flags (Task 3 comment); (3) restore's write path parses the chain twice (CLI messaging + factory preflight) — the price of an unforgeable validated-chain capability; (4) preview keeps today's CLI-side locking per F8's "current lock semantics"; (5) `_undo_publish`/`guarded_replace` prove bytes+mode, not inode — `os.replace` cannot resurrect an inode; the recorded backup carries the recovery contract; (6) restore's carve-out excludes come from the default config discovery, not new flags (CR-NEW-003) — an explicit `--config` for restore is an IR-008 amendment left to the owner as an OQ; (7) the rename-kind last-copy rule vs the rename_and_rewrite rollback distinction: a rename's target link IS the original inode (never removable when the source is lost), while a rename_and_rewrite's published target is the staged OUTPUT whose source-side original is independently preserved — stated where the code diverges (Tasks 4/5).
+- Deliberate decisions for the reviewer: (1) `WriteSafetyContext` lives in `writer/commit.py` (one new module, per the design's file map); (2) the action-time strategy re-check fires on write runs only — preview options are synthesized without the operator's strategy flags (Task 3 comment); (3) restore's write path parses the chain twice (CLI messaging + factory preflight) — the price of an unforgeable validated-chain capability; (4) preview keeps today's CLI-side locking per F8's "current lock semantics"; (5) `_undo_publish`/`guarded_replace` prove bytes+mode, not inode — `os.replace` cannot resurrect an inode; the recorded backup carries the recovery contract; (6) restore's carve-out excludes come from the chain root header's recorded `effective_excludes` (CR-006 round 3) — an additive field in the unreleased manifest 2.0 header, with a design/adr-0019 amendment step flagged for owner sign-off (Task 8); no restore CLI surface is added (CR-NEW-003); (7) the rename-kind last-copy rule vs the rename_and_rewrite rollback distinction: a rename's target link IS the original inode (never removable when the source is lost), while a rename_and_rewrite's published target is the staged OUTPUT whose source-side original is independently preserved — stated where the code diverges (Tasks 4/5).
 - Type-consistency: primitives' names/signatures identical across Tasks 1-7; `confirm_apply(plan=, config=, ...)`/`confirm_restore`/`confirm_report`/`safety.chain` across 8-10; `apply_safety`/`restore_safety` across 9-10; `plan_sha256` threads factory → engine → header as one value, with the model digests carrying the actual-object binding.

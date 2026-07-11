@@ -40,7 +40,7 @@ from docmend.lineage import PriorAttempt
 from docmend.observability import configure_logging, get_logger, new_run_id
 from docmend.plan import PLAN_SCHEMA_VERSION, ArtifactRef
 from docmend.report import Report, ReportTotals
-from docmend.restore import run_restore
+from docmend.restore import preview_restore, run_restore
 from docmend.verify import check_content, check_frontmatter, reconcile_manifest, reconcile_report
 from docmend.writer import commit, manifest
 from docmend.writer.apply import execute_plan, preview_plan
@@ -857,22 +857,38 @@ def restore(
             "git/external declaration or the low-risk opt-in)"
         )
 
-    # OQ-036/2.0: the lock keys on the VALIDATED chain's source_root (adr-0019,
-    # identical across the chain by rule) so restore contends with a concurrent
-    # apply/plan on the same tree even when the mutated files nest deeper.
-    run_lock = _acquire_run_lock_strict(
-        Path(chain.sets[0].header.source_root), run_id=run_id, command="restore"
-    )
-    try:
-        outcomes = run_restore(
-            chain,
-            run_id=run_id,
-            write=write,
-            only_ids=frozenset(only_id) if only_id else None,
-            manifest_out=artifact_dir / f"docmend-{run_id}-manifest.jsonl",
+    manifest_out = artifact_dir / f"docmend-{run_id}-manifest.jsonl"
+    selector = frozenset(only_id) if only_id else None
+    if write:
+        try:
+            with commit.restore_write_context(
+                manifest_paths, run_id=run_id, manifest_out=manifest_out
+            ) as safety:
+                outcomes = run_restore(
+                    run_id=run_id,
+                    only_ids=selector,
+                    manifest_out=manifest_out,
+                    safety=safety,
+                )
+        except commit.SafetyRefusedError as exc:
+            typer.echo(f"refused: {exc}", err=True)
+            raise typer.Exit(3) from exc
+        except manifest.ManifestContainmentError as exc:
+            typer.echo(f"refused [manifest-containment]: {exc}", err=True)
+            raise typer.Exit(3) from exc
+        except artifacts.ArtifactError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from exc
+    else:
+        # Preview preserves the command's historical lock semantics while its
+        # engine remains structurally incapable of mutation.
+        run_lock = _acquire_run_lock_strict(
+            Path(chain.sets[0].header.source_root), run_id=run_id, command="restore"
         )
-    finally:
-        run_lock.release()
+        try:
+            outcomes = preview_restore(chain, run_id=run_id, only_ids=selector)
+        finally:
+            run_lock.release()
 
     if only_id and not outcomes:
         # A typo'd/stale --id must preserve the operator's stated intent as a

@@ -23,10 +23,12 @@ original permissions.
 """
 
 import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from types import MappingProxyType
+from typing import Final, Literal
 
 from docmend.lineage import ObjectIdentity, PriorAttempt
 from docmend.observability import get_logger
@@ -42,8 +44,10 @@ from docmend.writer.atomic import (
 )
 from docmend.writer.commit import (
     NO_HOOKS,
+    BoundFile,
     CommitHooks,
     InterferenceError,
+    WriteSafetyContext,
     bind_file,
     check_bound,
     check_destination,
@@ -51,6 +55,7 @@ from docmend.writer.commit import (
     guarded_replace,
 )
 from docmend.writer.manifest import (
+    ActionLifecycle,
     ManifestChain,
     ManifestHeader,
     ManifestRecord,
@@ -61,6 +66,8 @@ from docmend.writer.manifest import (
 
 type RestoreStatus = Literal["restored", "would_restore", "skipped", "failed"]
 
+_RESTORE_ENGINE_TOKEN: Final[object] = object()
+
 
 @dataclass(frozen=True)
 class RestoreOutcome:
@@ -69,6 +76,55 @@ class RestoreOutcome:
     path: str
     status: RestoreStatus
     detail: str | None
+
+
+@dataclass(frozen=True, init=False)
+class _RestoreRun:
+    """Engine-sealed restore state derived from a live capability."""
+
+    safety: WriteSafetyContext
+    chain: ManifestChain
+    lifecycle: Mapping[str, ActionLifecycle]
+    apply_terminals: Mapping[str, ManifestRecord]
+    run_id: str
+    manifest: ManifestWriter
+    root_resolved: Path
+    hooks: CommitHooks
+
+    def __init__(
+        self,
+        *,
+        _token: object | None = None,
+        safety: WriteSafetyContext | None = None,
+        chain: ManifestChain | None = None,
+        lifecycle: Mapping[str, ActionLifecycle] | None = None,
+        apply_terminals: Mapping[str, ManifestRecord] | None = None,
+        run_id: str | None = None,
+        manifest: ManifestWriter | None = None,
+        root_resolved: Path | None = None,
+        hooks: CommitHooks = NO_HOOKS,
+    ) -> None:
+        if _token is not _RESTORE_ENGINE_TOKEN:
+            raise TypeError("_RestoreRun is engine-sealed")
+        assert safety is not None
+        safety._confirm_active("restore")  # pyright: ignore[reportPrivateUsage]
+        if (
+            chain is None
+            or lifecycle is None
+            or apply_terminals is None
+            or run_id is None
+            or manifest is None
+            or root_resolved is None
+        ):
+            raise TypeError("_RestoreRun requires complete capability-derived state")
+        object.__setattr__(self, "safety", safety)
+        object.__setattr__(self, "chain", chain)
+        object.__setattr__(self, "lifecycle", MappingProxyType(dict(lifecycle)))
+        object.__setattr__(self, "apply_terminals", MappingProxyType(dict(apply_terminals)))
+        object.__setattr__(self, "run_id", run_id)
+        object.__setattr__(self, "manifest", manifest)
+        object.__setattr__(self, "root_resolved", root_resolved)
+        object.__setattr__(self, "hooks", hooks)
 
 
 def _sha(data: bytes) -> str:
@@ -110,29 +166,9 @@ def _verified_backup(record: ManifestRecord) -> bytes | RestoreOutcome:
     return data
 
 
-def run_restore(
+def _restore_inputs(
     chain: ManifestChain,
-    *,
-    run_id: str,
-    write: bool,
-    only_ids: frozenset[str] | None,
-    manifest_out: Path,
-    hooks: CommitHooks = NO_HOOKS,
-) -> list[RestoreOutcome]:
-    """Undo a validated apply CHAIN (adr-0019): the lifecycle reducer decides
-    each action's state; `applied` states replay LIFO (chain position then
-    seq); `pending-restore` states (an interrupted earlier restore) converge
-    through the adjudication table instead of tripping a collision; dangling
-    APPLY intents surface as findings (adjudicating those is resume's job).
-
-    IR-008, adr-0004: dry-run (the default) previews with no mutation. 2.0:
-    every inverse journals intent-then-terminal into a restore-kind manifest
-    whose header copies the chain's source_root/plan_sha256, links the chain
-    tip as its prior, and carries `backup_root: null` (a restore run takes no
-    tool backups; its inverse records hold no backup references — review
-    CR-NEW-003).
-    """
-    log = get_logger(__name__)
+) -> tuple[dict[str, ActionLifecycle], dict[str, ManifestRecord]]:
     lifecycle = reduce_lifecycle(chain)
     apply_terminals = {
         r.action_id: r
@@ -141,127 +177,44 @@ def run_restore(
         for r in s.records
         if r.result == "applied"
     }
-    tip = chain.sets[-1]
-    root_header = chain.sets[0].header
-    root_resolved = Path(root_header.source_root).resolve()
-    tip_sha = tip.sha256 or manifest_sha256(tip.path)
-    manifest: ManifestWriter | None = None
-    if write:
-        manifest = ManifestWriter(
-            manifest_out,
-            header=ManifestHeader(
-                run_id=run_id,
-                kind="restore",
-                source_root=root_header.source_root,
-                backup_root=None,
-                plan_sha256=root_header.plan_sha256,
-                prior_manifest_sha256=tip_sha,
-                prior_attempt=PriorAttempt(
-                    run_id=tip.header.run_id, report_sha256=None, manifest_sha256=tip_sha
-                ),
-                effective_excludes=root_header.effective_excludes,
-                created_at=datetime.now(UTC).isoformat(),
-            ),
-        )
+    return lifecycle, apply_terminals
 
-    outcomes: list[RestoreOutcome] = []
-    # LIFO over ORIGINAL apply actions: latest mutation undone first.
-    ordered = sorted(
+
+def _ordered_lifecycle(
+    lifecycle: Mapping[str, ActionLifecycle],
+) -> list[tuple[str, ActionLifecycle]]:
+    """Return inverse work in deterministic LIFO mutation order."""
+    return sorted(
         lifecycle.items(),
         key=lambda item: (item[1].set_index, item[1].record.seq),
         reverse=True,
     )
-    try:
-        for action_id, state in ordered:
-            record = state.record
-            docmend_id = record.docmend_id
-            if only_ids is not None and docmend_id not in only_ids:
-                continue
-            if state.state == "pending-intent":
-                outcomes.append(
-                    RestoreOutcome(
-                        action_id,
-                        docmend_id,
-                        record.original_path,
-                        "skipped",
-                        f"dangling apply intent from {record.run_id}: resume the apply "
-                        f"run before restoring (adr-0019 adjudication is resume's job)",
-                    )
-                )
-                continue
-            if state.state == "failed":
-                continue  # the apply never happened; nothing to undo
-            if state.state == "restored":
-                outcomes.append(
-                    RestoreOutcome(
-                        action_id,
-                        docmend_id,
-                        record.undoes_action_id or action_id,
-                        "skipped",
-                        "already-restored",
-                    )
-                )
-                continue
-            if state.state == "pending-restore":
-                outcome = _converge_pending_restore(
-                    action_id,
-                    state.record,
-                    apply_terminals.get(action_id),
-                    write=write,
-                    run_id=run_id,
-                    manifest=manifest,
-                    root_resolved=root_resolved,
-                    hooks=hooks,
-                )
-                if outcome is not None:
-                    outcomes.append(outcome)
-                    _log_outcome(log, outcome)
-                    continue
-                # never-happened: fall through and re-execute the inverse.
-            if state.state == "restore-failed":
-                # A failed inverse terminal proves no mutation landed, so a
-                # retry is a fresh inverse; failed -> intent -> applied is legal.
-                pass
-            undone = apply_terminals.get(action_id)
-            if undone is None:
-                continue  # unreachable: chain rules require the apply record
-            outcome = _restore_one(
-                undone,
-                write=write,
-                run_id=run_id,
-                manifest=manifest,
-                root_resolved=root_resolved,
-                hooks=hooks,
-            )
-            outcomes.append(outcome)
-            _log_outcome(log, outcome)
-    finally:
-        if manifest is not None:
-            manifest.close()
-    return outcomes
 
 
-def _log_outcome(log: object, outcome: RestoreOutcome) -> None:
-    get_logger(__name__).info(
-        "restore outcome", path=outcome.path, status=outcome.status, detail=outcome.detail
-    )
+def _non_action_outcome(action_id: str, state: ActionLifecycle) -> RestoreOutcome | None:
+    record = state.record
+    if state.state == "pending-intent":
+        return RestoreOutcome(
+            action_id,
+            record.docmend_id,
+            record.original_path,
+            "skipped",
+            f"dangling apply intent from {record.run_id}: resume the apply run before restoring",
+        )
+    if state.state == "restored":
+        return RestoreOutcome(
+            action_id,
+            record.docmend_id,
+            record.undoes_action_id or action_id,
+            "skipped",
+            "already-restored",
+        )
+    return None
 
 
-def _converge_pending_restore(
-    action_id: str,
-    intent: ManifestRecord,
-    undone: ManifestRecord | None,
-    *,
-    write: bool,
-    run_id: str,
-    manifest: ManifestWriter | None,
-    root_resolved: Path,
-    hooks: CommitHooks,
+def _preview_pending_restore(
+    action_id: str, intent: ManifestRecord, undone: ManifestRecord | None
 ) -> RestoreOutcome | None:
-    """An interrupted earlier restore left a dangling INVERSE intent: the
-    shared adjudication table classifies the crash-after state and this run
-    completes or adopts it — convergence instead of a collision trip (the
-    DMR-04 restore half). Returns None for never-happened (re-execute)."""
     verdict = adjudicate_dangling_intent(intent, undone=undone)
     if verdict.verdict == "never-happened":
         return None
@@ -273,26 +226,164 @@ def _converge_pending_restore(
             "failed",
             f"ERR-002: {verdict.detail}",
         )
-    if not write:
+    return RestoreOutcome(action_id, intent.docmend_id, intent.original_path, "would_restore", None)
+
+
+def preview_restore(
+    chain: ManifestChain, *, run_id: str, only_ids: frozenset[str] | None
+) -> list[RestoreOutcome]:
+    """Preview restore through a structurally read-only traversal."""
+    del run_id  # Preview outcome identities come from the validated chain.
+    lifecycle, apply_terminals = _restore_inputs(chain)
+    outcomes: list[RestoreOutcome] = []
+    for action_id, state in _ordered_lifecycle(lifecycle):
+        if only_ids is not None and state.record.docmend_id not in only_ids:
+            continue
+        non_action = _non_action_outcome(action_id, state)
+        if non_action is not None:
+            outcomes.append(non_action)
+            continue
+        if state.state == "failed":
+            continue
+        if state.state == "pending-restore":
+            pending = _preview_pending_restore(
+                action_id, state.record, apply_terminals.get(action_id)
+            )
+            if pending is not None:
+                outcomes.append(pending)
+                continue
+        record = apply_terminals.get(action_id)
+        if record is not None:
+            outcomes.append(_preview_restore_one(record))
+    return outcomes
+
+
+def run_restore(
+    *,
+    run_id: str,
+    only_ids: frozenset[str] | None,
+    manifest_out: Path,
+    safety: WriteSafetyContext,
+    hooks: CommitHooks = NO_HOOKS,
+) -> list[RestoreOutcome]:
+    """Restore only the immutable chain authorized by a live capability."""
+    safety.confirm_restore(run_id=run_id, manifest_out=manifest_out)
+    chain = safety.chain
+    lifecycle, apply_terminals = _restore_inputs(chain)
+    tip = chain.sets[-1]
+    root_header = chain.sets[0].header
+    root_resolved = Path(root_header.source_root).resolve()
+    tip_sha = tip.sha256 or manifest_sha256(tip.path)
+    manifest = ManifestWriter(
+        manifest_out,
+        header=ManifestHeader(
+            run_id=run_id,
+            kind="restore",
+            source_root=root_header.source_root,
+            backup_root=None,
+            plan_sha256=root_header.plan_sha256,
+            prior_manifest_sha256=tip_sha,
+            prior_attempt=PriorAttempt(
+                run_id=tip.header.run_id, report_sha256=None, manifest_sha256=tip_sha
+            ),
+            effective_excludes=root_header.effective_excludes,
+            created_at=datetime.now(UTC).isoformat(),
+        ),
+    )
+    run = _RestoreRun(
+        _token=_RESTORE_ENGINE_TOKEN,
+        safety=safety,
+        chain=chain,
+        lifecycle=lifecycle,
+        apply_terminals=apply_terminals,
+        run_id=run_id,
+        manifest=manifest,
+        root_resolved=root_resolved,
+        hooks=hooks,
+    )
+    outcomes: list[RestoreOutcome] = []
+    try:
+        for action_id, state in _ordered_lifecycle(lifecycle):
+            record = state.record
+            if only_ids is not None and record.docmend_id not in only_ids:
+                continue
+            non_action = _non_action_outcome(action_id, state)
+            if non_action is not None:
+                outcomes.append(non_action)
+                continue
+            if state.state == "failed":
+                continue
+            if state.state == "pending-restore":
+                outcome = _converge_pending_restore(run, action_id)
+                if outcome is not None:
+                    outcomes.append(outcome)
+                    _log_outcome(outcome)
+                    continue
+            if action_id in apply_terminals:
+                outcome = _restore_one(run, action_id)
+                outcomes.append(outcome)
+                _log_outcome(outcome)
+    finally:
+        manifest.close()
+    return outcomes
+
+
+def _restore_one(run: _RestoreRun, action_id: str) -> RestoreOutcome:
+    """Execute one inverse from sealed state; raw records are not accepted."""
+    try:
+        record = run.apply_terminals[action_id]
+    except KeyError as exc:
+        raise KeyError(f"{action_id}: not in validated chain") from exc
+    return _restore_record(
+        record,
+        run_id=run.run_id,
+        manifest=run.manifest,
+        root_resolved=run.root_resolved,
+        hooks=run.hooks,
+    )
+
+
+def _log_outcome(outcome: RestoreOutcome) -> None:
+    get_logger(__name__).info(
+        "restore outcome", path=outcome.path, status=outcome.status, detail=outcome.detail
+    )
+
+
+def _converge_pending_restore(run: _RestoreRun, action_id: str) -> RestoreOutcome | None:
+    """An interrupted earlier restore left a dangling INVERSE intent: the
+    shared adjudication table classifies the crash-after state and this run
+    completes or adopts it — convergence instead of a collision trip (the
+    DMR-04 restore half). Returns None for never-happened (re-execute)."""
+    try:
+        intent = run.lifecycle[action_id].record
+    except KeyError as exc:
+        raise KeyError(f"{action_id}: not in validated chain") from exc
+    undone = run.apply_terminals.get(action_id)
+    verdict = adjudicate_dangling_intent(intent, undone=undone)
+    if verdict.verdict == "never-happened":
+        return None
+    if verdict.verdict == "external-interference":
         return RestoreOutcome(
-            action_id, intent.docmend_id, intent.original_path, "would_restore", None
+            action_id,
+            intent.docmend_id,
+            intent.original_path,
+            "failed",
+            f"ERR-002: {verdict.detail}",
         )
     if verdict.verdict == "finish-remaining":
         try:
             finish_remaining(
                 intent,
                 undone=undone,
-                root_resolved=root_resolved,
-                hooks=hooks,
+                root_resolved=run.root_resolved,
+                hooks=run.hooks,
             )
         except WriteError as exc:
             return RestoreOutcome(
                 action_id, intent.docmend_id, intent.original_path, "failed", f"ERR-003: {exc}"
             )
-    if manifest is not None:
-        # The adjudication terminal: the dangling inverse intent's immutable
-        # fields verbatim; run_id is this run's (chain closure, CR-NEW-002).
-        manifest.append(intent.model_copy(update={"result": "applied", "run_id": run_id}))
+    # This run asserts the closure terminal for the factory-validated intent.
+    run.manifest.append(intent.model_copy(update={"result": "applied", "run_id": run.run_id}))
     return RestoreOutcome(action_id, intent.docmend_id, intent.original_path, "restored", None)
 
 
@@ -329,23 +420,21 @@ def _inverse_record(
     )
 
 
-def _restore_one(
-    record: ManifestRecord,
-    *,
-    write: bool,
-    run_id: str,
-    manifest: ManifestWriter | None,
-    root_resolved: Path,
-    hooks: CommitHooks,
-) -> RestoreOutcome:
-    # ---- Preflight: verify EVERY recovery input before ANY mutation (codex
-    # CR-003). A restore that mutates and then discovers a bad input has
-    # destroyed state inside the disaster-recovery path itself — every early
-    # return in this section leaves both live files byte-identical.
+@dataclass(frozen=True)
+class _PreparedRestore:
+    record: ManifestRecord
+    original: Path
+    target: Path
+    live: BoundFile
+    backup: bytes | None
+    clobbered: bytes | None
+
+
+def _prepare_restore(record: ManifestRecord) -> _PreparedRestore | RestoreOutcome:
+    """Validate every recovery input without exposing a mutation branch."""
     original = Path(record.original_path)
     target = Path(record.target_path)
     try:
-        # Hash, mode, and identity describe one descriptor-bound applied file.
         live = bind_file(target)
     except InterferenceError as exc:
         return RestoreOutcome(
@@ -371,8 +460,6 @@ def _restore_one(
             "skipped",
             "modified-since-apply",
         )
-    mode = live.mode
-
     if record.operation != "rewrite" and original.exists():
         return RestoreOutcome(
             record.action_id,
@@ -389,13 +476,7 @@ def _restore_one(
         backup = verdict
     clobbered: bytes | None = None
     if record.overwritten_sha256 is not None and record.operation != "rewrite":
-        # The overwrite policy destroyed a pre-existing target (OQ-035/G-002).
         if record.overwritten_backup_path is None:
-            # Declared external preservation: docmend holds no bytes to
-            # reinstate the clobbered file. Restoring only our own mutation
-            # would report success while that file stays missing (codex
-            # CR-NEW-003) — the operator's external strategy recovers the
-            # WHOLE record, so skip it, mutating nothing.
             return RestoreOutcome(
                 record.action_id,
                 record.docmend_id,
@@ -403,7 +484,6 @@ def _restore_one(
                 "skipped",
                 "no-backup: overwritten target restorable only from external preservation",
             )
-        # Its backup must read and verify BEFORE we undo our own mutation.
         try:
             clobbered = Path(record.overwritten_backup_path).read_bytes()
         except OSError as exc:
@@ -422,10 +502,35 @@ def _restore_one(
                 "failed",
                 "ERR-004: overwritten-target backup hash mismatch",
             )
-    if not write:
-        return RestoreOutcome(
-            record.action_id, record.docmend_id, record.original_path, "would_restore", None
-        )
+    return _PreparedRestore(record, original, target, live, backup, clobbered)
+
+
+def _preview_restore_one(record: ManifestRecord) -> RestoreOutcome:
+    prepared = _prepare_restore(record)
+    if isinstance(prepared, RestoreOutcome):
+        return prepared
+    return RestoreOutcome(
+        record.action_id, record.docmend_id, record.original_path, "would_restore", None
+    )
+
+
+def _restore_record(
+    record: ManifestRecord,
+    *,
+    run_id: str,
+    manifest: ManifestWriter,
+    root_resolved: Path,
+    hooks: CommitHooks,
+) -> RestoreOutcome:
+    prepared = _prepare_restore(record)
+    if isinstance(prepared, RestoreOutcome):
+        return prepared
+    original = prepared.original
+    target = prepared.target
+    live = prepared.live
+    mode = live.mode
+    backup = prepared.backup
+    clobbered = prepared.clobbered
 
     # ---- Journal-every-mutation (adr-0019): stage any replacement output
     # FIRST (a tool-owned temp is not corpus mutation), capture the inverse's
@@ -436,26 +541,23 @@ def _restore_one(
         if backup is not None:
             staged = stage_bytes(original, backup, mode=mode)
     except WriteError as exc:
-        if manifest is not None:
-            manifest.append(
-                _inverse_record(
-                    record, run_id=run_id, result="failed", identities=(None, None)
-                ).model_copy(update={"after_sha256": None, "error": _staging_error(exc)})
-            )
+        manifest.append(
+            _inverse_record(
+                record, run_id=run_id, result="failed", identities=(None, None)
+            ).model_copy(update={"after_sha256": None, "error": _staging_error(exc)})
+        )
         return RestoreOutcome(
             record.action_id, record.docmend_id, record.original_path, "failed", f"ERR-003: {exc}"
         )
     expected_identity = staged.identity if staged is not None else source_identity
-    intent = None
-    if manifest is not None:
-        intent = manifest.append(
-            _inverse_record(
-                record,
-                run_id=run_id,
-                result="intent",
-                identities=(source_identity, expected_identity),
-            )
+    intent = manifest.append(
+        _inverse_record(
+            record,
+            run_id=run_id,
+            result="intent",
+            identities=(source_identity, expected_identity),
         )
+    )
 
     # ---- Mutate: all inputs proven above. Ordering is loss-proof (codex
     # CR-003 residual): the original is reinstated FIRST and the applied
@@ -530,17 +632,16 @@ def _restore_one(
                 f"ERR-002 external-interference: {exc} "
                 "(intermediate preserved; re-run adjudicates)",
             )
-        if manifest is not None and intent is not None:
-            manifest.append(
-                intent.model_copy(
-                    update={
-                        "result": "failed",
-                        "after_sha256": None,
-                        "run_id": run_id,
-                        "error": ErrorInfo(error_class="ERR-002", message=str(exc)),
-                    }
-                )
+        manifest.append(
+            intent.model_copy(
+                update={
+                    "result": "failed",
+                    "after_sha256": None,
+                    "run_id": run_id,
+                    "error": ErrorInfo(error_class="ERR-002", message=str(exc)),
+                }
             )
+        )
         return RestoreOutcome(
             record.action_id,
             record.docmend_id,
@@ -559,17 +660,16 @@ def _restore_one(
                 "failed",
                 f"ERR-003: {exc} (intermediate preserved; re-run adjudicates)",
             )
-        if manifest is not None and intent is not None:
-            manifest.append(
-                intent.model_copy(
-                    update={
-                        "result": "failed",
-                        "after_sha256": None,
-                        "run_id": run_id,
-                        "error": _staging_error(exc),
-                    }
-                )
+        manifest.append(
+            intent.model_copy(
+                update={
+                    "result": "failed",
+                    "after_sha256": None,
+                    "run_id": run_id,
+                    "error": _staging_error(exc),
+                }
             )
+        )
         return RestoreOutcome(
             record.action_id,
             record.docmend_id,
@@ -578,8 +678,7 @@ def _restore_one(
             f"ERR-003: {exc}",
         )
 
-    if manifest is not None and intent is not None:
-        manifest.append(intent.model_copy(update={"result": "applied"}))
+    manifest.append(intent.model_copy(update={"result": "applied"}))
     return RestoreOutcome(
         record.action_id, record.docmend_id, record.original_path, "restored", None
     )

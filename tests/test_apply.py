@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 from tests.helpers.manifest2 import read_records
-from tests.helpers.writectx import apply_safety
+from tests.helpers.writectx import apply_safety, restore_safety
 
 from corpus import FileRecipe, materialize, seeded_faker
 from docmend import discovery, planning
@@ -29,7 +29,7 @@ from docmend.writer.apply import execute_plan, preview_plan
 from docmend.writer.backup import BackupError
 from docmend.writer.commit import NO_HOOKS, CommitHooks
 from docmend.writer.gate import ApplyOptions
-from docmend.writer.manifest import read_manifest_chain, read_manifest_set
+from docmend.writer.manifest import read_manifest_set
 
 RUN_ID = "run_20260706T000000Z_00008f"
 PLAN_RUN_ID = "run_20260706T000000Z_00008e"
@@ -1454,13 +1454,21 @@ def test_dmr01_colliding_backup_keys__both_preserved_and_restorable(
     stored = {Path(p).read_bytes() for p in backup_paths}
     assert stored == {md_original, txt_original, b"alpha\n"}
 
-    outcomes = run_restore(
-        read_manifest_chain([manifest_path]),
-        run_id="run_20260710T000001Z_00d0a2",
-        write=True,
-        only_ids=None,
-        manifest_out=tmp_path / "restore-manifest.jsonl",
-    )
+    restore_run = "run_20260710T000001Z_00d0a2"
+    restore_manifest = tmp_path / "restore-manifest.jsonl"
+    with restore_safety(
+        [manifest_path],
+        run_id=restore_run,
+        manifest_out=restore_manifest,
+        state_dir=tmp_path / "restore-state",
+        monkeypatch=monkeypatch,
+    ) as safety:
+        outcomes = run_restore(
+            run_id=restore_run,
+            only_ids=None,
+            manifest_out=restore_manifest,
+            safety=safety,
+        )
     assert all(o.status == "restored" for o in outcomes), [
         (o.path, o.status, o.detail) for o in outcomes
     ]

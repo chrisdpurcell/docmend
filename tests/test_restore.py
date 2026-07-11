@@ -11,7 +11,9 @@ mirroring `tests/test_cli_apply.py`'s fixtures.
 """
 
 import hashlib
+import inspect
 import logging
+import shutil
 from collections.abc import Iterator, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -19,14 +21,18 @@ from pathlib import Path
 import pytest
 import structlog
 from tests.helpers.manifest2 import header_doc, read_records, write_set
+from tests.helpers.writectx import restore_safety
 from typer.testing import CliRunner
 
+import docmend.restore as restore_module
 from corpus import FileRecipe, materialize, seeded_faker
 from docmend import lock
 from docmend.cli import app
 from docmend.config import DocmendConfig, RenameConfig
-from docmend.restore import RestoreOutcome, run_restore
-from docmend.writer.commit import CommitHooks
+from docmend.lineage import PriorAttempt
+from docmend.restore import RestoreOutcome, preview_restore
+from docmend.restore import run_restore as _run_restore_engine
+from docmend.writer.commit import NO_HOOKS, CommitHooks
 from docmend.writer.manifest import (
     ManifestChain,
     ManifestRecord,
@@ -67,9 +73,137 @@ def _set_with(tmp_path: Path, records: Sequence[ManifestRecord]) -> ManifestChai
     return ManifestChain(sets=(filled,))
 
 
+def run_restore(
+    chain: ManifestChain,
+    *,
+    run_id: str,
+    write: bool,
+    only_ids: frozenset[str] | None,
+    manifest_out: Path,
+    hooks: CommitHooks = NO_HOOKS,
+) -> list[RestoreOutcome]:
+    """Route legacy test call shapes through the split production entrypoints."""
+    if not write:
+        return preview_restore(chain, run_id=run_id, only_ids=only_ids)
+    evidence_dir = manifest_out.parent / ".restore-evidence"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    paths = [manifest_set.path for manifest_set in chain.sets]
+    original_evidence = all(
+        path.exists()
+        and read_manifest_set(path).header == manifest_set.header
+        and read_manifest_set(path).records == manifest_set.records
+        for path, manifest_set in zip(paths, chain.sets, strict=True)
+    )
+    materialized_paths = paths if original_evidence else []
+    prior_sha: str | None = None
+    prior_run: str | None = None
+    for index, manifest_set in enumerate(chain.sets if not original_evidence else ()):
+        path = evidence_dir / f"set-{index}.jsonl"
+        backup_root = evidence_dir / "backups"
+        normalized: list[ManifestRecord] = []
+        set_intents: set[str] = set()
+        for record in manifest_set.records:
+            current = record
+            action_seq = current.action_id.rsplit("/", 1)[-1]
+            if current.backup_path is not None:
+                relative = str(
+                    Path(current.original_path).relative_to(manifest_set.header.source_root)
+                )
+                destination = backup_root / current.run_id / action_seq / "source" / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(current.backup_path, destination)
+                current = current.model_copy(update={"backup_path": str(destination.resolve())})
+            if current.overwritten_backup_path is not None:
+                relative = str(
+                    Path(current.target_path).relative_to(manifest_set.header.source_root)
+                )
+                destination = backup_root / current.run_id / action_seq / "overwritten" / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(current.overwritten_backup_path, destination)
+                current = current.model_copy(
+                    update={"overwritten_backup_path": str(destination.resolve())}
+                )
+            if current.result == "intent":
+                set_intents.add(current.action_id)
+            elif current.result == "applied" and current.action_id not in set_intents:
+                normalized.append(current.model_copy(update={"result": "intent", "error": None}))
+                set_intents.add(current.action_id)
+            normalized.append(current)
+        normalized = [
+            record.model_copy(update={"seq": seq}) for seq, record in enumerate(normalized, start=1)
+        ]
+        header = manifest_set.header.model_copy(
+            update={
+                "backup_root": str(backup_root.resolve())
+                if any(
+                    record.backup_path is not None or record.overwritten_backup_path is not None
+                    for record in normalized
+                )
+                else None,
+                "prior_manifest_sha256": prior_sha,
+                "prior_attempt": (
+                    PriorAttempt(
+                        run_id=prior_run,
+                        report_sha256=None,
+                        manifest_sha256=prior_sha,
+                    )
+                    if prior_sha is not None and prior_run is not None
+                    else manifest_set.header.prior_attempt
+                ),
+            }
+        )
+        write_set(
+            path,
+            header.model_dump(mode="json"),
+            *(record.model_dump(mode="json") for record in normalized),
+        )
+        materialized_paths.append(path)
+        prior_sha = manifest_sha256(path)
+        prior_run = header.run_id
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        with restore_safety(
+            materialized_paths,
+            run_id=run_id,
+            manifest_out=manifest_out,
+            state_dir=manifest_out.parent / ".restore-state",
+            monkeypatch=monkeypatch,
+        ) as safety:
+            return _run_restore_engine(
+                run_id=run_id,
+                only_ids=only_ids,
+                manifest_out=manifest_out,
+                safety=safety,
+                hooks=hooks,
+            )
+    finally:
+        monkeypatch.undo()
+
+
 # ---------------------------------------------------------------------------
 # Engine tests (run_restore)
 # ---------------------------------------------------------------------------
+
+
+class TestRestoreEntrypointSplit:
+    def test_mutation_entrypoint_has_no_chain_or_write_substitution(self) -> None:
+        parameters = inspect.signature(_run_restore_engine).parameters
+        assert "chain" not in parameters
+        assert "write" not in parameters
+        assert "safety" in parameters
+        assert tuple(
+            inspect.signature(
+                restore_module._restore_one  # pyright: ignore[reportPrivateUsage]
+            ).parameters
+        ) == ("run", "action_id")
+        with pytest.raises(TypeError, match="engine-sealed"):
+            restore_module._RestoreRun()  # pyright: ignore[reportPrivateUsage]
+
+    def test_preview_restore_is_structurally_read_only(self) -> None:
+        parameters = inspect.signature(preview_restore).parameters
+        assert "write" not in parameters
+        assert "manifest_out" not in parameters
+        assert "safety" not in parameters
 
 
 def test_restore_dry_run__previews_and_touches_nothing(tmp_path: Path) -> None:

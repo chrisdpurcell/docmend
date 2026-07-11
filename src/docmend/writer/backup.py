@@ -41,6 +41,15 @@ def backup_file(
     dest = backup_root / run_id / action_seq / role / relative_path
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # Hoisted out of the write-once try below (a leaf-parent path that
+        # pre-exists as a REGULAR FILE raises FileExistsError here too, but it
+        # means "can't create the directory", not "key already occupied" —
+        # conflating the two mislabeled an ordinary mkdir failure as a
+        # write-once violation).
+        msg = f"{dest}: backup copy failed ({exc})"
+        raise BackupError(msg) from exc
+    try:
         # clobber=False publishes via hardlink: atomic AND EEXIST-safe, which
         # is what makes the write-once contract race-proof rather than a
         # check-then-write.

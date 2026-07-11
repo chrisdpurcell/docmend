@@ -461,6 +461,44 @@ class TestApplyArtifactGuard:
         assert "artifact-destination" in result.output
         assert victim.read_bytes() == before
 
+    def test_resume_run_id_derived_manifest__aliases_as_input_refused_exit_3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The manifest path --resume-run-id derives
+        (.docmend/docmend-<ID>-manifest.jsonl) must count as an input artifact
+        for the DMR-02 guard, same as an explicit --resume-manifest path —
+        otherwise --report could be pointed at it and clobber the very
+        manifest apply is about to reconcile against.
+
+        guard_artifact_destination's alias check itself compares resolved
+        paths only and does not require the input artifact to exist. But
+        `_read_resume_records` (adr-0006) runs BEFORE the guard in apply's own
+        pipeline and hard-requires the manifest to be readable (ERR-006, exit
+        2) — so an EMPTY (but present) manifest file is created here to reach
+        the guard at all; a --resume-run-id naming a manifest that has never
+        been written yet is not a reachable state through the CLI.
+        """
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        make_corpus(corpus)
+        plan_path = _make_plan(corpus)
+        derived_manifest = Path(".docmend") / "docmend-X-manifest.jsonl"
+        derived_manifest.parent.mkdir(parents=True, exist_ok=True)
+        derived_manifest.write_text("", encoding="utf-8")
+        result = runner.invoke(
+            app,
+            [
+                "apply",
+                str(plan_path),
+                "--resume-run-id",
+                "X",
+                "--report",
+                str(derived_manifest),
+            ],
+        )
+        assert result.exit_code == 3, result.output
+        assert "artifact-destination" in result.output
+
     def test_write__report_published_inside_run_lock(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

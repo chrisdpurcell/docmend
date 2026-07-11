@@ -125,6 +125,30 @@ def test_backup_reread_corruption__raises(tmp_path: Path, monkeypatch: pytest.Mo
         )
 
 
+def test_backup_leaf_parent_is_file__mkdir_reported_as_copy_failed(tmp_path: Path) -> None:
+    """If the leaf parent path (.../a1/source) pre-exists as a REGULAR FILE
+    rather than a directory, `dest.parent.mkdir` raises FileExistsError too —
+    but that is an honest mkdir/copy failure, not the write-once violation the
+    `except FileExistsError` clause around `atomic_write_bytes` exists to
+    report. Must NOT match "write-once"."""
+    backup_root = tmp_path / "backups"
+    parent = backup_root / RUN_ID / "a1"
+    parent.mkdir(parents=True)
+    (parent / "source").write_bytes(b"not a directory")
+    data = b"payload"
+    with pytest.raises(backup.BackupError, match="backup copy failed") as excinfo:
+        backup.backup_file(
+            data,
+            backup_root=backup_root,
+            run_id=RUN_ID,
+            action_seq="a1",
+            role="source",
+            relative_path="a.txt",
+            expected_sha256=_sha(data),
+        )
+    assert "write-once" not in str(excinfo.value)
+
+
 def test_backup_destination_unwritable__raises(tmp_path: Path) -> None:
     root = tmp_path / "backups"
     root.mkdir()

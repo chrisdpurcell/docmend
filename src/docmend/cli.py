@@ -582,7 +582,7 @@ def apply(
     _guard_artifact_paths(
         [report_path, manifest_path],
         corpus_root=source_root,
-        input_artifacts=[plan_path, *(resume_manifest or [])],
+        input_artifacts=[plan_path, *_resume_manifest_paths(resume_manifest, resume_run_id)],
         config=config,
     )
     run_lock = _acquire_run_lock_strict(source_root, run_id=run_id, command="apply")
@@ -657,6 +657,24 @@ def apply(
         raise typer.Exit(1)
 
 
+def _resume_manifest_paths(
+    resume_manifest: list[Path] | None,
+    resume_run_id: list[str] | None,
+) -> list[Path]:
+    """Combine explicit --resume-manifest paths with --resume-run-id derivations.
+
+    Shared by `_read_resume_records` and the apply artifact-destination guard
+    (DMR-02) so both see the same resume manifests as input aliases — a
+    manifest reachable only via --resume-run-id must not slip past the guard
+    just because it was never named with --resume-manifest.
+    """
+    paths = list(resume_manifest or [])
+    paths.extend(
+        Path(ARTIFACT_DIR_NAME) / f"docmend-{rid}-manifest.jsonl" for rid in resume_run_id or []
+    )
+    return paths
+
+
 def _read_resume_records(
     resume_manifest: list[Path] | None,
     resume_run_id: list[str] | None,
@@ -670,10 +688,7 @@ def _read_resume_records(
     operator's mix-up (ERR-006 posture, exit 2). Pre-1.2 manifests carry no
     source_root; they load unchecked, protected by the action-ID match itself.
     """
-    paths = list(resume_manifest or [])
-    paths.extend(
-        Path(ARTIFACT_DIR_NAME) / f"docmend-{rid}-manifest.jsonl" for rid in resume_run_id or []
-    )
+    paths = _resume_manifest_paths(resume_manifest, resume_run_id)
     if not paths:
         return None
     root_resolved = str(source_root.resolve())

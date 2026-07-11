@@ -13,7 +13,7 @@
 | 0003 | In-place mutation + atomic-replace output model | 🔴 1 | RQ-013 ⚑, D-004 | ✅ accepted |
 | 0004 | Apply safety gate + preservation posture | 🔴 1 | RQ-005 ⚑, RQ-007 | ✅ accepted |
 | 0005 | Durable artifact schema contract (JSON + NDJSON) | 🔴 1 | RQ-004 ⚑, DR-001–004 | ✅ accepted |
-| 0006 | Resume & recovery model | 🟡 2 | RQ-003 | ✅ accepted |
+| 0006 | Resume & recovery model | 🟡 2 | RQ-003 | ♻️ superseded by 0019 |
 | 0007 | Concurrency primitive: ProcessPool + forkserver | 🟡 2 | RQ-016 | ✅ accepted |
 | 0008 | Stable document identity (UUIDv7 + manifest) | 🟡 2 | RQ-002 | ✅ accepted |
 | 0009 | Encoding detection & dual skip-gate | 🟡 2 | RQ-022, D-002 | ✅ accepted |
@@ -26,6 +26,9 @@
 | 0016 | The mechanical-transform boundary (consolidated) | 🟢 3 | RQ-025/030/031 | ✅ accepted |
 | 0017 | Branch strategy, protection, release process, CI/CD | 🟡 2 | workflow adoption (no RQ; authored 2026-07-06 before MS-0) | ✅ accepted |
 | 0018 | Doc Processing repository boundary | 🟡 2 | 2026-07-07 cross-repo alignment review (no RQ; outside the two original review passes) | ✅ accepted |
+| 0019 | Manifest 2.0 recovery model | 🔴 1 | 2026-07-10 comprehensive review DMR-03/04 (safety-core design; supersedes 0006) | ✅ accepted |
+| 0020 | Commit-boundary object identity | 🔴 1 | 2026-07-10 comprehensive review DMR-06/07 (safety-core design) | ✅ accepted |
+| 0021 | Artifact destination guard | 🟡 2 | 2026-07-10 comprehensive review DMR-02 (safety-core design) | ✅ accepted |
 
 ## Tier 1 — write now (foundational; hard to reverse)
 

@@ -6,7 +6,7 @@ description: "docmend's inventory, plan, report, and manifest are governed by fo
 doc_type: 'adr'
 status: 'accepted'
 created: '2026-07-05'
-updated: '2026-07-06'
+updated: '2026-07-10'
 reviewed: null
 owner: 'chrisdpurcell'
 consumer: 'agent'
@@ -71,6 +71,7 @@ Confirmed by: fixture artifacts that round-trip (inventory/plan/report write→r
 
 ## More Information
 
+- **Amendment (2026-07-10, comprehensive review / safety-core design):** the first MAJOR schema bump and the fifth artifact arrive together (spec rev 0.26, targets v2.0.0). **Manifest 2.0** (`adr-0019-manifest-2-recovery-model`) adds a line-1 header record (run, kind, roots, plan hash, chain links), intent/terminal lifecycle records for every mutation kind, durable object-identity fields, and restore `undoes` references. **Compatibility is a recorded clean break**: no real-library runs exist, so v2 tooling rejects every 1.x manifest with an operator message naming docmend 1.0.2 as the restore path for pre-2.0 runs — the MAJOR-bump discipline this ADR anticipated, exercised deliberately. The **report schema** gains the `not-attempted` outcome status, its totals extension, and the attempt-lineage fields (`prior_attempt`, `manifest_sha256`). A **fifth durable artifact** joins the registry: the optional `verify-report` (durable verification evidence, written through the `adr-0021` destination guard). Plan and inventory schemas are unchanged.
 - **Amendment (2026-07-06, OQ-004 / gap-32):** the hard-link record shape is now genuinely specified, not merely asserted. Owner adopted the gap-32 policy — detect `st_nlink > 1` at scan, record the shared-inode alias group in the inventory, and skip-and-report at apply rather than mutate (because `os.replace()` on one path breaks the link). Spec: §10.3 EC-011, DR-001, §21 OQ-004. Prior to this the Decision Outcome claimed hard-link shapes were defined while no artifact defined them (consistency-audit finding).
 - Spec: §7.4 DR-001–DR-004, §9, §10.3 EC-008/EC-011, IR-007, §21 OQ-004 (Resolved RQ-004).
 - Research: `append-safe-manifest-format`, `json-schema-versioning-migration`, `json-schema-validator-library`.

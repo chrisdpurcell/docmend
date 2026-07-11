@@ -21,6 +21,10 @@ spec:
   include:
     - "docs/specs/**/*.md"
   exclude: []
+  # DMR- is the 2026-07-10 comprehensive review's finding namespace (docs/codex-reviews/),
+  # cited by spec rev 0.26; owned there, not declared in Appendix A.
+  reference_prefixes:
+    - "DMR"
 
 # NOTE: no `markdown.frontmatter` block — the Frontmatter Standard is not adopted (ADR-0001).
 # NOTE: no `markdown.adr.require_sections` block either — that check rides the frontmatter

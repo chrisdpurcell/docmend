@@ -4,9 +4,9 @@ id: 'adr-0006-docmend-resume-and-recovery-model'
 title: 'ADR 0006: Resume and recovery model'
 description: 'docmend resumes an interrupted run by reconciling the immutable plan against an append-only NDJSON manifest/journal and current filesystem hashes; atomic writes guarantee no partial-target state to reconcile, and manifest recovery follows a Redis-AOF-style torn-trailing-line rule.'
 doc_type: 'adr'
-status: 'accepted'
+status: 'superseded'
 created: '2026-07-05'
-updated: '2026-07-07'
+updated: '2026-07-10'
 reviewed: null
 owner: 'chrisdpurcell'
 consumer: 'agent'
@@ -23,7 +23,7 @@ related:
   - 'docs/adr/adr-0003-in-place-mutation-output-model.md'
   - 'docs/adr/adr-0005-durable-artifact-schema-contract.md'
 supersedes: []
-superseded_by: null
+superseded_by: 'docs/adr/adr-0019-manifest-2-recovery-model.md'
 source: []
 confidence: 'high'
 visibility: 'public'
@@ -71,6 +71,7 @@ Confirmed by: kill-and-resume tests that crash at each pipeline stage and prove 
 
 ## More Information
 
+- **Superseded (2026-07-10)** by `adr-0019-manifest-2-recovery-model` after the comprehensive review confirmed this model's per-record trust, single-kind intent coverage, and wall-clock resume ordering as rollout blockers (DMR-03/04). The plan/manifest/hash triangulation, incremental fsync-per-record NDJSON, and AOF torn-tail rule carry forward into 2.0; this record remains the accurate description of manifest 1.x behavior (docmend ≤ 1.0.2).
 - **Amendment (2026-07-07, cross-repo alignment review):** the "never a partial target" invariant holds per WRITE, but `rename_and_rewrite` is a multi-step action (publish target, unlink source, record) — a hard kill inside that window used to leave a mutated corpus with no manifest evidence, degrading resume to indirect signals (stale-hash/unreadable skips). Manifest schema 1.3 closes this with a **write-ahead intent record** (`result: "intent"`, carrying the expected after-hash and, under overwrite, the clobbered target's hash) appended and fsync'd before the first mutation step. On resume, a **dangling** intent (no later applied/failed record for its action) is reconciled from disk state: target matches the expected after-hash → complete the unlink if pending and append the applied record the interrupted run never wrote (the union of manifests stays the complete restore evidence); target missing or still holding the recorded pre-overwrite bytes → the publish never happened, execute normally; anything else → ERR-002. Restore replays and verify reconciles only `result == "applied"` records, so intents are inert to both. Single-step actions stay one-record.
 - Spec: §7.1 FR-013, §12.2/§12.3, NFR-002; D-004 (atomic replace).
 - Research: `append-safe-manifest-format`.

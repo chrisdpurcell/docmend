@@ -20,8 +20,8 @@ import hashlib
 import json
 import os
 import stat
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
@@ -492,3 +492,241 @@ def read_manifest_set(path: Path, *, check_backup_objects: bool = True) -> Manif
     _validate_containment(path, header, records, resolve=check_backup_objects)
     _validate_backup_trust(path, header, records, check_objects=check_backup_objects)
     return ManifestSet(header=header, records=records, path=path)
+
+
+@dataclass(frozen=True)
+class ManifestChain:
+    """Validated manifest sets ordered root→tip by their hash links."""
+
+    sets: list[ManifestSet]
+
+
+def _order_chain(paths: Sequence[Path], sets: list[ManifestSet]) -> list[ManifestSet]:
+    """Order by prior_manifest_sha256 links — never caller order (adr-0019)."""
+    roots = [s for s in sets if s.header.prior_manifest_sha256 is None]
+    if len(roots) != 1:
+        msg = (
+            f"manifest chain must have exactly one root manifest "
+            f"(prior_manifest_sha256: null); found {len(roots)} among {len(paths)} inputs"
+        )
+        raise ArtifactError(msg)
+    successors: dict[str, ManifestSet] = {}
+    for candidate in sets:
+        prior = candidate.header.prior_manifest_sha256
+        if prior is None:
+            continue
+        if prior in successors:
+            msg = (
+                f"manifest chain forks: both {successors[prior].path} and "
+                f"{candidate.path} link the same prior manifest"
+            )
+            raise ArtifactError(msg)
+        successors[prior] = candidate
+    ordered = [roots[0]]
+    while True:
+        assert ordered[-1].sha256 is not None
+        follower = successors.pop(ordered[-1].sha256, None)
+        if follower is None:
+            break
+        ordered.append(follower)
+    if successors:
+        orphan = next(iter(successors.values()))
+        msg = (
+            f"{orphan.path}: prior manifest link {orphan.header.prior_manifest_sha256} "
+            f"matches no supplied input — broken chain link"
+        )
+        raise ArtifactError(msg)
+    return ordered
+
+
+def _validate_chain_coherence(ordered: list[ManifestSet]) -> None:
+    root = ordered[0]
+    seen_runs: set[str] = set()
+    restore_seen = False
+    for current in ordered:
+        if current.header.source_root != root.header.source_root:
+            msg = f"{current.path}: source_root differs from the chain root's"
+            raise ArtifactError(msg)
+        if current.header.plan_sha256 != root.header.plan_sha256:
+            msg = f"{current.path}: plan_sha256 differs — one chain serves one plan"
+            raise ArtifactError(msg)
+        if current.header.run_id in seen_runs:
+            msg = f"{current.path}: duplicate run_id {current.header.run_id} in chain"
+            raise ArtifactError(msg)
+        seen_runs.add(current.header.run_id)
+        if current.header.kind == "restore":
+            restore_seen = True
+        elif restore_seen:
+            msg = (
+                f"{current.path}: apply-kind manifest after a restore in the same "
+                f"chain — re-application requires a fresh plan (adr-0019)"
+            )
+            raise ArtifactError(msg)
+
+
+def _validate_attempt_lineage(ordered: list[ManifestSet]) -> None:
+    """The locally provable attempt-chain/subchain invariants (review CR-006);
+    report-hash verification lives where report inputs exist: apply-resume at
+    edge-build time, verify (Plan D) chain-wide."""
+    chain_runs = {s.header.run_id for s in ordered}
+    for index, current in enumerate(ordered):
+        edge = current.header.prior_attempt
+        if current.header.prior_manifest_sha256 is None:
+            # Root: no edge (true first attempt) or a REPORT-flavored edge
+            # (its predecessors were report-only and produced no manifest).
+            if edge is not None and edge.manifest_sha256 is not None:
+                msg = (
+                    f"{current.path}: root manifest carries a manifest-flavored "
+                    f"prior_attempt but no prior manifest link"
+                )
+                raise ArtifactError(msg)
+            continue
+        if edge is None:
+            msg = f"{current.path}: non-root manifest missing its prior_attempt edge"
+            raise ArtifactError(msg)
+        predecessor = ordered[index - 1]
+        if edge.manifest_sha256 is not None:
+            if (
+                edge.manifest_sha256 != current.header.prior_manifest_sha256
+                or edge.run_id != predecessor.header.run_id
+            ):
+                msg = (
+                    f"{current.path}: manifest-flavored prior_attempt disagrees with "
+                    f"the subchain link — the attempt chain and manifest subchain "
+                    f"cannot diverge"
+                )
+                raise ArtifactError(msg)
+        elif edge.run_id in chain_runs:
+            msg = (
+                f"{current.path}: report-flavored prior_attempt names run "
+                f"{edge.run_id}, which produced a manifest in this chain — a "
+                f"report-only attempt has no manifest"
+            )
+            raise ArtifactError(msg)
+
+
+def _validate_cross_set_lifecycle(ordered: list[ManifestSet]) -> None:
+    """The cross-set transition table plus terminal closure (review
+    CR-NEW-002): a terminal with no same-set intent must close exactly one
+    earlier set's dangling intent, with immutable-field agreement."""
+    dangling: dict[str, ManifestRecord] = {}
+    terminal_applied: set[str] = set()
+    for current in ordered:
+        set_intents = {r.action_id for r in current.records if r.result == "intent"}
+        for record in current.records:
+            if record.result == "intent":
+                dangling[record.action_id] = record
+                continue
+            if record.action_id in terminal_applied:
+                msg = (
+                    f"{current.path}: {record.action_id}: terminal contradicts an "
+                    f"earlier applied record for the same action"
+                )
+                raise ArtifactError(msg)
+            if record.action_id not in set_intents:
+                closing = dangling.get(record.action_id)
+                if closing is None:
+                    msg = (
+                        f"{current.path}: {record.action_id}: standalone terminal "
+                        f"closes no dangling intent in the chain"
+                    )
+                    raise ArtifactError(msg)
+                for field in _IMMUTABLE_FIELDS:
+                    if field == "after_sha256" and record.result == "failed":
+                        continue  # the per-set failed-after exemption, cross-set
+                    if getattr(closing, field) != getattr(record, field):
+                        msg = (
+                            f"{current.path}: {record.action_id}: closure terminal "
+                            f"diverges from the dangling intent on immutable "
+                            f"field {field!r}"
+                        )
+                        raise ArtifactError(msg)
+            dangling.pop(record.action_id, None)
+            if record.result == "applied":
+                terminal_applied.add(record.action_id)
+
+
+def _validate_undoes_references(ordered: list[ManifestSet]) -> None:
+    applied_actions = {
+        r.action_id
+        for s in ordered
+        if s.header.kind == "apply"
+        for r in s.records
+        if r.result == "applied"
+    }
+    for current in ordered:
+        if current.header.kind != "restore":
+            continue
+        for record in current.records:
+            if record.undoes_action_id not in applied_actions:
+                msg = (
+                    f"{current.path}: {record.action_id}: undoes "
+                    f"{record.undoes_action_id}, which no apply record in this "
+                    f"chain applied"
+                )
+                raise ArtifactError(msg)
+
+
+def read_manifest_chain(
+    paths: Sequence[Path], *, check_backup_objects: bool = True
+) -> ManifestChain:
+    """Read, hash, order, and cross-validate a set of manifest files as one
+    chain (adr-0019). An EMPTY input is a legal empty chain: a report-only
+    predecessor produced no manifest (review CR-004)."""
+    if not paths:
+        return ManifestChain(sets=[])
+    sets = [
+        replace(
+            read_manifest_set(path, check_backup_objects=check_backup_objects),
+            sha256=manifest_sha256(path),
+        )
+        for path in paths
+    ]
+    ordered = _order_chain(paths, sets)
+    _validate_chain_coherence(ordered)
+    _validate_attempt_lineage(ordered)
+    _validate_cross_set_lifecycle(ordered)
+    _validate_undoes_references(ordered)
+    return ManifestChain(sets=ordered)
+
+
+type LifecycleState = Literal[
+    "pending-intent", "applied", "failed", "pending-restore", "restored", "restore-failed"
+]
+
+_APPLY_STATES: dict[str, LifecycleState] = {
+    "intent": "pending-intent",
+    "applied": "applied",
+    "failed": "failed",
+}
+_RESTORE_STATES: dict[str, LifecycleState] = {
+    "intent": "pending-restore",
+    "applied": "restored",
+    "failed": "restore-failed",
+}
+
+
+@dataclass(frozen=True)
+class ActionLifecycle:
+    state: LifecycleState
+    record: ManifestRecord
+    set_index: int
+
+
+def reduce_lifecycle(chain: ManifestChain) -> dict[str, ActionLifecycle]:
+    """Fold the chain into ONE state per ORIGINAL apply action — chain order
+    then seq, never wall-clock (adr-0019). Resume, restore, and verify all
+    consume this; the transition legality was already proven by the chain
+    rules, so the fold is pure: the newest record for an action wins, with
+    restore inverses mapped back through their undoes lineage."""
+    states: dict[str, ActionLifecycle] = {}
+    for index, current in enumerate(chain.sets):
+        for record in current.records:
+            if record.undoes_action_id is not None:
+                key = record.undoes_action_id
+                state = _RESTORE_STATES[record.result]
+            else:
+                key = record.action_id
+                state = _APPLY_STATES[record.result]
+            states[key] = ActionLifecycle(state=state, record=record, set_index=index)
+    return states

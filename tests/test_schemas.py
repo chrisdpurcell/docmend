@@ -33,6 +33,7 @@ from docmend.inventory import Inventory
 from docmend.plan import Plan, PlanSkipReason
 from docmend.report import Report
 from docmend.transform.dispatch import Operation
+from docmend.verify_report import VerifyReport
 from docmend.writer.manifest import ManifestRecord
 
 RUN_ID = "run_20260706T000000Z_abc123"
@@ -183,6 +184,30 @@ def _minimal_report() -> dict[str, object]:
     }
 
 
+def _minimal_verify_report() -> dict[str, object]:
+    return {
+        "schema": "docmend/verify-report",
+        "schema_version": "1.0",
+        "run_id": RUN_ID,
+        "generated_by": "docmend 0.1.0",
+        "verified_path": "synthetic",
+        "source_root": "/synthetic",
+        "started_at": TIMESTAMP,
+        "completed_at": TIMESTAMP,
+        "inputs": [
+            {
+                "kind": "plan",
+                "path": "plan.json",
+                "run_id": RUN_ID,
+                "sha256": SHA,
+            }
+        ],
+        "checked_files": 1,
+        "findings": [{"path": "synthetic/doc.md", "check": "hash", "detail": "mismatch"}],
+        "clean": False,
+    }
+
+
 def _minimal_manifest_record() -> dict[str, object]:
     return {
         "schema": "docmend/manifest-record",
@@ -216,6 +241,9 @@ class TestSchemaSatisfiability:
 
     def test_report_schema__accepts_minimal_instance(self) -> None:
         validate_artifact("report", _minimal_report())
+
+    def test_verify_report_schema__accepts_minimal_instance(self) -> None:
+        validate_artifact("verify-report", _minimal_verify_report())
 
     def test_manifest_schema__accepts_minimal_record(self) -> None:
         validate_artifact("manifest", _minimal_manifest_record())
@@ -326,6 +354,20 @@ class TestPydanticCrossCheck:
         _object_shapes(load_schema("report"), load_schema("report"), "", hand)
 
         emitted = cast("dict[str, object]", Report.model_json_schema(by_alias=True))
+        model: dict[str, tuple[set[str], set[str]]] = {}
+        _object_shapes(emitted, emitted, "", model)
+
+        assert set(hand) == set(model), "object paths differ between schema and model"
+        for path, (hand_props, hand_required) in hand.items():
+            model_props, model_required = model[path]
+            assert hand_props == model_props, f"property names differ at {path!r}"
+            assert model_required <= hand_required, f"model over-requires at {path!r}"
+
+    def test_verify_report_model__matches_hand_authored_schema(self) -> None:
+        hand: dict[str, tuple[set[str], set[str]]] = {}
+        _object_shapes(load_schema("verify-report"), load_schema("verify-report"), "", hand)
+
+        emitted = cast("dict[str, object]", VerifyReport.model_json_schema(by_alias=True))
         model: dict[str, tuple[set[str], set[str]]] = {}
         _object_shapes(emitted, emitted, "", model)
 

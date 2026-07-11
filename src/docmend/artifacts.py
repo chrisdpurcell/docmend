@@ -37,19 +37,27 @@ from pathspec.patterns.gitignore.spec import GitIgnoreSpecPattern
 from docmend.inventory import Inventory
 from docmend.plan import Plan
 from docmend.report import Report
+from docmend.verify_report import VerifyReport
 from docmend.writer.atomic import fsync_dir
 
 # "frontmatter" is the product-document schema (DR-005, adr-0011), not a run
 # artifact — it rides the same registry so its validator is compiled once and
-# works from an installed wheel like the other four.
+# works from an installed wheel like the other five.
 type ArtifactKind = Literal[
-    "inventory", "plan", "report", "manifest", "manifest-header", "frontmatter"
+    "inventory",
+    "plan",
+    "report",
+    "verify-report",
+    "manifest",
+    "manifest-header",
+    "frontmatter",
 ]
 
 ARTIFACT_KINDS: tuple[ArtifactKind, ...] = (
     "inventory",
     "plan",
     "report",
+    "verify-report",
     "manifest",
     "manifest-header",
     "frontmatter",
@@ -301,6 +309,28 @@ def read_report_snapshot(path: Path) -> tuple[Report, str]:
     validate_artifact("report", document)
     digest = f"sha256:{hashlib.sha256(payload).hexdigest()}"
     return Report.model_validate(document), digest
+
+
+def write_verify_report(report: VerifyReport, path: Path) -> None:
+    """Validate and persist one internally reconciled verify result."""
+    if report.clean != (not report.findings):
+        raise ArtifactError("verify-report clean verdict does not reconcile with findings")
+    document: dict[str, object] = report.model_dump(mode="json")
+    validate_artifact("verify-report", document)
+    write_json_artifact(document, path)
+
+
+def read_verify_report(path: Path) -> VerifyReport:
+    """Load one validated verify-report artifact."""
+    try:
+        document: object = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ArtifactError(f"{path}: cannot read verify-report artifact ({exc})") from exc
+    validate_artifact("verify-report", document)
+    report = VerifyReport.model_validate(document)
+    if report.clean != (not report.findings):
+        raise ArtifactError(f"{path}: clean verdict does not reconcile with findings")
+    return report
 
 
 def sha256_of_file(path: Path) -> str:

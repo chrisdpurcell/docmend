@@ -257,6 +257,36 @@ class TestChainLifecycle:
         with pytest.raises(ArtifactError, match="clos"):
             read_manifest_chain([m1])
 
+    def test_standalone_failed_closing_nothing__pre_mutation_shape_accepted(
+        self, tmp_path: Path
+    ) -> None:
+        """Plan C review round 2 (CR-NEW-002): the producer records `failed`
+        with NO intent when a stat/staging/backup failure aborts an action
+        before any corpus name is touched (the adr-0019 pre-mutation shape) —
+        it asserts a no-op and closes nothing. The closure rule rejecting it
+        made every manifest containing an ordinary pre-mutation failure
+        unresumable and unrestorable; only ADOPTION terminals (`applied`)
+        assert a mutation and must close a dangling intent."""
+        failed = _record(RUN_1, 1, seq=1, result="failed", after_sha256=None)
+        failed["error"] = {"class": "ERR-004", "message": "backup failed"}
+        failed["source_identity"] = None
+        failed["expected_published_identity"] = None
+        m1 = _apply_set(tmp_path / "m1.jsonl", RUN_1, failed)
+        chain = read_manifest_chain([m1])
+        assert reduce_lifecycle(chain)[A1].state == "failed"
+
+    def test_standalone_failed_then_retry_to_applied__legal(self, tmp_path: Path) -> None:
+        """The pre-mutation failure exists to be RETRIED: failed -> intent ->
+        applied across sets is the recovery path the shape is for."""
+        failed = _record(RUN_1, 1, seq=1, result="failed", after_sha256=None)
+        failed["error"] = {"class": "ERR-004", "message": "backup failed"}
+        failed["source_identity"] = None
+        failed["expected_published_identity"] = None
+        m1 = _apply_set(tmp_path / "m1.jsonl", RUN_1, failed)
+        m2 = _apply_set(tmp_path / "m2.jsonl", RUN_2, *_pair(RUN_2, 1, base_seq=1), prior=m1)
+        states = reduce_lifecycle(read_manifest_chain([m1, m2]))
+        assert states[A1].state == "applied"
+
     def test_closure_with_diverging_immutables__rejected(self, tmp_path: Path) -> None:
         intent = _record(RUN_1, 1, seq=1, result="intent")
         m1 = _apply_set(tmp_path / "m1.jsonl", RUN_1, intent)

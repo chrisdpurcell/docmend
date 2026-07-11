@@ -715,3 +715,60 @@ def test_resume_input_with_restore_evidence__rejected(tmp_path: Path) -> None:
             run_id=RESUME_RUN_ID,
             resume_records=[*records, inverse],
         )
+
+
+def test_pre_mutation_failure_manifest__chain_readable_and_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Plan C review round 2 regression (CR-NEW-002): a run with a PRE-MUTATION
+    failure writes the designed adr-0019 shape — a `failed` record with no
+    intent and null identities. The chain closure rule wholesale-rejected any
+    manifest containing one ("standalone terminal closes no dangling intent"),
+    making every run with an ordinary staging/backup failure unresumable and
+    unrestorable. The reader must accept it and resume must retry it."""
+    from docmend.writer.atomic import StagedWrite, WriteError
+    from docmend.writer.manifest import read_manifest_chain
+
+    root = tmp_path / "root"
+    materialize(root, RECIPES, seeded_faker())
+    config = DocmendConfig()
+    plan = _plan_for(root, config)
+
+    real_stage = apply_module.stage_bytes
+    failed_once: list[str] = []
+
+    def stage_or_fail(target: Path, data: bytes, *, mode: int | None = None) -> StagedWrite:
+        if not failed_once:
+            failed_once.append(str(target))
+            msg = f"{target}: injected pre-mutation staging failure"
+            raise WriteError(msg)
+        return real_stage(target, data, mode=mode)
+
+    monkeypatch.setattr(apply_module, "stage_bytes", stage_or_fail)
+    first = _execute(plan, config, tmp_path / "manifest.jsonl")
+    monkeypatch.setattr(apply_module, "stage_bytes", real_stage)
+    assert first.totals.failed == 1
+    assert first.totals.applied == len(plan.actions) - 1
+
+    # The REAL read path must accept this manifest — this call used to raise.
+    chain = read_manifest_chain([tmp_path / "manifest.jsonl"])
+
+    resume = execute_plan(
+        plan,
+        config,
+        run_id=RESUME_RUN_ID,
+        plan_ref=ArtifactRef(path="plan.json", run_id=PLAN_RUN_ID, sha256="sha256:" + "1" * 64),
+        plan_sha256="sha256:" + "1" * 64,
+        options=ApplyOptions(
+            write=True, backup_root=None, preserved_by="external", allow_no_backup=False
+        ),
+        manifest_path=tmp_path / "resume-manifest.jsonl",
+        started_at=GENERATED_AT,
+        now=lambda: NOW,
+        resume_chain=chain,
+    )
+    assert resume.totals.failed == 0
+    assert resume.totals.applied == 1  # the failed action retried to applied
+    assert resume.totals.skipped == len(plan.actions) - 1  # rest already-applied
+    retried = read_records(tmp_path / "resume-manifest.jsonl")
+    assert [r.result for r in retried] == ["intent", "applied"]

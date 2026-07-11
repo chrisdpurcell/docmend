@@ -626,21 +626,34 @@ def _validate_cross_set_lifecycle(ordered: list[ManifestSet]) -> None:
             if record.action_id not in set_intents:
                 closing = dangling.get(record.action_id)
                 if closing is None:
-                    msg = (
-                        f"{current.path}: {record.action_id}: standalone terminal "
-                        f"closes no dangling intent in the chain"
-                    )
-                    raise ArtifactError(msg)
-                for field in _IMMUTABLE_FIELDS:
-                    if field == "after_sha256" and record.result == "failed":
-                        continue  # the per-set failed-after exemption, cross-set
-                    if getattr(closing, field) != getattr(record, field):
+                    if record.result != "failed":
                         msg = (
-                            f"{current.path}: {record.action_id}: closure terminal "
-                            f"diverges from the dangling intent on immutable "
-                            f"field {field!r}"
+                            f"{current.path}: {record.action_id}: standalone terminal "
+                            f"closes no dangling intent in the chain"
                         )
                         raise ArtifactError(msg)
+                    # A standalone `failed` closing nothing is the designed
+                    # PRE-MUTATION failure shape (adr-0019 amendment
+                    # 2026-07-11): the producer records `failed` with no
+                    # intent when a stat/staging/backup failure aborted the
+                    # action before any corpus name was touched — it asserts
+                    # a no-op and needs no closure evidence. Only ADOPTION
+                    # terminals (`applied`) assert a mutation happened and
+                    # must close a dangling intent. Rejecting these made
+                    # every manifest containing an ordinary pre-mutation
+                    # failure unresumable and unrestorable (plan C review
+                    # round 2, CR-NEW-002).
+                else:
+                    for field in _IMMUTABLE_FIELDS:
+                        if field == "after_sha256" and record.result == "failed":
+                            continue  # the per-set failed-after exemption, cross-set
+                        if getattr(closing, field) != getattr(record, field):
+                            msg = (
+                                f"{current.path}: {record.action_id}: closure terminal "
+                                f"diverges from the dangling intent on immutable "
+                                f"field {field!r}"
+                            )
+                            raise ArtifactError(msg)
             dangling.pop(record.action_id, None)
             if record.result == "applied":
                 terminal_applied.add(record.action_id)

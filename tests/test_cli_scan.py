@@ -211,3 +211,30 @@ class TestScanArtifactGuard:
         assert result.exit_code == 3
         assert "artifact-destination" in result.output
         assert not list(Path(".docmend").glob("docmend-run_*-inventory.json"))
+
+
+class TestTimeoutExit:
+    def test_scan_with_timeout_skip__partial_result_exit_1(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """2026-07-10 review: a watchdog timeout is a PARTIAL scan — the same
+        finding class as an unreadable file (exit 1), never a silent success."""
+        import docmend.discovery as discovery_module
+        from docmend.watchdog import PerFileTimeoutError
+
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "slow.txt").write_bytes(b"slow body\r\n")
+
+        real_classify = discovery_module.classify_file
+
+        def timing_out(*args: object, **kwargs: object) -> object:
+            raise PerFileTimeoutError(0.0)
+
+        monkeypatch.setattr(discovery_module, "classify_file", timing_out)
+        result = runner.invoke(app, ["scan", str(corpus)])
+        monkeypatch.setattr(discovery_module, "classify_file", real_classify)
+
+        assert result.exit_code == 1, result.output
+        assert "timeout 1" in result.output

@@ -229,11 +229,14 @@ def scan(
     typer.echo(f"inventory: {out_path}")
     typer.echo(
         f"files: {totals.files}  symlinks: {totals.symlinks}  "
-        f"skipped: {totals.skipped} (excluded {reasons.excluded}, unreadable {reasons.unreadable})  "
+        f"skipped: {totals.skipped} (excluded {reasons.excluded}, "
+        f"unreadable {reasons.unreadable}, timeout {reasons.timeout})  "
         f"hard-link groups: {totals.hard_link_groups}"
     )
-    if reasons.unreadable:
-        # Findings, not failure: the scan completed but not everything was readable.
+    if reasons.unreadable or reasons.timeout:
+        # Findings, not failure: the scan completed but not everything was
+        # covered — a watchdog timeout is a PARTIAL result exactly like an
+        # unreadable file, never a silent success (2026-07-10 review).
         raise typer.Exit(1)
 
 
@@ -369,14 +372,23 @@ def plan(
             )
         )
 
-        findings = reasons.get("unreadable", 0) + reasons.get("changed-since-scan", 0)
+        # Timeouts are partial results, same finding class as unreadable
+        # (2026-07-10 review): a plan that silently skipped work must exit 1.
+        findings = (
+            reasons.get("unreadable", 0)
+            + reasons.get("changed-since-scan", 0)
+            + reasons.get("timeout", 0)
+        )
         if path is not None:
             # IR-002: the PATH shorthand's own scan step can skip unreadable files
             # (ERR-007) that never reach the plan at all — they live in the
             # inventory, not result.skips — so `plan PATH` must still count them
             # here, or it would silently exit 0 over a tree `scan PATH` would
             # have exited 1 on.
-            findings += inventory.totals.skipped_by_reason.unreadable
+            findings += (
+                inventory.totals.skipped_by_reason.unreadable
+                + inventory.totals.skipped_by_reason.timeout
+            )
         if config.rename.on_collision == "fail":
             findings += reasons.get("collision", 0)
         if fail_on_low_confidence:

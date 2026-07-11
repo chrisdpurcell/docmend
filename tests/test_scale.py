@@ -184,7 +184,10 @@ def test_scale_corpus__pipeline_totals_and_bounded_memory(
     assert report.totals.would_apply == 0
     assert len(report.outcomes) == plan.totals.actions
     with manifest_path.open("rb") as fh:
-        assert sum(1 for _ in fh) == report.totals.applied
+        # Manifest 2.0 shape (adr-0019): one header line plus an
+        # intent+terminal pair per applied action (DMR-08 escrow — the scale
+        # contract itself is sub-project 2; this keeps the lane runnable).
+        assert sum(1 for _ in fh) == 1 + 2 * report.totals.applied
 
     outcome_sha_by_action = {
         o.action_id: o.after_sha256 for o in report.outcomes if o.after_sha256 is not None

@@ -4,7 +4,18 @@ All notable changes to docmend are recorded here. The format follows [Keep a Cha
 
 ## [Unreleased]
 
-Safety-core remediation, plan A of four (spec rev 0.26; 2026-07-10 comprehensive review findings DMR-01/DMR-02; ADRs 0019–0021). Targets the eventual v2.0.0.
+Safety-core remediation, plans A and B of four (spec rev 0.26/0.27; 2026-07-10 comprehensive review findings DMR-01..DMR-04; ADRs 0019–0021). Targets the eventual v2.0.0.
+
+### Changed — manifest 2.0 (plan B, BREAKING)
+
+- **Manifest format 2.0 (adr-0019, clean break):** line 1 is now a header envelope carrying the run's identity, kind (`apply`/`restore`), resolved source root, tool-backup root, plan hash, and attempt lineage; records drop the per-line `source_root` and gain restore lineage (`undoes_action_id`/`undoes_run_id`) plus the durable object identities post-kill adjudication verifies against. Any 1.x manifest is rejected with a message directing pre-2.0 restores to docmend 1.0.2. There is deliberately no 1.x read path.
+- **Every mutation is journaled (DMR-04):** every kind — rewrite, rename, rename_and_rewrite, and every restore inverse — appends a fsync'd `intent` record (with exact `(st_dev, st_ino)` identities, captured via a new staged-write publish) before any corpus name is touched, and a terminal after. Replacement outputs are staged before the intent so the published inode's identity is knowable pre-mutation and survives a kill.
+- **Manifest consumers validate before trusting (DMR-03):** one validated set/chain model — header presence and version, single run with contiguous seq, lifecycle legality (provisional standalone terminals proven by chain-scope closure), source-root containment, and the complete BackupStore trust boundary (derivable keys, regular files, no symlinked components) — runs before resume, restore, or verify touches any recorded path. Containment violations are safety refusals (exit 3); malformed input is exit 2.
+- **One lifecycle reducer, shared adjudication:** resume and restore (and verify, in plan D) consume the same `reduce_lifecycle` fold — chain order then seq, never wall-clock — and the same crash-state adjudication table, with identity predicates that refuse a same-bytes replacement under a different inode. An interrupted restore now CONVERGES on re-run instead of tripping its own collision preflight; a resume can adopt a completed-but-unrecorded mutation for every kind.
+- **Attempt lineage (report 2.0):** manifests and reports both carry a discriminated `prior_attempt` edge and reports carry their closed manifest's hash, so interrupted-attempt chains stay connected whichever artifact a crash erased. Apply resume builds one deterministic attempt graph over all supplied evidence (`--resume-run-id` resolves both sidecars; new repeatable `--prior-report` names relocated or report-only predecessor reports) with a no-gap rule; a report recording a closed manifest whose file is missing is refused as missing mutation evidence, never mistaken for a mutation-free attempt.
+- Reports partition every plan action exactly once: a `fail`-policy abort's unreached actions get an explicit `not-attempted` outcome and totals entry (report schema 2.0).
+- `restore --manifest`/`--run-id` are now repeatable and combinable (a multiply-resumed run restores as one chain); `restore --id` values matching nothing exit 1 with a finding instead of reporting an all-zero success.
+- `scan` and `plan` runs containing watchdog-timeout skips now exit 1 (partial result), matching the unreadable-skip posture.
 
 ### Fixed
 

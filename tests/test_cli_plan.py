@@ -281,3 +281,27 @@ class TestPlanArtifactGuard:
         )
         assert result.exit_code == 3
         assert "artifact-destination" in result.output
+
+
+class TestTimeoutExit:
+    def test_plan_with_timeout_skip__partial_result_exit_1(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """2026-07-10 review: a content-pass watchdog timeout is a PARTIAL
+        plan — the same finding class as unreadable (exit 1)."""
+        import docmend.planning as planning_module
+        from docmend.watchdog import PerFileTimeoutError
+
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "slow.txt").write_bytes(b"slow body\r\n")
+
+        def timing_out(*args: object, **kwargs: object) -> object:
+            raise PerFileTimeoutError(0.0)
+
+        monkeypatch.setattr(planning_module, "decode_source", timing_out)
+        result = runner.invoke(app, ["plan", str(corpus)])
+
+        assert result.exit_code == 1, result.output
+        assert "timeout" in result.output

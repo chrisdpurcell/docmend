@@ -21,7 +21,6 @@ Cross-file contracts:
   the artifact path). The default excludes make ``.docmend/`` invisible to scans.
 """
 
-import hashlib
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -43,10 +42,10 @@ from docmend.plan import PLAN_SCHEMA_VERSION, ArtifactRef
 from docmend.report import Report, ReportTotals
 from docmend.restore import run_restore
 from docmend.verify import check_content, check_frontmatter, reconcile_manifest, reconcile_report
-from docmend.writer import manifest
-from docmend.writer.apply import execute_plan
+from docmend.writer import commit, manifest
+from docmend.writer.apply import execute_plan, preview_plan
 from docmend.writer.commit import _load_apply_predecessors  # pyright: ignore[reportPrivateUsage]
-from docmend.writer.gate import ApplyOptions, evaluate_gate, is_content_rewrite
+from docmend.writer.gate import is_content_rewrite
 
 app = typer.Typer(
     name="docmend",
@@ -533,7 +532,7 @@ def apply(
     log = get_logger(__name__)
 
     try:
-        plan = artifacts.read_plan(plan_path)
+        plan, plan_sha256 = artifacts.read_plan_snapshot(plan_path)
     except artifacts.ArtifactError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(2) from exc
@@ -560,30 +559,12 @@ def apply(
         typer.echo(f"error: {plan_path}: config snapshot invalid — {exc}", err=True)
         raise typer.Exit(2) from exc
 
-    resume_chain, prior_attempt, prior_manifest_sha256 = _load_resume_inputs(
-        resume_manifest,
-        resume_run_id,
-        prior_report,
-        source_root=source_root,
-        plan_sha256=f"sha256:{hashlib.sha256(plan_path.read_bytes()).hexdigest()}",
-    )
-
-    backup_root = backup_dir if backup_dir is not None else config.write.backup_dir
-    options = ApplyOptions(
-        write=write,
-        # Resolved ONCE here (codex CR-005): every backup path derived from
-        # this root lands in the manifest, which restore must be able to
-        # follow from any cwd (IR-008) — a relative --backup-dir must never
-        # produce cwd-dependent manifest entries.
-        backup_root=backup_root.resolve() if backup_root is not None else None,
-        preserved_by=preserved_by.value if preserved_by is not None else None,
-        allow_no_backup=allow_no_backup,
+    manifest_inputs, report_inputs = _resolve_resume_evidence_paths(
+        resume_manifest, resume_run_id, prior_report
     )
     manifest_path = artifact_dir / f"docmend-{run_id}-manifest.jsonl"
     report_path = report if report is not None else artifact_dir / f"docmend-{run_id}-report.json"
-    plan_ref = ArtifactRef(
-        path=str(plan_path), run_id=plan.run_id, sha256=artifacts.sha256_of_file(plan_path)
-    )
+    plan_ref = ArtifactRef(path=str(plan_path), run_id=plan.run_id, sha256=plan_sha256)
     started_at = now.isoformat()
 
     _guard_artifact_paths(
@@ -593,78 +574,113 @@ def apply(
         # not be able to clobber the evidence this run reconciles against.
         input_artifacts=[
             plan_path,
-            *_resume_manifest_paths(resume_manifest, resume_run_id),
-            *(prior_report or []),
-            *(
-                Path(ARTIFACT_DIR_NAME) / f"docmend-{rid}-report.json"
-                for rid in resume_run_id or []
-            ),
+            *manifest_inputs,
+            *report_inputs,
         ],
         config=config,
     )
-    run_lock = _acquire_run_lock_strict(source_root, run_id=run_id, command="apply")
-    try:
-        if write:
-            # CRITICAL (Task 9 carry-forward): the gate is invoked
-            # unconditionally before execute_plan on every write run — the
-            # engine itself does not self-enforce preservation.
-            refusals = evaluate_gate(
-                plan, config, source_root=source_root, options=options, manifest_dir=artifact_dir
+    if write:
+
+        def on_refusal(
+            refusals: list[commit.GateRefusal],
+            factory_plan_ref: ArtifactRef,
+            factory_prior_attempt: PriorAttempt | None,
+        ) -> None:
+            for refusal in refusals:
+                typer.echo(f"refused [{refusal.predicate}]: {refusal.message}", err=True)
+                log.error("gate refusal", predicate=refusal.predicate, detail=refusal.message)
+            _write_refusal_report(
+                factory_plan_ref,
+                run_id,
+                started_at,
+                report_path,
+                prior_attempt=factory_prior_attempt,
             )
-            if refusals:
-                for refusal in refusals:
-                    typer.echo(f"refused [{refusal.predicate}]: {refusal.message}", err=True)
-                    log.error("gate refusal", predicate=refusal.predicate, detail=refusal.message)
-                _write_refusal_report(plan_ref, run_id, started_at, report_path)
-                raise typer.Exit(3)
-            # Issue #15 (partial-undo trap): when the gate passes WITHOUT tool
-            # backups, this run's manifest records content mutations as hashes
-            # only, so `docmend restore` can undo its renames but not its
-            # rewrites. Say so at apply time — restore time is too late.
-            content_rewrites = sum(1 for a in plan.actions if is_content_rewrite(a))
-            if options.backup_root is None and content_rewrites:
+
+        try:
+            with commit.apply_write_context(
+                plan_path,
+                run_id=run_id,
+                manifest_path=manifest_path,
+                report_path=report_path,
+                backup_root_override=backup_dir.resolve() if backup_dir is not None else None,
+                preserved_by=preserved_by.value if preserved_by is not None else None,
+                allow_no_backup=allow_no_backup,
+                resume_manifest_paths=manifest_inputs,
+                prior_report_paths=report_inputs,
+                input_artifacts=[plan_path, *manifest_inputs, *report_inputs],
+                on_refusal=on_refusal,
+            ) as safety:
+                gated_plan, _, _, effective_options, _, _ = safety._consume_apply_state()  # pyright: ignore[reportPrivateUsage]
+                content_rewrites = sum(
+                    1 for action in gated_plan.actions if is_content_rewrite(action)
+                )
+                if effective_options.backup_root is None and content_rewrites:
+                    typer.echo(
+                        f"warning: no tool backups for this run — `docmend restore` will be "
+                        f"able to undo only its pure renames; its {content_rewrites} action(s) "
+                        "with content rewrites rely on external preservation",
+                        err=True,
+                    )
+                result = execute_plan(
+                    run_id=run_id,
+                    manifest_path=manifest_path,
+                    started_at=started_at,
+                    safety=safety,
+                )
+                if manifest_path.exists():
+                    result = result.model_copy(
+                        update={"manifest_sha256": manifest.manifest_sha256(manifest_path)}
+                    )
+                safety.confirm_report(report_path)
+                artifacts.write_report(result, report_path)
+        except manifest.ManifestContainmentError as exc:
+            typer.echo(f"refused [manifest-containment]: {exc}", err=True)
+            raise typer.Exit(3) from exc
+        except artifacts.ArtifactError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from exc
+        except commit.WriteRefusedError as exc:
+            raise typer.Exit(3) from exc
+        except commit.SafetyRefusedError as exc:
+            typer.echo(f"refused: {exc}", err=True)
+            raise typer.Exit(3) from exc
+    else:
+        try:
+            resume_chain, prior_attempt = _load_apply_predecessors(
+                manifest_inputs,
+                report_inputs,
+                source_root=source_root,
+                plan_sha256=plan_sha256,
+            )
+        except manifest.ManifestContainmentError as exc:
+            typer.echo(f"refused [manifest-containment]: {exc}", err=True)
+            raise typer.Exit(3) from exc
+        except artifacts.ArtifactError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from exc
+        run_lock = _acquire_run_lock_strict(source_root, run_id=run_id, command="apply")
+        try:
+            result = preview_plan(
+                plan,
+                config,
+                run_id=run_id,
+                plan_ref=plan_ref,
+                started_at=started_at,
+                resume_chain=resume_chain,
+                prior_attempt=prior_attempt,
+            )
+            try:
+                artifacts.write_report(result, report_path, clobber=False)
+            except FileExistsError as exc:
                 typer.echo(
-                    f"warning: no tool backups for this run — `docmend restore` will be able "
-                    f"to undo only its pure renames; its {content_rewrites} action(s) with "
-                    "content rewrites (including any rename+rewrite) cannot be undone from "
-                    "the manifest. Content recovery relies on whatever preservation "
-                    "satisfied the gate (FR-005: --preserved-by / --allow-no-backup)",
+                    f"error: report not written: {report_path} already exists "
+                    "(dry runs leave prior artifacts untouched; adr-0021)",
                     err=True,
                 )
-                log.warning(
-                    "restore capability for this run is renames-only",
-                    content_rewrites=content_rewrites,
-                    preserved_by=options.preserved_by,
-                )
-        result = execute_plan(
-            plan,
-            config,
-            run_id=run_id,
-            plan_ref=plan_ref,
-            # The header's plan binding (adr-0019): the hash of the exact plan
-            # ARTIFACT executed, so one manifest chain serves one plan.
-            plan_sha256=f"sha256:{hashlib.sha256(plan_path.read_bytes()).hexdigest()}",
-            options=options,
-            manifest_path=manifest_path,
-            started_at=started_at,
-            resume_chain=resume_chain,
-            prior_manifest_sha256=prior_manifest_sha256,
-            prior_attempt=prior_attempt,
-        )
-        # rev 0.26: the report finalizes under the same run lock as the
-        # mutations it records — a run's artifacts and corpus effects commit
-        # or refuse under one coordination boundary (adr-0004 amendment).
-        # 2.0: the report carries the hash of this attempt's CLOSED manifest
-        # (execute_plan's finally closed it); null = the run mutated nothing,
-        # which is what distinguishes a genuine report-only attempt from a
-        # LOST manifest at resume time (review CR-NEW-001).
-        if manifest_path.exists():
-            result = result.model_copy(
-                update={"manifest_sha256": manifest.manifest_sha256(manifest_path)}
-            )
-        artifacts.write_report(result, report_path)
-    finally:
-        run_lock.release()
+                raise typer.Exit(2) from exc
+        finally:
+            run_lock.release()
 
     totals = result.totals
     typer.echo(f"report: {report_path}")
@@ -687,54 +703,17 @@ def apply(
         raise typer.Exit(1)
 
 
-def _resume_manifest_paths(
-    resume_manifest: list[Path] | None,
-    resume_run_id: list[str] | None,
-) -> list[Path]:
-    """Combine explicit --resume-manifest paths with --resume-run-id derivations.
-
-    Shared by `_read_resume_records` and the apply artifact-destination guard
-    (DMR-02) so both see the same resume manifests as input aliases — a
-    manifest reachable only via --resume-run-id must not slip past the guard
-    just because it was never named with --resume-manifest.
-    """
-    paths = list(resume_manifest or [])
-    paths.extend(
-        Path(ARTIFACT_DIR_NAME) / f"docmend-{rid}-manifest.jsonl" for rid in resume_run_id or []
-    )
-    return paths
-
-
-def _load_resume_inputs(
+def _resolve_resume_evidence_paths(
     resume_manifest: list[Path] | None,
     resume_run_id: list[str] | None,
     prior_report: list[Path] | None,
-    *,
-    source_root: Path,
-    plan_sha256: str,
-) -> tuple[manifest.ManifestChain | None, PriorAttempt | None, str | None]:
-    """Load ALL predecessor-attempt evidence and derive the lineage edges
-    (adr-0019; Plan B review CR-004/CR-006/CR-NEW-001).
-
-    Every supplied manifest and report is a node in ONE attempt graph; edges
-    are their recorded `prior_attempt` references. The tip — the unique node
-    no other node references — is graph-derived, never caller order. The
-    NO-GAP rule: every non-null edge must resolve by hash AND run_id to
-    exactly one supplied node.
-
-    Report classes (CR-NEW-001): a report with `manifest_sha256: null` and
-    zero applied outcomes is a genuine report-only attempt (legal with an
-    empty mutation chain); a non-null manifest hash whose manifest is absent
-    is MISSING MUTATION EVIDENCE — refused, never mistaken for mutation-free.
-
-    Returns (mutation chain, the new run's prior_attempt edge, the newest
-    predecessor manifest's hash).
-    """
+) -> tuple[list[Path], list[Path]]:
+    """Resolve explicit and sidecar predecessor evidence without inventing paths."""
     manifest_paths = list(resume_manifest or [])
     report_paths = list(prior_report or [])
-    for rid in resume_run_id or []:
-        sidecar_manifest = Path(ARTIFACT_DIR_NAME) / f"docmend-{rid}-manifest.jsonl"
-        sidecar_report = Path(ARTIFACT_DIR_NAME) / f"docmend-{rid}-report.json"
+    for run_id in resume_run_id or []:
+        sidecar_manifest = Path(ARTIFACT_DIR_NAME) / f"docmend-{run_id}-manifest.jsonl"
+        sidecar_report = Path(ARTIFACT_DIR_NAME) / f"docmend-{run_id}-report.json"
         found = False
         if sidecar_manifest.exists():
             manifest_paths.append(sidecar_manifest)
@@ -744,52 +723,48 @@ def _load_resume_inputs(
             found = True
         if not found:
             typer.echo(
-                f"error: --resume-run-id {rid}: neither sidecar exists — the named "
-                f"predecessor left no evidence (ERR-006)",
+                f"error: --resume-run-id {run_id}: neither sidecar exists — the named "
+                "predecessor left no evidence (ERR-006)",
                 err=True,
             )
             raise typer.Exit(2)
-    if not manifest_paths and not report_paths:
-        return None, None, None
-
-    try:
-        chain, tip_edge = _load_apply_predecessors(
-            manifest_paths,
-            report_paths,
-            source_root=source_root,
-            plan_sha256=plan_sha256,
-        )
-    except manifest.ManifestContainmentError as exc:
-        typer.echo(f"refused [manifest-containment]: {exc}", err=True)
-        raise typer.Exit(3) from exc
-    except artifacts.ArtifactError as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(2) from exc
-    prior_manifest_sha256 = chain.sets[-1].sha256 if chain.sets else None
-    return chain, tip_edge, prior_manifest_sha256
+    return manifest_paths, report_paths
 
 
 def _write_refusal_report(
-    plan_ref: ArtifactRef, run_id: str, started_at: str, report_path: Path
+    plan_ref: ArtifactRef,
+    run_id: str,
+    started_at: str,
+    report_path: Path,
+    *,
+    prior_attempt: PriorAttempt | None,
 ) -> None:
     # §8.5: even a refused run leaves an artifact; zero outcomes, library untouched.
     # 2.0: null manifest_sha256 + zero applied totals = a genuine report-only
     # attempt (nothing mutated) — resumable with an empty chain (CR-NEW-001).
-    artifacts.write_report(
-        Report(
-            run_id=run_id,
-            generated_by=f"docmend {__version__}",
-            plan_ref=plan_ref,
-            dry_run=False,
-            started_at=started_at,
-            completed_at=datetime.now(UTC).isoformat(),
-            outcomes=[],
-            totals=ReportTotals(applied=0, would_apply=0, skipped=0, failed=0, not_attempted=0),
-            prior_attempt=None,
-            manifest_sha256=None,
-        ),
-        report_path,
-    )
+    try:
+        artifacts.write_report(
+            Report(
+                run_id=run_id,
+                generated_by=f"docmend {__version__}",
+                plan_ref=plan_ref,
+                dry_run=False,
+                started_at=started_at,
+                completed_at=datetime.now(UTC).isoformat(),
+                outcomes=[],
+                totals=ReportTotals(applied=0, would_apply=0, skipped=0, failed=0, not_attempted=0),
+                prior_attempt=prior_attempt,
+                manifest_sha256=None,
+            ),
+            report_path,
+            clobber=False,
+        )
+    except FileExistsError:
+        typer.echo(
+            f"refusal report not written: {report_path} already exists "
+            "(pre-existing artifact preserved; §8.5)",
+            err=True,
+        )
 
 
 @app.command()

@@ -6,12 +6,14 @@ outcomes, manifest records, and corpus state. Real filesystem (OQ-019).
 """
 
 import hashlib
+import inspect
 import shutil
 from collections import Counter
 from pathlib import Path
 
 import pytest
 from tests.helpers.manifest2 import read_records
+from tests.helpers.writectx import apply_safety
 
 from corpus import FileRecipe, materialize, seeded_faker
 from docmend import discovery, planning
@@ -23,7 +25,7 @@ from docmend.restore import run_restore
 from docmend.transform.dispatch import Operation, apply_text_transforms, classify_suffix
 from docmend.transform.encoding import decode_source, encode_utf8
 from docmend.writer import apply as apply_module
-from docmend.writer.apply import execute_plan
+from docmend.writer.apply import execute_plan, preview_plan
 from docmend.writer.backup import BackupError
 from docmend.writer.commit import NO_HOOKS, CommitHooks
 from docmend.writer.gate import ApplyOptions
@@ -57,18 +59,36 @@ def _execute(plan: Plan, config: DocmendConfig, tmp_path: Path, **kwargs: object
         allow_no_backup=bool(kwargs.pop("allow_no_backup", False)),
     )
     assert not kwargs
-    return execute_plan(
-        plan,
-        config,
-        run_id=RUN_ID,
-        plan_ref=ArtifactRef(path="plan.json", run_id=PLAN_RUN_ID, sha256="sha256:" + "1" * 64),
-        plan_sha256="sha256:" + "1" * 64,
-        options=options,
-        manifest_path=tmp_path / "manifest.jsonl",
-        started_at=GENERATED_AT,
-        now=lambda: NOW,
-        hooks=hooks,
-    )
+    if not options.write:
+        return preview_plan(
+            plan,
+            config,
+            run_id=RUN_ID,
+            plan_ref=ArtifactRef(path="plan.json", run_id=PLAN_RUN_ID, sha256="sha256:" + "1" * 64),
+            started_at=GENERATED_AT,
+            now=lambda: NOW,
+        )
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        with apply_safety(
+            plan,
+            options=options,
+            manifest_path=tmp_path / "manifest.jsonl",
+            report_path=tmp_path / "report.json",
+            run_id=RUN_ID,
+            state_dir=tmp_path / "state",
+            monkeypatch=monkeypatch,
+        ) as safety:
+            return execute_plan(
+                run_id=RUN_ID,
+                manifest_path=tmp_path / "manifest.jsonl",
+                started_at=GENERATED_AT,
+                now=lambda: NOW,
+                hooks=hooks,
+                safety=safety,
+            )
+    finally:
+        monkeypatch.undo()
 
 
 def _hash_tree(root: Path) -> dict[str, str]:
@@ -78,6 +98,95 @@ def _hash_tree(root: Path) -> dict[str, str]:
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
+
+
+class TestEntrypointSplit:
+    def test_execute_plan_with_expired_capability__runtimeerror(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "root"
+        materialize(root, [FileRecipe("a.txt", "utf-8", "crlf")], seeded_faker())
+        plan = _plan_for(root, DocmendConfig())
+        manifest_path = tmp_path / "manifest.jsonl"
+        with apply_safety(
+            plan,
+            options=ApplyOptions(
+                write=True,
+                backup_root=None,
+                preserved_by="external",
+                allow_no_backup=False,
+            ),
+            manifest_path=manifest_path,
+            report_path=tmp_path / "report.json",
+            run_id=RUN_ID,
+            state_dir=tmp_path / "state",
+            monkeypatch=monkeypatch,
+        ) as safety:
+            leaked = safety
+        with pytest.raises(RuntimeError, match="factory scope"):
+            execute_plan(
+                run_id=RUN_ID,
+                manifest_path=manifest_path,
+                started_at=GENERATED_AT,
+                safety=leaked,
+            )
+
+    def test_execute_plan_runs_gated_copy_not_caller_plan(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "root"
+        materialize(root, [FileRecipe("a.txt", "utf-8", "crlf")], seeded_faker())
+        plan = _plan_for(root, DocmendConfig())
+        original_target = plan.actions[0].target_path
+        assert original_target is not None
+        manifest_path = tmp_path / "manifest.jsonl"
+        with apply_safety(
+            plan,
+            options=ApplyOptions(
+                write=True,
+                backup_root=None,
+                preserved_by="external",
+                allow_no_backup=False,
+            ),
+            manifest_path=manifest_path,
+            report_path=tmp_path / "report.json",
+            run_id=RUN_ID,
+            state_dir=tmp_path / "state",
+            monkeypatch=monkeypatch,
+        ) as safety:
+            plan.actions[0].target_path = "victim.md"
+            report = execute_plan(
+                run_id=RUN_ID,
+                manifest_path=manifest_path,
+                started_at=GENERATED_AT,
+                safety=safety,
+            )
+        assert report.outcomes[0].status == "applied"
+        assert (root / original_target).exists()
+        assert not (root / "victim.md").exists()
+
+    def test_mutation_entrypoints_accept_only_sealed_authority(self) -> None:
+        parameters = inspect.signature(execute_plan).parameters
+        for forbidden in (
+            "plan",
+            "config",
+            "options",
+            "plan_ref",
+            "plan_sha256",
+            "resume_chain",
+            "prior_attempt",
+        ):
+            assert forbidden not in parameters
+        assert tuple(
+            inspect.signature(
+                apply_module._execute_action  # pyright: ignore[reportPrivateUsage]
+            ).parameters
+        ) == (
+            "run",
+            "action_id",
+        )
+        with pytest.raises(TypeError, match="engine-sealed"):
+            apply_module._ApplyRun()  # pyright: ignore[reportPrivateUsage]
 
 
 def test_dry_run_default__writes_nothing_reports_would_apply(tmp_path: Path) -> None:
@@ -111,7 +220,7 @@ def test_write__header_carries_resolved_source_root(tmp_path: Path) -> None:
     config = DocmendConfig()
     plan = _plan_for(root, config)
 
-    _execute(plan, config, tmp_path, write=True)
+    _execute(plan, config, tmp_path, write=True, preserved_by="external")
 
     loaded = read_manifest_set(tmp_path / "manifest.jsonl")
     assert loaded.records
@@ -177,7 +286,7 @@ def test_write_rename_only__link_semantics(tmp_path: Path) -> None:
     action = {a.path: a for a in plan.actions}["clean.txt"]
     assert action.operations == ["rename"]
 
-    report = _execute(plan, config, tmp_path, write=True)
+    report = _execute(plan, config, tmp_path, write=True, preserved_by="external")
 
     assert not (root / "clean.txt").exists()
     new_path = root / "clean.md"
@@ -208,7 +317,7 @@ def test_write_rename_and_rewrite__source_survives_failure(
 
     monkeypatch.setattr(apply_module, "publish_staged", _boom)
 
-    report = _execute(plan, config, tmp_path, write=True)
+    report = _execute(plan, config, tmp_path, write=True, preserved_by="external")
 
     outcome = report.outcomes[0]
     assert outcome.status == "failed"
@@ -235,7 +344,7 @@ def test_stale_hash__skipped_batch_continues(tmp_path: Path) -> None:
 
     (root / "a.txt").write_bytes(b"one CHANGED\n")
 
-    report = _execute(plan, config, tmp_path, write=True)
+    report = _execute(plan, config, tmp_path, write=True, preserved_by="external")
 
     outcomes = {o.path: o for o in report.outcomes}
     assert outcomes["a.txt"].status == "skipped"
@@ -255,7 +364,7 @@ def test_unreadable_at_apply__skipped(tmp_path: Path) -> None:
     plan = _plan_for(root, config)
     (root / "a.txt").unlink()
 
-    report = _execute(plan, config, tmp_path, write=True)
+    report = _execute(plan, config, tmp_path, write=True, preserved_by="external")
 
     outcome = report.outcomes[0]
     assert outcome.status == "skipped"
@@ -328,16 +437,33 @@ class TestActionTimeOverwriteInvariant:
         return root, plan, config
 
     def test_target_appears_after_gate_no_strategy__collision_unpreserved(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        root, plan, config = self._planned_rename(tmp_path)
+        root, plan, _config = self._planned_rename(tmp_path)
         target_path = plan.actions[0].target_path
         assert target_path is not None
         target = root / target_path
         assert not target.exists()
-        target.write_bytes(b"late arrival")
-
-        report = _execute(plan, config, tmp_path, write=True)
+        options = ApplyOptions(
+            write=True, backup_root=None, preserved_by=None, allow_no_backup=False
+        )
+        manifest_path = tmp_path / "manifest.jsonl"
+        with apply_safety(
+            plan,
+            options=options,
+            manifest_path=manifest_path,
+            report_path=tmp_path / "report.json",
+            run_id=RUN_ID,
+            state_dir=tmp_path / "state",
+            monkeypatch=monkeypatch,
+        ) as safety:
+            target.write_bytes(b"late arrival")
+            report = execute_plan(
+                run_id=RUN_ID,
+                manifest_path=manifest_path,
+                started_at=GENERATED_AT,
+                safety=safety,
+            )
 
         outcome = report.outcomes[0]
         assert outcome.status == "skipped"
@@ -703,7 +829,9 @@ class TestCommitBoundaryRaces:
         assert target.read_bytes() == b"interloper"
         assert [record.result for record in read_records(tmp_path / "manifest.jsonl")] == ["intent"]
 
-    def test_dangling_interference_intent__resume_leaves_it_dangling(self, tmp_path: Path) -> None:
+    def test_dangling_interference_intent__resume_leaves_it_dangling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         root, plan, config = self._planned_rename_rewrite(tmp_path, overwrite=True)
         action = plan.actions[0]
         source = root / action.path
@@ -729,23 +857,30 @@ class TestCommitBoundaryRaces:
         target_before = target.read_bytes()
         resume_manifest = tmp_path / "resume.jsonl"
 
-        report = execute_plan(
-            plan,
-            config,
-            run_id="run_20260706T000002Z_000090",
-            plan_ref=ArtifactRef(path="plan.json", run_id=PLAN_RUN_ID, sha256="sha256:" + "1" * 64),
-            plan_sha256="sha256:" + "1" * 64,
-            options=ApplyOptions(
-                write=True,
-                backup_root=tmp_path / "backups",
-                preserved_by=None,
-                allow_no_backup=False,
-            ),
-            manifest_path=resume_manifest,
-            started_at=GENERATED_AT,
-            now=lambda: NOW,
-            resume_chain=read_manifest_chain([first_manifest]),
+        resume_run = "run_20260706T000002Z_000090"
+        options = ApplyOptions(
+            write=True,
+            backup_root=tmp_path / "backups",
+            preserved_by=None,
+            allow_no_backup=False,
         )
+        with apply_safety(
+            plan,
+            options=options,
+            manifest_path=resume_manifest,
+            report_path=tmp_path / "resume-report.json",
+            run_id=resume_run,
+            state_dir=tmp_path / "state",
+            resume_manifest_paths=[first_manifest],
+            monkeypatch=monkeypatch,
+        ) as safety:
+            report = execute_plan(
+                run_id=resume_run,
+                manifest_path=resume_manifest,
+                started_at=GENERATED_AT,
+                now=lambda: NOW,
+                safety=safety,
+            )
 
         outcome = report.outcomes[0]
         assert outcome.status == "failed"
@@ -1020,7 +1155,7 @@ def test_shrink_invariant_recheck__skips(tmp_path: Path, monkeypatch: pytest.Mon
 
     monkeypatch.setattr(apply_module, "apply_text_transforms", _shrink)
 
-    report = _execute(plan, config, tmp_path, write=True)
+    report = _execute(plan, config, tmp_path, write=True, preserved_by="external")
 
     outcome = report.outcomes[0]
     assert outcome.status == "skipped"
@@ -1042,7 +1177,7 @@ def test_operations_divergence__failed_err006(
 
     monkeypatch.setattr(apply_module, "apply_text_transforms", _diverge)
 
-    report = _execute(plan, config, tmp_path, write=True)
+    report = _execute(plan, config, tmp_path, write=True, preserved_by="external")
 
     outcome = report.outcomes[0]
     assert outcome.status == "failed"
@@ -1069,7 +1204,7 @@ def test_containment_resolve_escape__skipped(tmp_path: Path) -> None:
     shutil.rmtree(sub)
     sub.symlink_to(outside, target_is_directory=True)
 
-    report = _execute(plan, config, tmp_path, write=True)
+    report = _execute(plan, config, tmp_path, write=True, preserved_by="external")
 
     outcome = report.outcomes[0]
     assert outcome.status == "skipped"
@@ -1249,7 +1384,9 @@ def _dmr01_action(
     )
 
 
-def test_dmr01_colliding_backup_keys__both_preserved_and_restorable(tmp_path: Path) -> None:
+def test_dmr01_colliding_backup_keys__both_preserved_and_restorable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """DMR-01 defense in depth: a crafted plan with an in-place rewrite of a.md
     AND a rename a.txt -> a.md (overwrite policy) must preserve every byte
     stream under distinct backup keys, and restore must reproduce both
@@ -1286,18 +1423,24 @@ def test_dmr01_colliding_backup_keys__both_preserved_and_restorable(tmp_path: Pa
 
     backup_root = tmp_path / "backups"
     manifest_path = tmp_path / "manifest.jsonl"
-    report = execute_plan(
-        plan,
-        config,
-        run_id=run_id,
-        plan_ref=ArtifactRef(path="unused", run_id=run_id, sha256=_sha256(b"")),
-        plan_sha256=_sha256(b""),
-        options=ApplyOptions(
-            write=True, backup_root=backup_root, preserved_by=None, allow_no_backup=False
-        ),
-        manifest_path=manifest_path,
-        started_at="2026-07-10T00:00:00+00:00",
+    options = ApplyOptions(
+        write=True, backup_root=backup_root, preserved_by=None, allow_no_backup=False
     )
+    with apply_safety(
+        plan,
+        options=options,
+        manifest_path=manifest_path,
+        report_path=tmp_path / "report.json",
+        run_id=run_id,
+        state_dir=tmp_path / "state",
+        monkeypatch=monkeypatch,
+    ) as safety:
+        report = execute_plan(
+            run_id=run_id,
+            manifest_path=manifest_path,
+            started_at="2026-07-10T00:00:00+00:00",
+            safety=safety,
+        )
     assert report.totals.applied == 2, [o.status for o in report.outcomes]
 
     records = read_records(manifest_path)

@@ -54,6 +54,14 @@ def test_report_round_trip__write_read_identical(tmp_path: Path) -> None:
     assert artifacts.read_report(out) == _report()
 
 
+def test_report_no_clobber__existing_bytes_preserved(tmp_path: Path) -> None:
+    out = tmp_path / "report.json"
+    out.write_bytes(b"pre-existing\n")
+    with pytest.raises(FileExistsError):
+        artifacts.write_report(_report(), out, clobber=False)
+    assert out.read_bytes() == b"pre-existing\n"
+
+
 def test_report_snapshot__model_and_hash_come_from_one_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

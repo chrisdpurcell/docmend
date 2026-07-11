@@ -512,6 +512,38 @@ class TestApplyArtifactGuard:
         assert result.exit_code == 3, result.output
         assert "artifact-destination" in result.output
 
+    def test_dry_run_existing_report__no_clobber_exit_2(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        make_corpus(corpus)
+        plan_path = _make_plan(corpus)
+        report = tmp_path / "existing-report.json"
+        report.write_bytes(b"pre-existing\n")
+
+        result = runner.invoke(app, ["apply", str(plan_path), "--report", str(report)])
+
+        assert result.exit_code == 2, result.output
+        assert "dry runs leave prior artifacts untouched" in result.output
+        assert report.read_bytes() == b"pre-existing\n"
+
+    def test_gate_refusal_existing_report__no_clobber_exit_3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        make_corpus(corpus)
+        plan_path = _make_plan(corpus)
+        report = tmp_path / "existing-report.json"
+        report.write_bytes(b"pre-existing\n")
+
+        result = runner.invoke(app, ["apply", str(plan_path), "--write", "--report", str(report)])
+
+        assert result.exit_code == 3, result.output
+        assert "pre-existing artifact preserved" in result.output
+        assert report.read_bytes() == b"pre-existing\n"
+
     def test_write__report_published_inside_run_lock(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

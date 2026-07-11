@@ -17,12 +17,13 @@ failure class maps to §12.1.
 
 import hashlib
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
+from typing import Final
 
-import structlog
 from pathspec import PathSpec
 from pathspec.patterns.gitignore.spec import GitIgnoreSpecPattern
 
@@ -62,6 +63,7 @@ from docmend.writer.commit import (
     BoundFile,
     CommitHooks,
     InterferenceError,
+    WriteSafetyContext,
     _observe_name,  # pyright: ignore[reportPrivateUsage] - shared rollback observation.
     bind_file,
     check_bound,
@@ -71,6 +73,7 @@ from docmend.writer.commit import (
 )
 from docmend.writer.gate import ApplyOptions, is_content_rewrite, strategy_active
 from docmend.writer.manifest import (
+    ActionLifecycle,
     ManifestChain,
     ManifestHeader,
     ManifestOperation,
@@ -78,6 +81,66 @@ from docmend.writer.manifest import (
     ManifestWriter,
     reduce_lifecycle,
 )
+
+_ENGINE_TOKEN: Final[object] = object()
+
+
+@dataclass(frozen=True, init=False)
+class _ApplyRun:
+    """Engine-sealed authority assembled only from a live write capability."""
+
+    safety: WriteSafetyContext
+    plan: Plan
+    config: DocmendConfig
+    source_root: Path
+    root_resolved: Path
+    options: ApplyOptions
+    run_id: str
+    manifest: ManifestWriter
+    hooks: CommitHooks
+    include: PathSpec[GitIgnoreSpecPattern]
+    exclude: PathSpec[GitIgnoreSpecPattern]
+    actions: Mapping[str, PlanAction]
+    lifecycle: Mapping[str, ActionLifecycle]
+
+    def __init__(
+        self,
+        *,
+        _token: object | None = None,
+        safety: WriteSafetyContext | None = None,
+        plan: Plan | None = None,
+        config: DocmendConfig | None = None,
+        source_root: Path | None = None,
+        root_resolved: Path | None = None,
+        options: ApplyOptions | None = None,
+        run_id: str | None = None,
+        manifest: ManifestWriter | None = None,
+        hooks: CommitHooks = NO_HOOKS,
+        include: PathSpec[GitIgnoreSpecPattern] | None = None,
+        exclude: PathSpec[GitIgnoreSpecPattern] | None = None,
+        actions: Mapping[str, PlanAction] | None = None,
+        lifecycle: Mapping[str, ActionLifecycle] | None = None,
+    ) -> None:
+        if _token is not _ENGINE_TOKEN:
+            raise TypeError("_ApplyRun is engine-sealed")
+        assert safety is not None
+        safety._confirm_active("apply")  # pyright: ignore[reportPrivateUsage]
+        required = (plan, config, source_root, root_resolved, options, run_id, manifest)
+        if any(value is None for value in required) or include is None or exclude is None:
+            raise TypeError("_ApplyRun requires complete factory-derived state")
+        object.__setattr__(self, "safety", safety)
+        object.__setattr__(self, "plan", plan)
+        object.__setattr__(self, "config", config)
+        object.__setattr__(self, "source_root", source_root)
+        object.__setattr__(self, "root_resolved", root_resolved)
+        object.__setattr__(self, "options", options)
+        object.__setattr__(self, "run_id", run_id)
+        object.__setattr__(self, "manifest", manifest)
+        object.__setattr__(self, "hooks", hooks)
+        object.__setattr__(self, "include", include)
+        object.__setattr__(self, "exclude", exclude)
+        object.__setattr__(self, "actions", MappingProxyType(dict(actions or {})))
+        object.__setattr__(self, "lifecycle", MappingProxyType(dict(lifecycle or {})))
 
 
 def _sha(data: bytes) -> str:
@@ -318,13 +381,8 @@ def _record_intent(
 
 
 def _adjudicate_pending_intent(
-    action: PlanAction,
-    record: ManifestRecord,
-    root_resolved: Path,
-    options: ApplyOptions,
-    manifest: ManifestWriter | None,
-    run_id: str,
-    hooks: CommitHooks,
+    run: _ApplyRun,
+    action_id: str,
 ) -> ApplyOutcome | None:
     """Resume decision for a DANGLING intent (2.0, adr-0019): the shared
     adjudication table classifies the crash-after disk state against the
@@ -338,10 +396,16 @@ def _adjudicate_pending_intent(
     proved containment for CLI inputs; this engine-level belt keeps direct
     library callers honest until Plan C's WriteSafetyContext.)
     """
+    try:
+        action = run.actions[action_id]
+        state = run.lifecycle[action_id]
+    except KeyError as exc:
+        raise KeyError(f"{action_id}: not in gated plan/resume state") from exc
+    record = state.record
     source = Path(record.original_path)
     target = Path(record.target_path)
     for candidate in (source, target):
-        if not candidate.resolve().is_relative_to(root_resolved):
+        if not candidate.resolve().is_relative_to(run.root_resolved):
             return _failed(
                 action,
                 "ERR-002",
@@ -357,27 +421,13 @@ def _adjudicate_pending_intent(
             "ERR-002",
             f"{target}: {verdict.detail} — changed since the intent recorded in {record.run_id}",
         )
-    if not options.write:
-        return ApplyOutcome(
-            action_id=action.action_id,
-            path=action.path,
-            status="would_apply",
-            before_sha256=action.source_sha256,
-            after_sha256=None,
-            skip_reason=None,
-            error=None,
-        )
     if verdict.verdict == "finish-remaining":
         try:
-            finish_remaining(record, root_resolved=root_resolved, hooks=hooks)
+            finish_remaining(record, root_resolved=run.root_resolved, hooks=run.hooks)
         except WriteError as exc:
             return _failed(action, "ERR-003", str(exc))
-    if manifest is not None:
-        # The adjudication terminal (adr-0019): the intent's immutable fields
-        # verbatim; seq/recorded_at re-stamped by the writer; run_id is the
-        # resuming run's — it is the run asserting this evidence. Chain scope
-        # proves it closes exactly this dangling intent (CR-NEW-002).
-        manifest.append(record.model_copy(update={"result": "applied", "run_id": run_id}))
+    # The resuming run stamps the terminal that closes the prior intent.
+    run.manifest.append(record.model_copy(update={"result": "applied", "run_id": run.run_id}))
     return ApplyOutcome(
         action_id=action.action_id,
         path=action.path,
@@ -417,18 +467,23 @@ def _reconcile_completed(action: PlanAction, record: ManifestRecord) -> ApplyOut
 
 
 def _execute_action(
-    action: PlanAction,
-    source_root: Path,
-    root_resolved: Path,
-    config: DocmendConfig,
-    options: ApplyOptions,
-    include: PathSpec[GitIgnoreSpecPattern],
-    exclude: PathSpec[GitIgnoreSpecPattern],
-    manifest: ManifestWriter | None,
-    run_id: str,
-    log: structlog.stdlib.BoundLogger,
-    hooks: CommitHooks,
+    run: _ApplyRun,
+    action_id: str,
 ) -> tuple[ApplyOutcome, bool]:
+    try:
+        action = run.actions[action_id]
+    except KeyError as exc:
+        raise KeyError(f"{action_id}: not in gated plan") from exc
+    source_root = run.source_root
+    root_resolved = run.root_resolved
+    config = run.config
+    options = run.options
+    include = run.include
+    exclude = run.exclude
+    manifest = run.manifest
+    run_id = run.run_id
+    hooks = run.hooks
+    log = get_logger(__name__)
     source = source_root / action.path
     # FR-003 + adr-0020: one non-following descriptor supplies the bytes for
     # hashing, recomputation, and backup plus the identity later commit steps
@@ -468,32 +523,11 @@ def _execute_action(
             return _skip(action, "collision"), False  # AW-002
         if policy == "fail":
             return _skip(action, "collision"), True  # non-zero abort (FR-011)
-        # Overwrite preservation is an action-time invariant. The gate sees
-        # only targets that exist during preflight; a later arrival is legal to
-        # clobber only under the same byte-preserving strategy. Dry-run options
-        # are synthesized without strategy flags, so preview retains the
-        # collision behavior the corresponding configured write would take.
-        if options.write and not strategy_active(options):
+        # The gate sees only targets present during preflight; a later arrival
+        # still requires the same byte-preserving strategy at action time.
+        if not strategy_active(options):
             return _skip(action, "collision-unpreserved"), False
         clobber = True  # policy == "overwrite"
-
-    if not options.write:
-        # Dry-run boundary (codex CR-001): collision state was INSPECTED above,
-        # but nothing past this line may run — in particular no backup_file
-        # call for a would-be-clobbered target. FR-004/NFR-004: a dry run
-        # writes nothing but its report and log.
-        return (
-            ApplyOutcome(
-                action_id=action.action_id,
-                path=action.path,
-                status="would_apply",
-                before_sha256=action.source_sha256,
-                after_sha256=None,
-                skip_reason=None,
-                error=None,
-            ),
-            False,
-        )
 
     overwritten_sha: str | None = None
     overwritten_backup: Path | None = None
@@ -799,116 +833,93 @@ def _execute_action(
     return outcome, False
 
 
-def execute_plan(
-    plan: Plan,
-    config: DocmendConfig,
-    *,
-    run_id: str,
-    plan_ref: ArtifactRef,
-    plan_sha256: str,
-    options: ApplyOptions,
-    manifest_path: Path,
-    started_at: str,
-    now: Callable[[], str] = lambda: datetime.now(UTC).isoformat(),
-    resume_chain: ManifestChain | None = None,
-    prior_manifest_sha256: str | None = None,
-    prior_attempt: PriorAttempt | None = None,
-    hooks: CommitHooks = NO_HOOKS,
-) -> Report:
-    log = get_logger(__name__)
-    assert plan.source_root is not None  # CLI refused earlier (ERR-006)
-    source_root = Path(plan.source_root)
-    root_resolved = source_root.resolve()
-    include = PathSpec.from_lines(GitIgnoreSpecPattern, config.paths.include)
-    exclude = PathSpec.from_lines(GitIgnoreSpecPattern, config.paths.exclude)
-
-    # FR-013 (adr-0019): ONE lifecycle reducer drives resume — the same fold
-    # restore and verify consume. Chain order then seq decides which record is
-    # an action's newest evidence; the old per-consumer (recorded_at, seq)
-    # interpretation is deleted. A `pending-intent` state is a kill inside
-    # that action's mutation window, adjudicated from disk; restore-family
-    # states cannot legally reach an apply resume (the chain rules reject the
-    # shapes; re-application after restore requires a fresh plan).
+def _validate_resume_lifecycle(
+    resume_chain: ManifestChain | None,
+) -> dict[str, ActionLifecycle]:
     lifecycle = reduce_lifecycle(resume_chain) if resume_chain is not None else {}
     for state in lifecycle.values():
         if state.state in ("pending-restore", "restored", "restore-failed"):
             msg = (
-                f"{state.record.action_id}: resume input contains restore-kind "
-                f"evidence — re-application after a restore requires a fresh plan "
-                f"(adr-0019)"
+                f"{state.record.action_id}: resume input contains restore-kind evidence; "
+                "re-application after restore requires a fresh plan"
             )
             raise ArtifactError(msg)
+    return lifecycle
 
-    outcomes: list[ApplyOutcome] = []
-    manifest: ManifestWriter | None = None
-    if options.write and plan.actions:
-        # 2.0: the run's envelope lives in the header (adr-0019) — restore keys
-        # its lock on header.source_root, so it must match plan/apply's key:
-        # the RESOLVED root. backup_root is the F5 trust anchor.
-        manifest = ManifestWriter(
-            manifest_path,
-            header=ManifestHeader(
-                run_id=run_id,
-                kind="apply",
-                source_root=str(root_resolved),
-                backup_root=str(options.backup_root.resolve())
-                if options.backup_root is not None
-                else None,
-                plan_sha256=plan_sha256,
-                prior_manifest_sha256=prior_manifest_sha256,
-                prior_attempt=prior_attempt,
-                effective_excludes=tuple(config.paths.exclude),
-                created_at=now(),
-            ),
-            now=now,
-        )
+
+def _preview_pending_intent(
+    action: PlanAction, record: ManifestRecord, root_resolved: Path
+) -> ApplyOutcome | None:
+    for candidate in (Path(record.original_path), Path(record.target_path)):
+        if not candidate.resolve().is_relative_to(root_resolved):
+            return _failed(action, "ERR-002", f"{candidate}: intent escapes the plan root")
+    verdict = adjudicate_dangling_intent(record)
+    if verdict.verdict == "never-happened":
+        return None
+    if verdict.verdict == "external-interference":
+        return _failed(action, "ERR-002", verdict.detail)
+    return ApplyOutcome(
+        action_id=action.action_id,
+        path=action.path,
+        status="would_apply",
+        before_sha256=action.source_sha256,
+        after_sha256=None,
+        skip_reason=None,
+        error=None,
+    )
+
+
+def _preview_action(
+    action: PlanAction,
+    source_root: Path,
+    root_resolved: Path,
+    config: DocmendConfig,
+    include: PathSpec[GitIgnoreSpecPattern],
+    exclude: PathSpec[GitIgnoreSpecPattern],
+) -> tuple[ApplyOutcome, bool]:
+    """Classify one action without any mutation-capable dependency."""
+    source = source_root / action.path
     try:
-        abort = False
-        for action in plan.actions:
-            if abort:
-                break
-            state = lifecycle.get(action.action_id)
-            outcome = None
-            if state is not None and state.state == "pending-intent":
-                # A None verdict means the mutation never happened, so the
-                # action executes normally below (FR-003 guard intact).
-                outcome = _adjudicate_pending_intent(
-                    action, state.record, root_resolved, options, manifest, run_id, hooks
-                )
-            elif state is not None and state.state == "applied":
-                outcome = _reconcile_completed(action, state.record)
-            # state "failed" (a recorded prior failure) retries normally —
-            # the failed → intent → applied transition is chain-legal.
-            if outcome is None:
-                outcome, abort = _execute_action(
-                    action,
-                    source_root,
-                    root_resolved,
-                    config,
-                    options,
-                    include,
-                    exclude,
-                    manifest,
-                    run_id,
-                    log,
-                    hooks,
-                )
-            outcomes.append(outcome)
-            log.info(
-                "apply outcome",
-                path=action.path,
-                status=outcome.status,
-                reason=outcome.skip_reason,
-                action=action.action_id,
-            )
-    finally:
-        if manifest is not None:
-            manifest.close()
+        data = bind_file(source).data
+    except InterferenceError:
+        return _skip(action, "external-interference"), False
+    except OSError:
+        return _skip(action, "unreadable"), False
+    if _sha(data) != action.source_sha256:
+        return _skip(action, "stale-hash"), False
+    if not include.match_file(action.path) or exclude.match_file(action.path):
+        return _skip(action, "excluded"), False
+    target = source_root / action.target_path if action.target_path is not None else None
+    for candidate in (source, *((target,) if target is not None else ())):
+        if not candidate.resolve().is_relative_to(root_resolved):
+            return _skip(action, "containment"), False
+    recomputed = _recompute(action, data, config)
+    if recomputed == "shrink-invariant":
+        return _skip(action, "shrink-invariant"), False
+    if isinstance(recomputed, str):
+        return _failed(action, "ERR-006", recomputed), False
+    if target is not None and target.exists():
+        if config.rename.on_collision == "skip":
+            return _skip(action, "collision"), False
+        if config.rename.on_collision == "fail":
+            return _skip(action, "collision"), True
+    return (
+        ApplyOutcome(
+            action_id=action.action_id,
+            path=action.path,
+            status="would_apply",
+            before_sha256=action.source_sha256,
+            after_sha256=None,
+            skip_reason=None,
+            error=None,
+        ),
+        False,
+    )
 
-    # Report 2.0 partition invariant (adr-0019, DMR-05 accounting): a
-    # `fail`-policy abort left trailing actions unexecuted — each gets an
-    # explicit `not-attempted` outcome so every plan action appears exactly
-    # once and verify can prove full coverage.
+
+def _complete_outcomes(
+    plan: Plan, outcomes: list[ApplyOutcome], *, abort: bool
+) -> list[ApplyOutcome]:
     if abort:
         outcomes.extend(
             ApplyOutcome(
@@ -922,15 +933,28 @@ def execute_plan(
             )
             for action in plan.actions[len(outcomes) :]
         )
+    return outcomes
 
+
+def _build_report(
+    plan: Plan,
+    *,
+    run_id: str,
+    plan_ref: ArtifactRef,
+    started_at: str,
+    completed_at: str,
+    outcomes: list[ApplyOutcome],
+    dry_run: bool,
+    prior_attempt: PriorAttempt | None,
+) -> Report:
     counts = Counter(outcome.status for outcome in outcomes)
     return Report(
         run_id=run_id,
         generated_by=f"docmend {__version__}",
         plan_ref=plan_ref,
-        dry_run=not options.write,
+        dry_run=dry_run,
         started_at=started_at,
-        completed_at=now(),
+        completed_at=completed_at,
         outcomes=outcomes,
         totals=ReportTotals(
             applied=counts.get("applied", 0),
@@ -939,9 +963,152 @@ def execute_plan(
             failed=counts.get("failed", 0),
             not_attempted=counts.get("not-attempted", 0),
         ),
-        # Redundant attempt-lineage edge (design F6 round 5): identical to the
-        # manifest header's. manifest_sha256 is stamped by the CLI after the
-        # manifest CLOSES (null when the run mutated nothing).
         prior_attempt=prior_attempt,
         manifest_sha256=None,
+    )
+
+
+def preview_plan(
+    plan: Plan,
+    config: DocmendConfig,
+    *,
+    run_id: str,
+    plan_ref: ArtifactRef,
+    started_at: str,
+    now: Callable[[], str] = lambda: datetime.now(UTC).isoformat(),
+    resume_chain: ManifestChain | None = None,
+    prior_attempt: PriorAttempt | None = None,
+) -> Report:
+    """Preview a plan through a structurally read-only engine."""
+    assert plan.source_root is not None
+    source_root = Path(plan.source_root)
+    root_resolved = source_root.resolve()
+    include = PathSpec.from_lines(GitIgnoreSpecPattern, config.paths.include)
+    exclude = PathSpec.from_lines(GitIgnoreSpecPattern, config.paths.exclude)
+    lifecycle = _validate_resume_lifecycle(resume_chain)
+    outcomes: list[ApplyOutcome] = []
+    abort = False
+    log = get_logger(__name__)
+    for action in plan.actions:
+        if abort:
+            break
+        state = lifecycle.get(action.action_id)
+        outcome = None
+        if state is not None and state.state == "pending-intent":
+            outcome = _preview_pending_intent(action, state.record, root_resolved)
+        elif state is not None and state.state == "applied":
+            outcome = _reconcile_completed(action, state.record)
+        if outcome is None:
+            outcome, abort = _preview_action(
+                action, source_root, root_resolved, config, include, exclude
+            )
+        outcomes.append(outcome)
+        log.info(
+            "apply outcome",
+            path=action.path,
+            status=outcome.status,
+            reason=outcome.skip_reason,
+            action=action.action_id,
+        )
+    _complete_outcomes(plan, outcomes, abort=abort)
+    return _build_report(
+        plan,
+        run_id=run_id,
+        plan_ref=plan_ref,
+        started_at=started_at,
+        completed_at=now(),
+        outcomes=outcomes,
+        dry_run=True,
+        prior_attempt=prior_attempt,
+    )
+
+
+def execute_plan(
+    *,
+    run_id: str,
+    manifest_path: Path,
+    started_at: str,
+    safety: WriteSafetyContext,
+    now: Callable[[], str] = lambda: datetime.now(UTC).isoformat(),
+    hooks: CommitHooks = NO_HOOKS,
+) -> Report:
+    """Execute only the immutable plan/options licensed by a live capability."""
+    safety.confirm_apply(run_id=run_id, manifest_path=manifest_path)
+    plan, config, plan_ref, options, resume_chain, prior_attempt = safety._consume_apply_state()  # pyright: ignore[reportPrivateUsage]
+    if not options.write:
+        raise RuntimeError("write capability carried non-write options")
+    assert plan.source_root is not None
+    source_root = Path(plan.source_root)
+    root_resolved = source_root.resolve()
+    lifecycle = _validate_resume_lifecycle(resume_chain)
+    prior_manifest_sha256 = resume_chain.sets[-1].sha256 if resume_chain.sets else None
+    outcomes: list[ApplyOutcome] = []
+    abort = False
+    if plan.actions:
+        manifest = ManifestWriter(
+            manifest_path,
+            header=ManifestHeader(
+                run_id=run_id,
+                kind="apply",
+                source_root=str(root_resolved),
+                backup_root=str(options.backup_root.resolve())
+                if options.backup_root is not None
+                else None,
+                plan_sha256=plan_ref.sha256,
+                prior_manifest_sha256=prior_manifest_sha256,
+                prior_attempt=prior_attempt,
+                effective_excludes=tuple(config.paths.exclude),
+                created_at=now(),
+            ),
+            now=now,
+        )
+        run = _ApplyRun(
+            _token=_ENGINE_TOKEN,
+            safety=safety,
+            plan=plan,
+            config=config,
+            source_root=source_root,
+            root_resolved=root_resolved,
+            options=options,
+            run_id=run_id,
+            manifest=manifest,
+            hooks=hooks,
+            include=PathSpec.from_lines(GitIgnoreSpecPattern, config.paths.include),
+            exclude=PathSpec.from_lines(GitIgnoreSpecPattern, config.paths.exclude),
+            actions={action.action_id: action for action in plan.actions},
+            lifecycle=lifecycle,
+        )
+        log = get_logger(__name__)
+        try:
+            for action in plan.actions:
+                if abort:
+                    break
+                state = lifecycle.get(action.action_id)
+                outcome = None
+                if state is not None and state.state == "pending-intent":
+                    outcome = _adjudicate_pending_intent(run, action.action_id)
+                elif state is not None and state.state == "applied":
+                    outcome = _reconcile_completed(action, state.record)
+                if outcome is None:
+                    outcome, abort = _execute_action(run, action.action_id)
+                outcomes.append(outcome)
+                log.info(
+                    "apply outcome",
+                    path=action.path,
+                    status=outcome.status,
+                    reason=outcome.skip_reason,
+                    action=action.action_id,
+                )
+        finally:
+            manifest.close()
+    _complete_outcomes(plan, outcomes, abort=abort)
+    return _build_report(
+        plan,
+        run_id=run_id,
+        plan_ref=plan_ref,
+        started_at=started_at,
+        completed_at=now(),
+        outcomes=outcomes,
+        dry_run=False,
+        prior_attempt=prior_attempt,
     )

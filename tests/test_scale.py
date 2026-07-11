@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 import structlog
+from tests.helpers.writectx import apply_safety
 
 from corpus import FileRecipe, materialize, seeded_faker
 from docmend import discovery, planning
@@ -27,7 +28,7 @@ from docmend.artifacts import sha256_of_file
 from docmend.config import DocmendConfig
 from docmend.plan import ArtifactRef, Plan
 from docmend.writer.apply import execute_plan
-from docmend.writer.gate import ApplyOptions, evaluate_gate
+from docmend.writer.gate import ApplyOptions
 
 SCAN_RUN_ID = "run_20260707T000000Z_00005a"
 PLAN_RUN_ID = "run_20260707T000000Z_00005b"
@@ -112,7 +113,7 @@ def _spot_verify(root: Path, plan: Plan, outcome_sha_by_action: dict[str, str]) 
     reason="NFR-001 scale test: set DOCMEND_SCALE=1 (materializes ~100k files, runs minutes)",
 )
 def test_scale_corpus__pipeline_totals_and_bounded_memory(
-    tmp_path: Path, quiet_structlog: None
+    tmp_path: Path, quiet_structlog: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """MS-5 item 1: scan/plan/apply a seeded 100k-file corpus; assert artifact
     totals reconcile end-to-end and traced peak memory stays under the
@@ -157,21 +158,22 @@ def test_scale_corpus__pipeline_totals_and_bounded_memory(
         write=True, backup_root=None, preserved_by="external", allow_no_backup=False
     )
     source_root = Path(plan.source_root or "")
-    refusals = evaluate_gate(
-        plan, config, source_root=source_root, options=options, manifest_dir=tmp_path
-    )
-    assert refusals == []
     manifest_path = tmp_path / "manifest.jsonl"
-    report = execute_plan(
+    with apply_safety(
         plan,
-        config,
-        run_id=APPLY_RUN_ID,
-        plan_ref=ArtifactRef(path="plan.json", run_id=PLAN_RUN_ID, sha256="sha256:" + "1" * 64),
-        plan_sha256="sha256:" + "1" * 64,
         options=options,
         manifest_path=manifest_path,
-        started_at=GENERATED_AT,
-    )
+        report_path=tmp_path / "report.json",
+        run_id=APPLY_RUN_ID,
+        state_dir=tmp_path / "state",
+        monkeypatch=monkeypatch,
+    ) as safety:
+        report = execute_plan(
+            run_id=APPLY_RUN_ID,
+            manifest_path=manifest_path,
+            started_at=GENERATED_AT,
+            safety=safety,
+        )
     t_apply = time.perf_counter()
 
     _, peak = tracemalloc.get_traced_memory()

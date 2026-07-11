@@ -158,7 +158,7 @@ def guard_artifact_destination(
     return None
 
 
-def write_json_artifact(document: dict[str, object], path: Path) -> None:
+def write_json_artifact(document: dict[str, object], path: Path, *, clobber: bool = True) -> None:
     """Atomically write one JSON-document artifact (random O_EXCL temp + fsync +
     os.replace). Staging is randomized per attempt (rev 0.26, adr-0021): the
     old fixed '<name>.tmp' sibling was a predictable truncation target and a
@@ -189,7 +189,11 @@ def write_json_artifact(document: dict[str, object], path: Path) -> None:
             fh.write("\n")
             fh.flush()
             os.fsync(fh.fileno())
-        tmp.replace(path)
+        if clobber:
+            tmp.replace(path)
+        else:
+            os.link(tmp, path)
+            tmp.unlink()
         published = True
     finally:
         if not published:
@@ -258,7 +262,7 @@ def read_plan_snapshot(path: Path) -> tuple[Plan, str]:
     return Plan.model_validate(document), digest
 
 
-def write_report(report: Report, path: Path) -> None:
+def write_report(report: Report, path: Path, *, clobber: bool = True) -> None:
     """Validate a produced report, enforce DR-003 count reconciliation, persist."""
     counts = Counter(outcome.status for outcome in report.outcomes)
     expected = {
@@ -274,7 +278,7 @@ def write_report(report: Report, path: Path) -> None:
         raise ArtifactError(msg)
     document: dict[str, object] = report.model_dump(mode="json")
     validate_artifact("report", document)
-    write_json_artifact(document, path)
+    write_json_artifact(document, path, clobber=clobber)
 
 
 def read_report(path: Path) -> Report:

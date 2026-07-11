@@ -14,15 +14,16 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
-from tests.helpers.manifest2 import chain_of, read_records
+from tests.helpers.manifest2 import chain_of, header_doc, read_records, write_set
+from tests.helpers.writectx import apply_safety
 
 from corpus import FileRecipe, materialize, seeded_faker
-from docmend import discovery, planning
+from docmend import artifacts, discovery, planning
 from docmend.config import DocmendConfig
 from docmend.plan import ArtifactRef, Plan
 from docmend.report import Report
 from docmend.writer import apply as apply_module
-from docmend.writer.apply import execute_plan
+from docmend.writer.apply import execute_plan, preview_plan
 from docmend.writer.gate import ApplyOptions
 from docmend.writer.manifest import ManifestRecord
 
@@ -63,20 +64,60 @@ def _execute(
     options = ApplyOptions(
         write=write, backup_root=None, preserved_by="external", allow_no_backup=False
     )
-    return execute_plan(
-        plan,
-        config,
-        run_id=run_id,
-        plan_ref=ArtifactRef(path="plan.json", run_id=PLAN_RUN_ID, sha256="sha256:" + "1" * 64),
-        plan_sha256="sha256:" + "1" * 64,
-        options=options,
-        manifest_path=manifest_path,
-        started_at=GENERATED_AT,
-        now=lambda: NOW,
-        # Engine tests feed evidence subsets directly; the CLI path reads a
-        # validated chain via read_manifest_chain (tests/test_cli_resume.py).
-        resume_chain=chain_of(resume_records) if resume_records is not None else None,
-    )
+    if not write:
+        return preview_plan(
+            plan,
+            config,
+            run_id=run_id,
+            plan_ref=ArtifactRef(path="plan.json", run_id=PLAN_RUN_ID, sha256="sha256:" + "1" * 64),
+            started_at=GENERATED_AT,
+            now=lambda: NOW,
+            resume_chain=chain_of(resume_records, source_root=plan.source_root or "/corpus")
+            if resume_records is not None
+            else None,
+        )
+
+    state_dir = manifest_path.parent / ".apply-state"
+    plan_path = state_dir / "plan.json"
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    artifacts.write_plan(plan, plan_path)
+    resume_paths: list[Path] = []
+    if resume_records is not None:
+        records = tuple(resume_records)
+        predecessor = state_dir / f"resume-{run_id}.jsonl"
+        predecessor_run = records[0].run_id if records else RUN_ID
+        write_set(
+            predecessor,
+            header_doc(
+                run_id=predecessor_run,
+                source_root=plan.source_root,
+                plan_sha256=artifacts.sha256_of_file(plan_path),
+                effective_excludes=config.paths.exclude,
+            ),
+            *(record.model_dump(mode="json") for record in records),
+        )
+        resume_paths.append(predecessor)
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        with apply_safety(
+            plan,
+            options=options,
+            manifest_path=manifest_path,
+            report_path=manifest_path.with_suffix(".report.json"),
+            run_id=run_id,
+            state_dir=state_dir,
+            resume_manifest_paths=resume_paths,
+            monkeypatch=monkeypatch,
+        ) as safety:
+            return execute_plan(
+                run_id=run_id,
+                manifest_path=manifest_path,
+                started_at=GENERATED_AT,
+                now=lambda: NOW,
+                safety=safety,
+            )
+    finally:
+        monkeypatch.undo()
 
 
 def _hash_tree(root: Path) -> dict[str, str]:
@@ -593,6 +634,7 @@ def test_resume_intent_source_outside_root__refused_err002(
         config,
         tmp_path / "resume-manifest.jsonl",
         run_id=RESUME_RUN_ID,
+        write=False,
         resume_records=[tampered],
     )
 
@@ -622,6 +664,7 @@ def test_resume_intent_target_outside_root__refused_err002(
         config,
         tmp_path / "resume-manifest.jsonl",
         run_id=RESUME_RUN_ID,
+        write=False,
         resume_records=[tampered],
     )
 
@@ -682,6 +725,7 @@ def test_resume_evidence_order__chain_position_never_wall_clock(tmp_path: Path) 
         config,
         tmp_path / "resume-manifest.jsonl",
         run_id=RESUME_RUN_ID,
+        write=False,
         resume_records=reordered,
     )
 
@@ -714,6 +758,7 @@ def test_resume_input_with_restore_evidence__rejected(tmp_path: Path) -> None:
             config,
             tmp_path / "resume-manifest.jsonl",
             run_id=RESUME_RUN_ID,
+            write=False,
             resume_records=[*records, inverse],
         )
 
@@ -754,19 +799,12 @@ def test_pre_mutation_failure_manifest__chain_readable_and_retryable(
     # The REAL read path must accept this manifest — this call used to raise.
     chain = read_manifest_chain([tmp_path / "manifest.jsonl"])
 
-    resume = execute_plan(
+    resume = _execute(
         plan,
         config,
+        tmp_path / "resume-manifest.jsonl",
         run_id=RESUME_RUN_ID,
-        plan_ref=ArtifactRef(path="plan.json", run_id=PLAN_RUN_ID, sha256="sha256:" + "1" * 64),
-        plan_sha256="sha256:" + "1" * 64,
-        options=ApplyOptions(
-            write=True, backup_root=None, preserved_by="external", allow_no_backup=False
-        ),
-        manifest_path=tmp_path / "resume-manifest.jsonl",
-        started_at=GENERATED_AT,
-        now=lambda: NOW,
-        resume_chain=chain,
+        resume_records=tuple(record for item in chain.sets for record in item.records),
     )
     assert resume.totals.failed == 0
     assert resume.totals.applied == 1  # the failed action retried to applied

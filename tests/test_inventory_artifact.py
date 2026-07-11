@@ -151,3 +151,25 @@ def test_artifact_staging__serialization_failure_leaves_no_residue(tmp_path: Pat
         artifacts.write_json_artifact({"k": object()}, dest)
     assert not dest.exists()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_artifact_staging_exhaustion__oserror_no_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 8-attempt staging-name loop's `for...else` bound: if every
+    candidate collides (here, token_hex is pinned so all 8 attempts generate
+    the same colliding name), allocation must fail as OSError rather than
+    loop forever — no destination is produced and the colliding residue is
+    left untouched."""
+    dest = tmp_path / "out.json"
+    residue = tmp_path / ".out.json.deadbeef.tmp"
+    residue.write_bytes(b"stale residue that always collides")
+
+    def fixed_token_hex(nbytes: int) -> str:
+        return "deadbeef"
+
+    monkeypatch.setattr(artifacts.secrets, "token_hex", fixed_token_hex)
+    with pytest.raises(OSError):
+        artifacts.write_json_artifact({"k": "v"}, dest)
+    assert not dest.exists()
+    assert residue.read_bytes() == b"stale residue that always collides"

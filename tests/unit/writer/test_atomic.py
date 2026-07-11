@@ -223,3 +223,25 @@ def test_staging_name_collision__retried_not_failed(
     assert target.read_bytes() == b"fresh\n"
     assert residue.read_bytes() == b"stale residue from a killed run"
     assert not (tmp_path / ".a.md.cafe0000.docmend-tmp").exists()
+
+
+def test_staging_name_exhaustion__write_error_original_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 8-attempt staging-name loop's `for...else` bound: if every
+    candidate collides (here, token_hex is pinned so all 8 attempts generate
+    the same colliding name), allocation must fail as an environmental
+    WriteError rather than loop forever — the target must never be created
+    and the colliding residue must be left untouched (ERR-003)."""
+    target = tmp_path / "a.md"
+    residue = tmp_path / ".a.md.deadbeef.docmend-tmp"
+    residue.write_bytes(b"stale residue that always collides")
+
+    def fixed_token_hex(nbytes: int) -> str:
+        return "deadbeef"
+
+    monkeypatch.setattr(atomic.secrets, "token_hex", fixed_token_hex)
+    with pytest.raises(atomic.WriteError, match="cannot stage write"):
+        atomic.atomic_write_bytes(target, b"x")
+    assert not target.exists()
+    assert residue.read_bytes() == b"stale residue that always collides"

@@ -6,6 +6,8 @@
 
 **Revision note (audit round 1):** revised to close CR-001..CR-008 from the first implementation-plan audit: preserve the legacy reconciliation functions until the Task 6 CLI cutover; apply report cardinality only to apply-kind manifests; treat a never-attempted plan as uncovered findings; preserve OQ-036's lenient lock-creation posture for all read-only commands while refusing live contention; state the same-root lock limitation; lint the schema README; manually enforce the 95% coverage baseline; and single-source sidecar resolution. The all-excluded, verify-report overwrite, and verify-after-restore cases are now explicit.
 
+**Revision note (audit round 2):** revised to close CR-NEW-001 and CR-NEW-002 from the follow-up audit: run the technical-writer validator through the repository's uv environment so the workstation's strict Python shim does not reject it, and include the two verify files changed by Task 6 in that task's declared file scope.
+
 **Architecture:** Keep `verify.py` as the read-only check engine, add `verify_coverage.py` for attempt-graph and exactly-once plan coverage reduction, and add `verify_report.py` plus a pinned JSON Schema for durable results. Manifest parsing remains structurally strict; a new read-only inspection path returns containment defects as findings without dereferencing unsafe paths. The CLI resolves repeatable sidecar/explicit inputs through the existing shared convention, attempts the canonical corpus lock for standalone scan and verify with the owner-approved read-only degradation policy, runs the pure checks, and optionally publishes the result through the existing artifact destination guard.
 
 **Tech Stack:** Python 3.14, pydantic v2 strict models, JSON Schema Draft 2020-12, Typer, pytest, Ruff, BasedPyright strict, coverage, pip-audit.
@@ -693,10 +695,12 @@ git commit -m "feat(verify): certify full plan coverage"
 **Files:**
 
 - Modify: `src/docmend/cli.py`
+- Modify: `src/docmend/verify.py`
 - Modify: `tests/test_cli_verify.py`
 - Modify: `tests/test_cli_scan.py`
 - Modify: `tests/test_cli_plan.py`
 - Modify: `tests/test_cli_resume.py`
+- Modify: `tests/test_verify.py`
 
 **CLI contract:**
 
@@ -974,7 +978,7 @@ uvx --from 'git+https://github.com/L3DigitalNet/project-standards@v4' project-st
 uvx --from 'git+https://github.com/L3DigitalNet/project-standards@v4' project-standards spec lint --config .project-standards.yml --strict
 npx --yes prettier@3.6.2 --check CHANGELOG.md docs/specs/docmend.md docs/STATUS.md docs/TODO.md docs/handoff/state.md docs/handoff/specs-plans.md docs/superpowers/plans/2026-07-11-safety-core-d-verify-redesign.md src/docmend/schemas/README.md
 npx --yes markdownlint-cli2@0.18.1 CHANGELOG.md docs/specs/docmend.md docs/STATUS.md docs/TODO.md docs/handoff/state.md docs/handoff/specs-plans.md docs/superpowers/plans/2026-07-11-safety-core-d-verify-redesign.md src/docmend/schemas/README.md
-python /home/chris/.agents/skills/technical-writer/scripts/docctl.py validate CHANGELOG.md docs/specs/docmend.md docs/STATUS.md docs/TODO.md docs/handoff/state.md docs/handoff/specs-plans.md docs/superpowers/plans/2026-07-11-safety-core-d-verify-redesign.md src/docmend/schemas/README.md
+uv run python /home/chris/.agents/skills/technical-writer/scripts/docctl.py validate CHANGELOG.md docs/specs/docmend.md docs/STATUS.md docs/TODO.md docs/handoff/state.md docs/handoff/specs-plans.md docs/superpowers/plans/2026-07-11-safety-core-d-verify-redesign.md src/docmend/schemas/README.md
 test "$(wc -c < docs/handoff/state.md)" -le 2048
 ```
 
@@ -1014,7 +1018,7 @@ If `docs/handoff/sessions/2026-07.md` changed, add it explicitly to the command.
 
 ## Review Ledger
 
-| ID | Status | Resolution in audit round 1 |
+| ID | Status | Resolution |
 | --- | --- | --- |
 | CR-001 | Resolved | Task 3 retains both legacy reconciliation functions; Task 6 rewires CLI and deletes both with an empty-`rg` proof. |
 | CR-002 | Resolved | Report cardinality/missing-report rules are apply-kind-only; apply→restore tests forbid spurious restore missing-report findings. |
@@ -1024,5 +1028,7 @@ If `docs/handoff/sessions/2026-07.md` changed, add it explicitly to the command.
 | CR-006 | Resolved | Schema README is checked in Task 1 and the complete Task 8 Markdown commands. |
 | CR-007 | Resolved | Every task reads and reports the printed total; the plan forbids commits below the confirmed 95% baseline despite `fail_under=85`. |
 | CR-008 | Resolved | Task 6 generalizes the existing resolver, preserves resume semantics, and maps resolution errors before guard/lock. |
+| CR-NEW-001 | Resolved | Task 8 runs `docctl.py` through `uv run python`, bypassing the workstation's rejecting bare-Python shim. |
+| CR-NEW-002 | Resolved | Task 6's file list now includes `src/docmend/verify.py` and `tests/test_verify.py`, matching its cutover steps and staging command. |
 
-Open significant findings after revision: **none**. A second audit should focus on the Task 6 atomic cutover, apply-kind/restore-kind graph discrimination, and the read-only lock posture.
+Open significant findings after audit round 2: **none**. The follow-up audit found no design regressions; after these two mechanical corrections, the plan is fit to execute without another audit round unless the owner requests one.

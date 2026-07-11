@@ -361,3 +361,227 @@ Round 3 should preserve all CR identifiers and confirm:
 - Superseded issue IDs: None
 - Significant findings remaining: Yes
 - Next audit should focus on a genuinely green format-break slice, safe distinction between report-only and missing-manifest attempts, readable cross-set adjudication terminals, deterministic combined attempt ordering, and restore-header semantics.
+
+## Round 3 — 2026-07-11
+
+### Verdict
+
+Verdict: **NEEDS MAJOR CORRECTION BEFORE EXECUTION**
+
+Round 3 reviewed commit `50f3e36` against Round 2's `7928266`. The revision closes CR-003, CR-004, CR-NEW-001, CR-NEW-003, and CR-NEW-004 at the plan level. CR-NEW-002 is only partially resolved because the selected provisional-terminal model still conflicts with the approved design. CR-006 is substantially improved but needs one explicit no-gap invariant. One new blocking green-slice finding, CR-NEW-005, remains in the Report 2.0 task.
+
+### Round 3 Target and Method
+
+- Target revision: commit `50f3e36` on `dev`, synchronized with `origin/dev`
+- Delta reviewed: 22 plan insertions and 18 plan deletions relative to Round 2, plus the tracked Round 1-2 review artifact
+- Worktree at audit start: clean
+- Prior open issue count: 7
+- Resolved this round: 5
+- Partially resolved this round: 2
+- New issue count: 1
+- Significant findings remaining: Yes
+- Re-verified against: the approved safety-core design, ADR-0019, every current manifest and report constructor, current test-file inventory, and the repository's per-commit full-gate rule
+- Live checks: Git status/history and revision diff; exact Task 2, Task 3, Task 8, Task 9, and Task 10 text; current `read_manifest`, `Report`, and `ReportTotals` call sites
+
+### Prior Finding Disposition
+
+| Finding | Round 3 status | Evidence |
+| --- | --- | --- |
+| CR-001 | Remains resolved | Dependency-neutral `lineage.py` ownership and clean-process import coverage remain unchanged. |
+| CR-002 | Remains resolved | The complete F5 trust-boundary rules and adversarial fixtures remain unchanged. |
+| CR-003 | Resolved | Task 2 now names all three CLI reader call sites, every current `read_manifest` test consumer, and a provisional set rule that keeps pre-Task-6 producers readable. |
+| CR-004 | Resolved | Report-flavored root edges are legal; explicit manifests join the graph; graph-derived tip selection replaces caller order. |
+| CR-005 | Remains resolved | The complete restore crash matrix and identity probes remain unchanged. |
+| CR-006 | Partially resolved | Report and manifest nodes now share one graph with plan/hash reconciliation, but the graph does not explicitly reject a non-null edge whose predecessor artifact was not supplied. |
+| CR-007 | Remains resolved | ADR ownership remains correct. |
+| CR-NEW-001 | Resolved | Genuine report-only attempts and missing mutation manifests are separate classes and tests. |
+| CR-NEW-002 | Partially resolved | Set/chain mechanics are coherent, but the approved design still says every same-set `applied` requires a preceding intent. |
+| CR-NEW-003 | Resolved | Restore headers now carry `backup_root: null`, with a direct assertion. |
+| CR-NEW-004 | Resolved | The review artifact is tracked in commit `50f3e36`; the plan's link now resolves remotely. |
+
+### CR-003 — Resolved: the format-break slice is mechanically complete
+
+Task 2 now identifies all three live CLI `read_manifest` call sites and all current test consumers, including the previously omitted apply, resume CLI, idempotency, schema, and verify surfaces. Its explicit-file commit command matches that inventory. The provisional set rule lets existing single-terminal rewrite and rename producers remain readable until Task 6 adds intents, so the Task 2 full-gate checkpoint is achievable as planned.
+
+### CR-004 — Resolved: report-only ancestry and explicit manifests share one graph
+
+Task 3 now permits a root manifest with a report-flavored `prior_attempt` and null `prior_manifest_sha256`. Task 9 accepts explicit manifests, run-ID-derived sidecars, and relocated reports as graph nodes, then selects one tip from graph edges rather than caller order. The shuffled-input, ambiguous-tip, relocated report, explicit-manifest, and composed three-attempt tests cover the original finding.
+
+### CR-006 — Partially resolved: the attempt graph needs an explicit no-gap rule
+
+**Resolved aspects:**
+
+- Reports bind to the current plan hash.
+- A report's non-null `manifest_sha256` must match a supplied manifest.
+- Report and manifest artifacts for one run must agree on `run_id` and `prior_attempt`.
+- Tip selection is graph-derived and ambiguous tips fail closed.
+
+**Remaining defect:** Task 9 does not explicitly say that every non-null `prior_attempt` edge must resolve to exactly one supplied report or manifest node. A node whose edge names an absent report-only predecessor can still be the unique unreferenced tip under the stated algorithm. “Its own `prior_attempt` enters the graph and must be consistent” is not a complete no-gap predicate, and the test list has no missing-ancestor case.
+
+**Required correction:** State that every non-null edge must resolve by both artifact hash and `run_id` to exactly one supplied node; reject zero or multiple matches. Add a manifest whose report-flavored predecessor is absent and assert exit 2 before mutation.
+
+### CR-NEW-001 — Resolved: report-only and missing-manifest attempts are distinct
+
+Task 9 now accepts an empty mutation chain only when the report has `manifest_sha256: null` and zero applied outcomes. A report with a non-null manifest hash requires the matching supplied manifest and exact hash equality; otherwise apply exits 2 with a missing-mutation-evidence error. The plan now requires separate tests for the genuine first-action-abort and deleted-manifest cases.
+
+### CR-NEW-002 — Partially resolved: the wire model works, but change control is incomplete
+
+**Technical closure:** Task 2 provisionally accepts a same-set standalone terminal. Task 3 then requires that terminal to close exactly one earlier dangling intent with full immutable-field agreement. Isolated standalone terminals fail. Apply and restore closure pairs both receive explicit tests.
+
+**Remaining defect:** The approved design still states that, within one ManifestSet, `applied` requires a preceding intent. The revised plan instead makes standalone terminals legal at set scope and moves strict proof to chain scope. This is a sensible resolution of the design's worked-example tension, but it is a contract change, not merely an implementation detail.
+
+**Evidence:**
+
+- Approved design, ManifestSet rules: `applied` requires a preceding intent within one set.
+- Revised Task 2: a terminal with no same-set intent is provisionally legal.
+- Revised Task 3 and Task 7 depend on that changed rule for adjudication terminals.
+
+**Impact:** Implementing the plan would leave the approved design and the actual ManifestSet validator stating different lifecycle contracts.
+
+**Concrete fix:** Amend the approved design's per-set lifecycle paragraph to state provisional standalone-terminal parsing plus mandatory chain-scope closure, and record the clarification in the plan revision note. If the owner does not approve that amendment, redesign the wire representation so adjudication terminals satisfy the existing per-set rule without inventing a post-mutation intent.
+
+### CR-NEW-003 — Resolved: restore headers use the per-run backup-root meaning
+
+Task 10 now sets `backup_root: null` for restore runs, retains original apply sets as the authority for backups restore reads, and adds a direct header test. This matches the approved design and current inverse-record shape.
+
+### CR-NEW-004 — Resolved: the review artifact is tracked
+
+`git ls-files` now identifies this review path, and commit `50f3e36` carries the plan correction and review record together. The plan's revision link is no longer broken remotely.
+
+### New Blocking Finding
+
+#### CR-NEW-005: Task 8 omits live Report 2.0 constructors and cannot pass its full gate
+
+**Defect:** Task 8 makes `ReportTotals.not_attempted` a required field and adds the Report 2.0 lineage fields, then promises a full gate before commit. Its affected-file list does not include every live constructor that must change.
+
+**Evidence:**
+
+- `src/docmend/cli.py::_write_refusal_report` directly constructs both `Report` and `ReportTotals`; Task 8 does not modify `cli.py` until Task 9.
+- `tests/test_report_artifact.py` directly constructs Report models and totals.
+- `tests/test_verify.py` directly constructs Report models and totals.
+- `tests/test_schemas.py::_minimal_report` must gain the required 2.0 wire members.
+- Task 8 names only `report.py`, the report schema, `artifacts.py`, `apply.py`, `tests/test_apply.py`, and the vague phrase “the report/schema test homes.” It neither names `cli.py` nor provides an explicit staging list.
+
+**Impact:** Following Task 8 literally leaves `_write_refusal_report` and multiple tests constructing invalid Report 2.0 objects, so the mandatory full gate fails before Task 9 can repair the CLI.
+
+**Concrete fix:** Add `src/docmend/cli.py`, `tests/test_report_artifact.py`, `tests/test_verify.py`, and `tests/test_schemas.py` to Task 8's affected files and explicit commit scope. Update every constructor with `not_attempted=0`, `prior_attempt=None`, and `manifest_sha256=None` as appropriate. Add one first-action refusal/report-only assertion proving the emitted report carries the complete 2.0 shape.
+
+### Regressions
+
+None found. The remaining CR-NEW-002 defect is a missing contract amendment, not a regression in the revised technical mechanism.
+
+### Round 4 Gate
+
+Round 4 should preserve all identifiers and confirm:
+
+1. CR-001 through CR-005 and CR-007 remain resolved.
+2. Every non-null attempt edge resolves to exactly one supplied graph node; a missing report-only ancestor fails closed.
+3. The approved design states the same provisional-set/strict-chain lifecycle rule as Tasks 2, 3, and 7, with owner approval recorded where required.
+4. Task 8 names and stages every live Report 2.0 constructor and can pass the full gate before Task 9.
+5. CR-NEW-001, CR-NEW-003, and CR-NEW-004 remain resolved.
+
+### Round 3 Review Ledger
+
+- Plan path: `docs/superpowers/plans/2026-07-10-safety-core-b-manifest-2.md`
+- Audit round: 3
+- Open issue IDs: CR-006, CR-NEW-002, CR-NEW-005
+- Resolved issue IDs: CR-001, CR-002, CR-003, CR-004, CR-005, CR-007, CR-NEW-001, CR-NEW-003, CR-NEW-004
+- Superseded issue IDs: None
+- Significant findings remaining: Yes
+- Next audit should focus on attempt-graph no-gap enforcement, approved lifecycle-contract alignment, and a complete Report 2.0 green slice.
+
+## Round 4 — 2026-07-11
+
+### Verdict
+
+Verdict: **NO SIGNIFICANT FINDINGS REMAIN**
+
+Round 4 reviewed commit `aec43d0` against Round 3's `50f3e36`. CR-006, CR-NEW-002, and CR-NEW-005 are closed. All earlier closures remain intact, no new significant findings were introduced, and the implementation-plan audit/fix loop can stop.
+
+### Round 4 Target and Method
+
+- Target revision: commit `aec43d0` on `dev`, synchronized with `origin/dev`
+- Delta reviewed: 19 plan lines and 4 approved-design lines changed relative to Round 3
+- Worktree at audit start: only the preserved, uncommitted Round 3 review appendix in this file
+- Prior open issue count: 3
+- Resolved issue count: 3
+- Still-open issue count: 0
+- Partially resolved issue count: 0
+- New issue count: 0
+- Regression count: 0
+- Significant findings remaining: No
+- Re-verified against: SPEC-VHHB FR-013/DR-004 and change-control text, ADR-0019's two-scope lifecycle decision, the amended safety-core design, the complete Report/ReportTotals constructor inventory, and the plan's full-gate commit slices
+- Live checks: Git status/history and revision diff; scoped Prettier and markdownlint on the revised plan and design; `git diff --check`; exact call-site inventory for Report 2.0
+
+### Finding Disposition
+
+| Finding | Round 4 status | Closure evidence |
+| --- | --- | --- |
+| CR-001 | Remains resolved | Shared lineage types remain dependency-neutral with clean-process import coverage. |
+| CR-002 | Remains resolved | The complete F5 trust boundary and adversarial fixtures remain in Task 2. |
+| CR-003 | Remains resolved | The format-break slice retains the complete reader/fixture inventory and a green intermediate lifecycle rule. |
+| CR-004 | Remains resolved | Report-only roots, explicit manifests, relocated reports, and graph-derived ordering remain first-class. |
+| CR-005 | Remains resolved | The complete restore crash matrix and identity probes remain unchanged. |
+| CR-006 | Resolved | Every non-null attempt edge must now resolve by both hash and `run_id` to exactly one supplied node; zero/multiple matches fail before mutation, with a missing-ancestor test. |
+| CR-007 | Remains resolved | ADR-0019 remains the recovery-model owner. |
+| CR-NEW-001 | Remains resolved | Genuine report-only attempts remain distinct from missing mutation manifests. |
+| CR-NEW-002 | Resolved | The approved design now states the same provisional-set/strict-chain terminal rule as Tasks 2, 3, and 7; ADR-0019 and SPEC-VHHB remain compatible. |
+| CR-NEW-003 | Remains resolved | Restore headers retain `backup_root: null`. |
+| CR-NEW-004 | Remains resolved | The canonical review artifact remains tracked. |
+| CR-NEW-005 | Resolved | Task 8 now names, updates, tests, and explicitly stages every live Report 2.0 constructor. |
+
+### CR-006 — Resolved: the attempt graph fails closed on missing ancestors
+
+Task 9 now requires every non-null lineage edge to resolve by both artifact hash and `run_id` to exactly one supplied graph node. Zero matches, including a missing report-only ancestor, and multiple matches exit 2 before mutation. The test list adds the exact missing-ancestor reproduction from Round 3 while retaining shuffled-order, ambiguous-tip, plan-hash, relocated-report, manifest-only, and composed-lineage coverage.
+
+### CR-NEW-002 — Resolved: design, ADR, spec, and plan now agree
+
+The approved design's ManifestSet paragraph now states provisional parsing of a terminal without a same-set intent and mandatory chain-scope proof that it closes exactly one earlier dangling intent with immutable-field agreement. Unclosed standalone terminals remain illegal. This matches Tasks 2, 3, and 7, the adjudication table, and the M4 worked example.
+
+ADR-0019 already defines per-set terminal uniqueness plus a cross-set transition table rather than the superseded same-set-only restriction. SPEC-VHHB requires two-scope lifecycle validation and intent-before-mutation journaling but does not contradict the clarified parsing/closure split. No additional specification revision is required for this internal-consistency clarification.
+
+### CR-NEW-005 — Resolved: Report 2.0 is a complete green slice
+
+Task 8 now includes:
+
+- `src/docmend/cli.py::_write_refusal_report`;
+- `src/docmend/writer/apply.py`'s Report construction;
+- `tests/test_report_artifact.py`;
+- `tests/test_verify.py`;
+- `tests/test_schemas.py::_minimal_report`;
+- explicit `not_attempted`, `prior_attempt`, and `manifest_sha256` values;
+- a refusal-report 2.0 schema assertion; and
+- an explicit-file staging command covering every affected file.
+
+The task can therefore satisfy the plan's full-gate-before-commit rule without depending on Task 9.
+
+### Adversarial Recheck
+
+The final pass re-attacked the highest-risk claims:
+
+1. **Lineage gaps:** missing and ambiguous ancestors fail closed before mutation.
+2. **Report-only safety:** null versus non-null manifest hashes remain distinct and plan-bound.
+3. **Adjudication terminals:** isolated terminals fail; exact prior dangling intents make them legal only at chain scope.
+4. **Backup trust:** path derivation, regular-file, no-symlink, role, and uniqueness checks remain mandatory before access.
+5. **Restore convergence:** every table row and identity-substitution state remains covered.
+6. **Validation false positives:** each commit slice names its affected constructors/consumers and runs the complete repository gate.
+
+No new correctness, safety, data-integrity, maintainability, or validation finding survived this pass.
+
+### Optional Editorial Cleanup
+
+Task 13's combined Markdown-validation line contains awkward escaped Markdown and missing spaces around one `+`. The command still resolves through the repository's markdownlint configuration, and scoped Prettier/markdownlint pass, so this is optional presentation cleanup and does not affect approval.
+
+### Final Recommendation
+
+Claude Code may proceed with the implementation plan as written. Re-review is required only if the plan, approved design, task ordering, lifecycle rules, lineage graph, or validation scope changes materially.
+
+### Round 4 Review Ledger
+
+- Plan path: `docs/superpowers/plans/2026-07-10-safety-core-b-manifest-2.md`
+- Audit round: 4
+- Open issue IDs: None
+- Resolved issue IDs: CR-001, CR-002, CR-003, CR-004, CR-005, CR-006, CR-007, CR-NEW-001, CR-NEW-002, CR-NEW-003, CR-NEW-004, CR-NEW-005
+- Superseded issue IDs: None
+- Significant findings remaining: No
+- Next audit should focus on: Not applicable; the audit/fix loop can stop.

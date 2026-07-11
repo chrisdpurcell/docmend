@@ -258,6 +258,7 @@ def write_report(report: Report, path: Path) -> None:
         "would_apply": report.totals.would_apply,
         "skipped": report.totals.skipped,
         "failed": report.totals.failed,
+        "not-attempted": report.totals.not_attempted,
     }
     actual = {key: counts.get(key, 0) for key in expected}
     if expected != actual:

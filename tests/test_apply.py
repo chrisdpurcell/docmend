@@ -283,9 +283,11 @@ def test_collision_policies__skip_fail_overwrite(tmp_path: Path) -> None:
     assert [a.path for a in fail_plan.actions] == ["a.txt", "b.txt"]
     (fail_root / "a.md").write_bytes(b"live collision\n")
     fail_report = _execute(fail_plan, fail_config, tmp_path / "fail-run", write=True)
-    assert len(fail_report.outcomes) == 1
-    assert fail_report.outcomes[0].status == "skipped"
-    assert fail_report.outcomes[0].skip_reason == "collision"
+    # Report 2.0 partition: the abort's unreached action is explicit.
+    assert [(o.status, o.skip_reason) for o in fail_report.outcomes] == [
+        ("skipped", "collision"),
+        ("not-attempted", None),
+    ]
     assert (fail_root / "b.txt").exists()  # second action never ran
     assert not (fail_root / "b.md").exists()
 
@@ -881,3 +883,27 @@ def test_no_clobber_race_lost__intent_closed_report_skips(
     assert [r.result for r in records] == ["intent", "failed"]
     assert records[1].error is not None
     assert records[1].error.error_class == "ERR-002"
+
+
+def test_fail_policy_abort__trailing_actions_reported_not_attempted(tmp_path: Path) -> None:
+    """DMR-05 accounting half (report 2.0): the `fail` collision policy aborts
+    mid-plan; every unexecuted trailing action must appear in the report as
+    `not-attempted` — the partition invariant: each plan action exactly once."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "a.txt").write_bytes(b"clean a\n")
+    (root / "z.txt").write_bytes(b"clean z, never reached\n")
+    config = DocmendConfig(rename=RenameConfig(on_collision="fail"))
+    plan = _plan_for(root, config)
+    assert [a.path for a in plan.actions] == ["a.txt", "z.txt"]
+    # The colliding target appears AFTER planning — the apply-time `fail`
+    # policy is what aborts (a plan-time collision would just skip a.txt).
+    (root / "a.md").write_bytes(b"occupies a.txt's target\n")
+
+    report = _execute(plan, config, tmp_path, write=True)
+
+    statuses = [(o.path, o.status) for o in report.outcomes]
+    assert statuses == [("a.txt", "skipped"), ("z.txt", "not-attempted")]
+    assert report.totals.not_attempted == 1
+    assert report.totals.skipped == 1
+    assert len(report.outcomes) == len(plan.actions)  # full partition

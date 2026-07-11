@@ -175,7 +175,10 @@ class TestApplyGate:
             "would_apply": 0,
             "skipped": 0,
             "failed": 0,
+            "not_attempted": 0,
         }
+        assert document["prior_attempt"] is None
+        assert document["manifest_sha256"] is None  # refused: nothing mutated
 
     def test_apply_locked_target__exit_3(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -537,3 +540,30 @@ class TestApplyArtifactGuard:
         assert result.exit_code == 0, result.output
         assert "report-written" in events and "lock-released" in events
         assert events.index("report-written") < events.index("lock-released")
+
+
+class TestReportLineage:
+    def test_write_apply_report__carries_closed_manifest_hash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Report 2.0 (adr-0019): the report's manifest_sha256 is the hash of
+        this attempt's CLOSED manifest — the redundant lineage anchor a
+        successor attempt links against."""
+        import hashlib as _hashlib
+
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        make_corpus(corpus)
+        plan_path = _make_plan(corpus)
+
+        result = runner.invoke(
+            app, ["apply", str(plan_path), "--write", "--preserved-by", "external"]
+        )
+
+        assert result.exit_code == 0, result.output
+        [report_path] = (tmp_path / ".docmend").glob("docmend-*-report.json")
+        [manifest_path] = (tmp_path / ".docmend").glob("docmend-*-manifest.jsonl")
+        document = json.loads(report_path.read_text())
+        expected = f"sha256:{_hashlib.sha256(manifest_path.read_bytes()).hexdigest()}"
+        assert document["manifest_sha256"] == expected
+        assert document["prior_attempt"] is None  # first attempt

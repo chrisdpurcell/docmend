@@ -633,6 +633,14 @@ def apply(
         # rev 0.26: the report finalizes under the same run lock as the
         # mutations it records — a run's artifacts and corpus effects commit
         # or refuse under one coordination boundary (adr-0004 amendment).
+        # 2.0: the report carries the hash of this attempt's CLOSED manifest
+        # (execute_plan's finally closed it); null = the run mutated nothing,
+        # which is what distinguishes a genuine report-only attempt from a
+        # LOST manifest at resume time (review CR-NEW-001).
+        if manifest_path.exists():
+            result = result.model_copy(
+                update={"manifest_sha256": manifest.manifest_sha256(manifest_path)}
+            )
         artifacts.write_report(result, report_path)
     finally:
         run_lock.release()
@@ -716,6 +724,8 @@ def _write_refusal_report(
     plan_ref: ArtifactRef, run_id: str, started_at: str, report_path: Path
 ) -> None:
     # §8.5: even a refused run leaves an artifact; zero outcomes, library untouched.
+    # 2.0: null manifest_sha256 + zero applied totals = a genuine report-only
+    # attempt (nothing mutated) — resumable with an empty chain (CR-NEW-001).
     artifacts.write_report(
         Report(
             run_id=run_id,
@@ -725,7 +735,9 @@ def _write_refusal_report(
             started_at=started_at,
             completed_at=datetime.now(UTC).isoformat(),
             outcomes=[],
-            totals=ReportTotals(applied=0, would_apply=0, skipped=0, failed=0),
+            totals=ReportTotals(applied=0, would_apply=0, skipped=0, failed=0, not_attempted=0),
+            prior_attempt=None,
+            manifest_sha256=None,
         ),
         report_path,
     )

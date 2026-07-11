@@ -153,7 +153,7 @@ def _minimal_plan() -> dict[str, object]:
 def _minimal_report() -> dict[str, object]:
     return {
         "schema": "docmend/report",
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "run_id": RUN_ID,
         "generated_by": "docmend 0.1.0",
         "plan_ref": {"path": "plan.json", "run_id": RUN_ID, "sha256": SHA},
@@ -171,7 +171,15 @@ def _minimal_report() -> dict[str, object]:
                 "error": None,
             }
         ],
-        "totals": {"applied": 0, "would_apply": 1, "skipped": 0, "failed": 0},
+        "totals": {
+            "applied": 0,
+            "would_apply": 1,
+            "skipped": 0,
+            "failed": 0,
+            "not_attempted": 0,
+        },
+        "prior_attempt": None,
+        "manifest_sha256": None,
     }
 
 

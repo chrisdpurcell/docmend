@@ -763,6 +763,24 @@ def execute_plan(
         if manifest is not None:
             manifest.close()
 
+    # Report 2.0 partition invariant (adr-0019, DMR-05 accounting): a
+    # `fail`-policy abort left trailing actions unexecuted — each gets an
+    # explicit `not-attempted` outcome so every plan action appears exactly
+    # once and verify can prove full coverage.
+    if abort:
+        outcomes.extend(
+            ApplyOutcome(
+                action_id=action.action_id,
+                path=action.path,
+                status="not-attempted",
+                before_sha256=action.source_sha256,
+                after_sha256=None,
+                skip_reason=None,
+                error=None,
+            )
+            for action in plan.actions[len(outcomes) :]
+        )
+
     counts = Counter(outcome.status for outcome in outcomes)
     return Report(
         run_id=run_id,
@@ -777,5 +795,11 @@ def execute_plan(
             would_apply=counts.get("would_apply", 0),
             skipped=counts.get("skipped", 0),
             failed=counts.get("failed", 0),
+            not_attempted=counts.get("not-attempted", 0),
         ),
+        # Redundant attempt-lineage edge (design F6 round 5): identical to the
+        # manifest header's. manifest_sha256 is stamped by the CLI after the
+        # manifest CLOSES (null when the run mutated nothing).
+        prior_attempt=prior_attempt,
+        manifest_sha256=None,
     )

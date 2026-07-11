@@ -311,6 +311,86 @@ class TestCommitBoundarySourceBinding:
         assert report.outcomes[0].status == "applied"
 
 
+class TestActionTimeOverwriteInvariant:
+    @staticmethod
+    def _planned_rename(tmp_path: Path) -> tuple[Path, Plan, DocmendConfig]:
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "a.txt").write_bytes(b"clean\n")
+        config = DocmendConfig(rename=RenameConfig(on_collision="overwrite"))
+        plan = _plan_for(root, config)
+        assert len(plan.actions) == 1
+        assert plan.actions[0].operations == ["rename"]
+        return root, plan, config
+
+    def test_target_appears_after_gate_no_strategy__collision_unpreserved(
+        self, tmp_path: Path
+    ) -> None:
+        root, plan, config = self._planned_rename(tmp_path)
+        target_path = plan.actions[0].target_path
+        assert target_path is not None
+        target = root / target_path
+        assert not target.exists()
+        target.write_bytes(b"late arrival")
+
+        report = _execute(plan, config, tmp_path, write=True)
+
+        outcome = report.outcomes[0]
+        assert outcome.status == "skipped"
+        assert outcome.skip_reason == "collision-unpreserved"
+        assert target.read_bytes() == b"late arrival"
+        assert (root / plan.actions[0].path).exists()
+
+    def test_target_appears_after_gate_with_strategy__clobbers_with_backup(
+        self, tmp_path: Path
+    ) -> None:
+        root, plan, config = self._planned_rename(tmp_path)
+        target_path = plan.actions[0].target_path
+        assert target_path is not None
+        target = root / target_path
+        target.write_bytes(b"late arrival")
+
+        report = _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+        )
+
+        assert report.outcomes[0].status == "applied"
+        record = read_records(tmp_path / "manifest.jsonl")[-1]
+        assert record.overwritten_backup_path is not None
+        assert Path(record.overwritten_backup_path).read_bytes() == b"late arrival"
+
+
+class TestCommitBoundaryTargetBinding:
+    def test_symlinked_overwrite_target__external_interference_skip(self, tmp_path: Path) -> None:
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "a.txt").write_bytes(b"clean\n")
+        config = DocmendConfig(rename=RenameConfig(on_collision="overwrite"))
+        plan = _plan_for(root, config)
+        target_path = plan.actions[0].target_path
+        assert target_path is not None
+        target = root / target_path
+        victim = root / "victim.txt"
+        victim.write_bytes(b"existing target bytes")
+        target.symlink_to(victim)
+
+        report = _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+        )
+
+        assert report.outcomes[0].skip_reason == "external-interference"
+        assert victim.read_bytes() == b"existing target bytes"
+        assert target.is_symlink()
+
+
 def test_collision_policies__skip_fail_overwrite(tmp_path: Path) -> None:
     """FR-011, AW-002, EC-001: the three collision policies at apply time."""
     # skip: target untouched, outcome skipped/collision.
@@ -367,9 +447,8 @@ def test_collision_policies__skip_fail_overwrite(tmp_path: Path) -> None:
     assert _sha(Path(ow_record.overwritten_backup_path).read_bytes()) == old_target_sha
 
 
-def test_overwrite_target_unreadable__failed_recorded_in_manifest(tmp_path: Path) -> None:
-    """FR-011, FR-018, DR-003, DR-004: an unreadable overwrite target fails, with a matching
-    manifest record — the pre-mutation ERR-003 branch must not skip DR-004's reconciliation."""
+def test_overwrite_target_nonregular__external_interference_no_manifest(tmp_path: Path) -> None:
+    """A non-regular overwrite target is an object-class replacement refusal."""
     root = tmp_path / "root"
     root.mkdir()
     (root / "a.txt").write_bytes(b"clean\n")
@@ -377,22 +456,16 @@ def test_overwrite_target_unreadable__failed_recorded_in_manifest(tmp_path: Path
     plan = _plan_for(root, config)
     original_bytes = (root / "a.txt").read_bytes()
 
-    # Live collision whose target is a directory: target.exists() is True (so
-    # the overwrite policy clobbers), but target.read_bytes() raises OSError.
     (root / "a.md").mkdir()
 
     report = _execute(plan, config, tmp_path, write=True, backup_root=tmp_path / "backups")
 
     outcome = report.outcomes[0]
-    assert outcome.status == "failed"
-    assert outcome.error is not None
-    assert outcome.error.error_class == "ERR-003"
-    assert report.totals.failed == 1
+    assert outcome.status == "skipped"
+    assert outcome.skip_reason == "external-interference"
     assert (root / "a.txt").read_bytes() == original_bytes
-
-    records = read_records(tmp_path / "manifest.jsonl")
-    assert len(records) == 1
-    assert records[0].result == "failed"
+    assert (root / "a.md").is_dir()
+    assert not (tmp_path / "manifest.jsonl").exists()
 
 
 def test_overwrite_target_backup_failure__failed_recorded_in_manifest(

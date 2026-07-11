@@ -16,7 +16,6 @@ failure class maps to §12.1.
 """
 
 import hashlib
-import os
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -59,8 +58,8 @@ from docmend.writer.atomic import (
     stage_bytes,
 )
 from docmend.writer.backup import BackupError, backup_file
-from docmend.writer.commit import InterferenceError, bind_file
-from docmend.writer.gate import ApplyOptions, is_content_rewrite
+from docmend.writer.commit import BoundFile, InterferenceError, bind_file
+from docmend.writer.gate import ApplyOptions, is_content_rewrite, strategy_active
 from docmend.writer.manifest import (
     ManifestChain,
     ManifestHeader,
@@ -151,10 +150,6 @@ def _recompute(
     if operations != action.operations:
         return f"recomputed operations {operations} != planned {action.operations}"
     return encode_utf8(transformed), operations
-
-
-def _identity(st: os.stat_result) -> ObjectIdentity:
-    return ObjectIdentity(dev=st.st_dev, ino=st.st_ino)
 
 
 def _record(
@@ -406,6 +401,13 @@ def _execute_action(
             return _skip(action, "collision"), False  # AW-002
         if policy == "fail":
             return _skip(action, "collision"), True  # non-zero abort (FR-011)
+        # Overwrite preservation is an action-time invariant. The gate sees
+        # only targets that exist during preflight; a later arrival is legal to
+        # clobber only under the same byte-preserving strategy. Dry-run options
+        # are synthesized without strategy flags, so preview retains the
+        # collision behavior the corresponding configured write would take.
+        if options.write and not strategy_active(options):
+            return _skip(action, "collision-unpreserved"), False
         clobber = True  # policy == "overwrite"
 
     if not options.write:
@@ -428,22 +430,27 @@ def _execute_action(
 
     overwritten_sha: str | None = None
     overwritten_backup: Path | None = None
-    target_bytes: bytes | None = None  # clobbered content, kept for CR-NEW-004 rollback
+    target_bound: BoundFile | None = None
     if clobber:
         assert target is not None
         try:
-            target_bytes = target.read_bytes()
+            # Backup and the later pre-replace check refer to the same object:
+            # one descriptor supplies its bytes, identity, and mode.
+            target_bound = bind_file(target)
+        except InterferenceError as exc:
+            log.info("commit boundary refusal at target bind", path=action.path, detail=str(exc))
+            return _skip(action, "external-interference"), False
         except OSError as exc:
             outcome = _failed(
                 action, "ERR-003", f"{target}: unreadable for overwrite backup ({exc})"
             )
             _record(manifest, action, kind, source, target, None, None, None, None, run_id, outcome)
             return outcome, False
-        overwritten_sha = _sha(target_bytes)
+        overwritten_sha = _sha(target_bound.data)
         if options.backup_root is not None:
             try:
                 overwritten_backup = backup_file(
-                    target_bytes,
+                    target_bound.data,
                     backup_root=options.backup_root,
                     run_id=run_id,
                     action_seq=_action_seq(action),
@@ -532,10 +539,7 @@ def _execute_action(
 
     identities = _Identities(
         source=bound.identity,
-        # Captured at the same moment as the overwrite backup read (clobber
-        # implies target existed); Plan C's CommitBoundary binds this to a
-        # descriptor — Plan B persists the evidence model.
-        target=_identity(target.stat()) if clobber and target is not None else None,
+        target=target_bound.identity if target_bound is not None else None,
         # Replacement publishes move the STAGED inode onto the target name;
         # pure renames move the source inode. Either way the identity is
         # knowable before any corpus name changes.
@@ -578,8 +582,8 @@ def _execute_action(
                 # state (rewrite the clobbered bytes, or remove the published
                 # target), then fail honestly with the original untouched.
                 try:
-                    if target_bytes is not None:
-                        atomic_write_bytes(target, target_bytes, mode=mode)
+                    if target_bound is not None:
+                        atomic_write_bytes(target, target_bound.data, mode=mode)
                     else:
                         target.unlink()
                 # PEP 758 (Python 3.14): unparenthesized multi-type except reads as

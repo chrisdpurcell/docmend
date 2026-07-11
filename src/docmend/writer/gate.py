@@ -55,7 +55,7 @@ def _dir_writable(path: Path) -> bool:
     return True
 
 
-def _strategy_active(options: ApplyOptions) -> bool:
+def strategy_active(options: ApplyOptions) -> bool:
     return options.backup_root is not None or options.preserved_by is not None
 
 
@@ -95,7 +95,7 @@ def _preservation(plan: Plan, options: ApplyOptions) -> list[GateRefusal]:
                 ),
             )
         )
-    if content and not _strategy_active(options):
+    if content and not strategy_active(options):
         if options.allow_no_backup and len(plan.actions) == 1:
             return refusals
         refusals.append(
@@ -116,7 +116,14 @@ def _preservation(plan: Plan, options: ApplyOptions) -> list[GateRefusal]:
 def _overwrite_preservation(
     plan: Plan, config: DocmendConfig, source_root: Path, options: ApplyOptions
 ) -> list[GateRefusal]:
-    if config.rename.on_collision != "overwrite" or _strategy_active(options):
+    """Provide early feedback for overwrite targets visible before execution.
+
+    The action-time invariant lives in the commit boundary: `_execute_action`
+    re-checks `strategy_active` for every existing target it discovers. A target
+    appearing after this gate without preservation is skipped rather than
+    clobbered, so this predicate is no longer the load-bearing enforcement.
+    """
+    if config.rename.on_collision != "overwrite" or strategy_active(options):
         return []
     clobbers = [
         a.target_path

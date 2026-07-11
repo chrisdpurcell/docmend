@@ -26,6 +26,7 @@ from docmend import lock
 from docmend.cli import app
 from docmend.config import DocmendConfig, RenameConfig
 from docmend.restore import RestoreOutcome, run_restore
+from docmend.writer.commit import CommitHooks
 from docmend.writer.manifest import (
     ManifestChain,
     ManifestRecord,
@@ -1042,19 +1043,14 @@ class TestInterruptedRestoreConvergence:
         rerun_records = read_records(tmp_path / "rerun-manifest.jsonl")
         assert [r.result for r in rerun_records] == ["applied"]
 
-    def test_rename_killed_mid_link_unlink__rerun_finishes(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_rename_killed_mid_link_unlink__rerun_finishes(self, tmp_path: Path) -> None:
         """The both-names lossless intermediate: kill between link and unlink."""
-        import docmend.restore as restore_module
-
         root, apply_manifest = _applied_chain(tmp_path, "rename")
 
-        def link_then_die(source: Path, target: Path) -> None:
-            restore_module.link_no_clobber(source, target)
-            raise _Kill("injected kill between link and unlink")
+        def kill_after_link(step: str, path: Path) -> None:
+            if step == "unlink":
+                raise _Kill("injected kill between link and unlink")
 
-        monkeypatch.setattr(restore_module, "rename_no_clobber", link_then_die)
         restore_out = tmp_path / "restore-manifest.jsonl"
         with pytest.raises(_Kill):
             run_restore(
@@ -1063,8 +1059,8 @@ class TestInterruptedRestoreConvergence:
                 write=True,
                 only_ids=None,
                 manifest_out=restore_out,
+                hooks=CommitHooks(kill_after_link),
             )
-        monkeypatch.undo()
         assert (root / "clean.md").exists() and (root / "clean.txt").exists()  # both names
 
         outcomes = _rerun(apply_manifest, restore_out, tmp_path / "rerun-manifest.jsonl")
@@ -1072,6 +1068,181 @@ class TestInterruptedRestoreConvergence:
         assert [o.status for o in outcomes] == ["restored"]
         assert not (root / "clean.md").exists()
         assert (root / "clean.txt").read_bytes() == b"already clean\n"
+
+
+class TestRestoreCommitBoundary:
+    def test_applied_file_swapped_same_bytes_before_inverse__refused(self, tmp_path: Path) -> None:
+        root, apply_manifest = _applied_chain(tmp_path, "rewrite")
+        target = root / "legacy.md"
+        applied = target.read_bytes()
+
+        def swap(step: str, path: Path) -> None:
+            if step == "publish":
+                target.unlink()
+                target.write_bytes(applied)
+
+        restore_out = tmp_path / "restore-manifest.jsonl"
+        outcomes = run_restore(
+            read_manifest_chain([apply_manifest]),
+            run_id=RESTORE_RUN_ID,
+            write=True,
+            only_ids=None,
+            manifest_out=restore_out,
+            hooks=CommitHooks(swap),
+        )
+
+        assert outcomes[0].status == "failed"
+        assert outcomes[0].detail is not None
+        assert "external-interference" in outcomes[0].detail
+        assert target.read_bytes() == applied
+        assert [record.result for record in read_records(restore_out)] == ["intent", "failed"]
+
+    def test_symlinked_applied_file__failed_not_followed(self, tmp_path: Path) -> None:
+        root, apply_manifest = _applied_chain(tmp_path, "rewrite")
+        target = root / "legacy.md"
+        referent = root / "referent.md"
+        target.rename(referent)
+        payload = referent.read_bytes()
+        target.symlink_to(referent)
+        restore_out = tmp_path / "restore-manifest.jsonl"
+
+        outcomes = run_restore(
+            read_manifest_chain([apply_manifest]),
+            run_id=RESTORE_RUN_ID,
+            write=True,
+            only_ids=None,
+            manifest_out=restore_out,
+        )
+
+        assert outcomes[0].status == "failed"
+        assert outcomes[0].detail is not None and "ERR-002" in outcomes[0].detail
+        assert referent.read_bytes() == payload
+        assert target.is_symlink()
+        assert not restore_out.exists()
+
+    def test_rename_inverse__reinstated_original_replaced__dangling(self, tmp_path: Path) -> None:
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "clean.txt").write_bytes(b"already clean\n")
+        (root / "clean.md").write_bytes(b"old target\n")
+        config = DocmendConfig(rename=RenameConfig(on_collision="overwrite"))
+        plan = _plan_for(root, config)
+        _execute(plan, config, tmp_path, write=True, backup_root=tmp_path / "backups")
+        apply_manifest = tmp_path / "manifest.jsonl"
+        original = root / "clean.txt"
+        applied = root / "clean.md"
+
+        def swap(step: str, path: Path) -> None:
+            if step == "replace-target":
+                original.unlink()
+                original.write_bytes(b"interloper")
+
+        restore_out = tmp_path / "restore-manifest.jsonl"
+        outcomes = run_restore(
+            read_manifest_chain([apply_manifest]),
+            run_id=RESTORE_RUN_ID,
+            write=True,
+            only_ids=None,
+            manifest_out=restore_out,
+            hooks=CommitHooks(swap),
+        )
+
+        assert outcomes[0].status == "failed"
+        assert outcomes[0].detail is not None and "ERR-002" in outcomes[0].detail
+        assert original.read_bytes() == b"interloper"
+        assert applied.exists()
+        assert [record.result for record in read_records(restore_out)] == ["intent"]
+
+    def test_restore_failed_terminal_then_retry__converges(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import docmend.restore as restore_module
+
+        root, apply_manifest = _applied_chain(tmp_path, "rewrite")
+
+        def broken_stage(*args: object, **kwargs: object) -> object:
+            raise WriteError("simulated staging failure")
+
+        from docmend.writer.atomic import WriteError
+
+        real_stage = restore_module.stage_bytes
+        monkeypatch.setattr(restore_module, "stage_bytes", broken_stage)
+        failed_out = tmp_path / "failed-restore.jsonl"
+        first = run_restore(
+            read_manifest_chain([apply_manifest]),
+            run_id=RESTORE_RUN_ID,
+            write=True,
+            only_ids=None,
+            manifest_out=failed_out,
+        )
+        assert first[0].status == "failed"
+        monkeypatch.setattr(restore_module, "stage_bytes", real_stage)
+
+        retry = run_restore(
+            read_manifest_chain([apply_manifest, failed_out]),
+            run_id=RERUN_ID,
+            write=True,
+            only_ids=None,
+            manifest_out=tmp_path / "retry-restore.jsonl",
+        )
+
+        assert retry[0].status == "restored"
+        record = read_records(apply_manifest)[1]
+        assert _sha((root / "legacy.md").read_bytes()) == record.before_sha256
+
+    def test_rename_destination_appears_before_inverse__failed_terminal(
+        self, tmp_path: Path
+    ) -> None:
+        root, apply_manifest = _applied_chain(tmp_path, "rename")
+        original = root / "clean.txt"
+        applied = root / "clean.md"
+
+        def occupy_original(step: str, path: Path) -> None:
+            if step == "publish":
+                original.write_bytes(b"late arrival")
+
+        restore_out = tmp_path / "restore-manifest.jsonl"
+        outcomes = run_restore(
+            read_manifest_chain([apply_manifest]),
+            run_id=RESTORE_RUN_ID,
+            write=True,
+            only_ids=None,
+            manifest_out=restore_out,
+            hooks=CommitHooks(occupy_original),
+        )
+
+        assert outcomes[0].status == "failed"
+        assert outcomes[0].detail is not None and "ERR-003" in outcomes[0].detail
+        assert original.read_bytes() == b"late arrival"
+        assert applied.exists()
+        assert [record.result for record in read_records(restore_out)] == ["intent", "failed"]
+
+    def test_rename_and_rewrite_error_after_reinstatement__intent_dangling(
+        self, tmp_path: Path
+    ) -> None:
+        root, apply_manifest = _applied_chain(tmp_path, "rename_and_rewrite")
+        original = root / "legacy.txt"
+        applied = root / "legacy.md"
+
+        def fail_after_reinstate(step: str, path: Path) -> None:
+            if step == "unlink":
+                raise OSError(5, "I/O error")
+
+        restore_out = tmp_path / "restore-manifest.jsonl"
+        outcomes = run_restore(
+            read_manifest_chain([apply_manifest]),
+            run_id=RESTORE_RUN_ID,
+            write=True,
+            only_ids=None,
+            manifest_out=restore_out,
+            hooks=CommitHooks(fail_after_reinstate),
+        )
+
+        assert outcomes[0].status == "failed"
+        assert outcomes[0].detail is not None and "intermediate preserved" in outcomes[0].detail
+        assert original.exists()
+        assert applied.exists()
+        assert [record.result for record in read_records(restore_out)] == ["intent"]
 
     def test_rnr_killed_after_reinstate__rerun_finishes_cleanup(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

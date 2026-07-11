@@ -36,11 +36,19 @@ from docmend.writer.atomic import (
     StagedWrite,
     WriteError,
     abort_staged,
-    atomic_write_bytes,
     link_no_clobber,
     publish_staged,
-    rename_no_clobber,
     stage_bytes,
+)
+from docmend.writer.commit import (
+    NO_HOOKS,
+    CommitHooks,
+    InterferenceError,
+    bind_file,
+    check_bound,
+    check_destination,
+    guarded_rename_no_clobber,
+    guarded_replace,
 )
 from docmend.writer.manifest import (
     ManifestChain,
@@ -102,29 +110,6 @@ def _verified_backup(record: ManifestRecord) -> bytes | RestoreOutcome:
     return data
 
 
-def _live_matches_after(record: ManifestRecord) -> RestoreOutcome | None:
-    live = Path(record.target_path)
-    try:
-        current = live.read_bytes()
-    except OSError:
-        return RestoreOutcome(
-            record.action_id,
-            record.docmend_id,
-            record.original_path,
-            "skipped",
-            "unreadable: applied file missing or unreadable",
-        )
-    if record.after_sha256 is not None and _sha(current) != record.after_sha256:
-        return RestoreOutcome(
-            record.action_id,
-            record.docmend_id,
-            record.original_path,
-            "skipped",
-            "modified-since-apply",
-        )
-    return None
-
-
 def run_restore(
     chain: ManifestChain,
     *,
@@ -132,6 +117,7 @@ def run_restore(
     write: bool,
     only_ids: frozenset[str] | None,
     manifest_out: Path,
+    hooks: CommitHooks = NO_HOOKS,
 ) -> list[RestoreOutcome]:
     """Undo a validated apply CHAIN (adr-0019): the lifecycle reducer decides
     each action's state; `applied` states replay LIFO (chain position then
@@ -157,6 +143,7 @@ def run_restore(
     }
     tip = chain.sets[-1]
     root_header = chain.sets[0].header
+    root_resolved = Path(root_header.source_root).resolve()
     tip_sha = tip.sha256 or manifest_sha256(tip.path)
     manifest: ManifestWriter | None = None
     if write:
@@ -222,16 +209,29 @@ def run_restore(
                     write=write,
                     run_id=run_id,
                     manifest=manifest,
+                    root_resolved=root_resolved,
+                    hooks=hooks,
                 )
                 if outcome is not None:
                     outcomes.append(outcome)
                     _log_outcome(log, outcome)
                     continue
                 # never-happened: fall through and re-execute the inverse.
+            if state.state == "restore-failed":
+                # A failed inverse terminal proves no mutation landed, so a
+                # retry is a fresh inverse; failed -> intent -> applied is legal.
+                pass
             undone = apply_terminals.get(action_id)
             if undone is None:
                 continue  # unreachable: chain rules require the apply record
-            outcome = _restore_one(undone, write=write, run_id=run_id, manifest=manifest)
+            outcome = _restore_one(
+                undone,
+                write=write,
+                run_id=run_id,
+                manifest=manifest,
+                root_resolved=root_resolved,
+                hooks=hooks,
+            )
             outcomes.append(outcome)
             _log_outcome(log, outcome)
     finally:
@@ -254,6 +254,8 @@ def _converge_pending_restore(
     write: bool,
     run_id: str,
     manifest: ManifestWriter | None,
+    root_resolved: Path,
+    hooks: CommitHooks,
 ) -> RestoreOutcome | None:
     """An interrupted earlier restore left a dangling INVERSE intent: the
     shared adjudication table classifies the crash-after state and this run
@@ -322,26 +324,31 @@ def _inverse_record(
 
 
 def _restore_one(
-    record: ManifestRecord, *, write: bool, run_id: str, manifest: ManifestWriter | None
+    record: ManifestRecord,
+    *,
+    write: bool,
+    run_id: str,
+    manifest: ManifestWriter | None,
+    root_resolved: Path,
+    hooks: CommitHooks,
 ) -> RestoreOutcome:
     # ---- Preflight: verify EVERY recovery input before ANY mutation (codex
     # CR-003). A restore that mutates and then discovers a bad input has
     # destroyed state inside the disaster-recovery path itself — every early
     # return in this section leaves both live files byte-identical.
-    mismatch = _live_matches_after(record)
-    if mismatch is not None:
-        return mismatch
     original = Path(record.original_path)
     target = Path(record.target_path)
-
-    # IR-008/§8.1: apply preserved the source file's mode onto the applied
-    # target, so the live target's current mode IS the original's mode —
-    # capture it now (before any mutation) and carry it through every
-    # reinstatement write below, or restored files come back at the
-    # temp-file default (0o600) instead of their real permissions. The same
-    # stat is the inverse intent's source_identity (adr-0019).
     try:
-        target_stat = target.stat()
+        # Hash, mode, and identity describe one descriptor-bound applied file.
+        live = bind_file(target)
+    except InterferenceError as exc:
+        return RestoreOutcome(
+            record.action_id,
+            record.docmend_id,
+            record.original_path,
+            "failed",
+            f"ERR-002 external-interference: {exc}",
+        )
     except OSError:
         return RestoreOutcome(
             record.action_id,
@@ -350,7 +357,15 @@ def _restore_one(
             "skipped",
             "unreadable: applied file missing or unreadable",
         )
-    mode = target_stat.st_mode
+    if record.after_sha256 is not None and _sha(live.data) != record.after_sha256:
+        return RestoreOutcome(
+            record.action_id,
+            record.docmend_id,
+            record.original_path,
+            "skipped",
+            "modified-since-apply",
+        )
+    mode = live.mode
 
     if record.operation != "rewrite" and original.exists():
         return RestoreOutcome(
@@ -409,7 +424,7 @@ def _restore_one(
     # ---- Journal-every-mutation (adr-0019): stage any replacement output
     # FIRST (a tool-owned temp is not corpus mutation), capture the inverse's
     # identities, append the fsync'd intent, mutate, append the terminal.
-    source_identity = ObjectIdentity(dev=target_stat.st_dev, ino=target_stat.st_ino)
+    source_identity = live.identity
     staged: StagedWrite | None = None
     try:
         if backup is not None:
@@ -442,30 +457,102 @@ def _restore_one(
     # step leaves a SUPERSET of the wanted files on disk — never a missing
     # one. An interrupted inverse converges on re-run via the adjudication
     # table (adr-0019), never a guessing collision trip.
+    mutated = False
     try:
         if record.operation == "rewrite":
             assert staged is not None
+            hooks.before_step("publish", original)
+            check_bound(staged.tmp, staged.identity, root_resolved=root_resolved)
+            check_bound(target, live.identity, root_resolved=root_resolved)
             publish_staged(staged, original)
         elif record.operation == "rename":
             if clobbered is not None:
-                # Keep the target name occupied throughout: link the applied
-                # file back to its original name, then atomically replace the
-                # target with the clobbered content — no window where either
-                # name is missing.
+                hooks.before_step("publish", original)
+                check_bound(target, live.identity, root_resolved=root_resolved)
+                check_destination(original, root_resolved=root_resolved)
                 link_no_clobber(target, original)
-                atomic_write_bytes(target, clobbered, mode=mode)
+                mutated = True
+                guarded_replace(
+                    target,
+                    clobbered,
+                    expected=live.identity,
+                    mode=mode,
+                    root_resolved=root_resolved,
+                    hooks=hooks,
+                    survivor=(original, live.identity),
+                )
             else:
-                rename_no_clobber(target, original)
+                guarded_rename_no_clobber(
+                    target,
+                    original,
+                    live.identity,
+                    root_resolved=root_resolved,
+                    hooks=hooks,
+                )
         else:  # rename_and_rewrite
             assert staged is not None
+            hooks.before_step("publish", original)
+            check_bound(staged.tmp, staged.identity, root_resolved=root_resolved)
+            check_destination(original, root_resolved=root_resolved)
+            reinstated_identity = staged.identity
             publish_staged(staged, original, clobber=False)
+            mutated = True
+            hooks.before_step("unlink", target)
             if clobbered is not None:
-                atomic_write_bytes(target, clobbered, mode=mode)
+                guarded_replace(
+                    target,
+                    clobbered,
+                    expected=live.identity,
+                    mode=mode,
+                    root_resolved=root_resolved,
+                    hooks=hooks,
+                    survivor=(original, reinstated_identity),
+                )
             else:
+                check_bound(original, reinstated_identity, root_resolved=root_resolved)
+                check_bound(target, live.identity, root_resolved=root_resolved)
                 target.unlink()
+    except InterferenceError as exc:
+        if staged is not None:
+            abort_staged(staged, root_resolved=root_resolved)
+        if mutated or exc.intermediate:
+            return RestoreOutcome(
+                record.action_id,
+                record.docmend_id,
+                record.original_path,
+                "failed",
+                f"ERR-002 external-interference: {exc} "
+                "(intermediate preserved; re-run adjudicates)",
+            )
+        if manifest is not None and intent is not None:
+            manifest.append(
+                intent.model_copy(
+                    update={
+                        "result": "failed",
+                        "after_sha256": None,
+                        "run_id": run_id,
+                        "error": ErrorInfo(error_class="ERR-002", message=str(exc)),
+                    }
+                )
+            )
+        return RestoreOutcome(
+            record.action_id,
+            record.docmend_id,
+            record.original_path,
+            "failed",
+            f"ERR-002 external-interference: {exc}",
+        )
     except (WriteError, OSError, FileExistsError) as exc:
         if staged is not None:
-            abort_staged(staged)
+            abort_staged(staged, root_resolved=root_resolved)
+        if mutated:
+            return RestoreOutcome(
+                record.action_id,
+                record.docmend_id,
+                record.original_path,
+                "failed",
+                f"ERR-003: {exc} (intermediate preserved; re-run adjudicates)",
+            )
         if manifest is not None and intent is not None:
             manifest.append(
                 intent.model_copy(

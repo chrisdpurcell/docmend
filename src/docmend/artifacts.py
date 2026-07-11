@@ -21,6 +21,7 @@ Cross-file contracts:
 import hashlib
 import json
 import os
+import secrets
 from collections import Counter
 from collections.abc import Iterator
 from functools import cache
@@ -91,15 +92,41 @@ def validate_artifact(kind: ArtifactKind, document: object) -> None:
 
 
 def write_json_artifact(document: dict[str, object], path: Path) -> None:
-    """Atomically write one JSON-document artifact (temp + fsync + os.replace)."""
+    """Atomically write one JSON-document artifact (random O_EXCL temp + fsync +
+    os.replace). Staging is randomized per attempt (rev 0.26, adr-0021): the
+    old fixed '<name>.tmp' sibling was a predictable truncation target and a
+    permanent retry blocker after a hard kill; EEXIST on a candidate is a name
+    collision to retry, never an environmental failure. The temp is unlinked
+    on EVERY unpublished exit — json.dump's TypeError/ValueError included, not
+    only OSError. The 0o666 create mode is masked by the process umask AT
+    os.open (kernel-side), so artifact modes stay exactly what plain open()
+    produced before — permission POLICY is deliberately not decided here
+    (deferred to the observability sub-project; plan-review F6/adr-0021
+    amendment).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        json.dump(document, fh, ensure_ascii=False, indent=2)
-        fh.write("\n")
-        fh.flush()
-        os.fsync(fh.fileno())
-    tmp.replace(path)
+    for _ in range(8):
+        tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        except FileExistsError:
+            continue
+        break
+    else:
+        msg = f"{path}: could not allocate a staging name in 8 attempts"
+        raise OSError(msg)
+    published = False
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(document, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        tmp.replace(path)
+        published = True
+    finally:
+        if not published:
+            tmp.unlink(missing_ok=True)
 
 
 def write_inventory(inventory: Inventory, path: Path) -> None:

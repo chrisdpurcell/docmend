@@ -7,11 +7,13 @@ exactly with the per-file records.
 """
 
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from docmend import artifacts
 from docmend.artifacts import ArtifactError, read_inventory, validate_artifact, write_inventory
 from docmend.config import DocmendConfig
 from docmend.discovery import scan
@@ -120,3 +122,32 @@ class TestReadFailureModes:
         artifact.write_text(json.dumps(document), encoding="utf-8")
         with pytest.raises(ArtifactError, match=r"generated_at|date-time"):
             read_inventory(artifact)
+
+
+def test_artifact_staging__randomized_and_retry_safe(tmp_path: Path) -> None:
+    """DMR-02: the old fixed '<name>.tmp' sibling was a predictable truncation
+    target and blocked nothing on collision. Staging must be O_EXCL-random:
+    pre-existing residue at the legacy name must be left untouched and must
+    not block the write."""
+    dest = tmp_path / "out.json"
+    legacy_residue = tmp_path / "out.json.tmp"
+    legacy_residue.write_bytes(b"victim bytes that must survive")
+    artifacts.write_json_artifact({"k": "v"}, dest)
+    assert json.loads(dest.read_text()) == {"k": "v"}
+    assert legacy_residue.read_bytes() == b"victim bytes that must survive"
+    leftovers = sorted(p.name for p in tmp_path.iterdir())
+    assert leftovers == ["out.json", "out.json.tmp"]  # staging temp cleaned up
+    # F6: modes stay umask-derived — no artifact-mode policy is decided here.
+    umask = os.umask(0)
+    os.umask(umask)
+    assert (dest.stat().st_mode & 0o777) == (0o666 & ~umask)
+
+
+def test_artifact_staging__serialization_failure_leaves_no_residue(tmp_path: Path) -> None:
+    """plan-review F4: json.dump can raise TypeError on a non-serializable
+    document; cleanup must cover that class too, not only OSError."""
+    dest = tmp_path / "out.json"
+    with pytest.raises(TypeError):
+        artifacts.write_json_artifact({"k": object()}, dest)
+    assert not dest.exists()
+    assert list(tmp_path.iterdir()) == []

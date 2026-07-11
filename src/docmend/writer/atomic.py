@@ -21,6 +21,7 @@ else in docmend calls os.replace/os.link on library files. Invariants:
 
 import contextlib
 import os
+import secrets
 from pathlib import Path
 
 
@@ -42,8 +43,23 @@ def fsync_dir(path: Path) -> None:
 
 
 def _write_temp(target: Path, data: bytes, mode: int | None) -> Path:
-    tmp = target.with_name(f".{target.name}.docmend-tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    # Randomized per attempt (rev 0.26): a fixed staging name meant a hard
+    # kill's residue blocked every later attempt at the same target with a
+    # spurious O_EXCL failure, and made the staging path predictable to an
+    # interfering process. Residue from a killed attempt is inert; EEXIST on
+    # a candidate is a name collision to retry with a fresh name (bounded so
+    # a pathological directory cannot loop forever), never an environmental
+    # write failure — those propagate as OSError.
+    for _ in range(8):
+        tmp = target.with_name(f".{target.name}.{secrets.token_hex(4)}.docmend-tmp")
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            continue
+        break
+    else:
+        msg = f"{target}: could not allocate a staging name in 8 attempts"
+        raise OSError(msg)
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
@@ -80,12 +96,12 @@ def atomic_write_bytes(
         raise WriteError(msg) from exc
     if not clobber:
         # The link above already succeeded, so target now holds the new bytes
-        # — the publish happened. The stray ".{name}.docmend-tmp" is just a
-        # second name for that same inode (lossless residue); a later write
-        # attempt will surface it as an O_EXCL collision on the temp-file
-        # stage. Reporting WriteError here would tell the caller the mutation
-        # failed when it didn't — worse than the residue, so we swallow this
-        # one deliberately.
+        # — the publish happened. The stray staging name is just a second name
+        # for that same inode (lossless residue); staging names are randomized
+        # per attempt and EEXIST-retried, so residue never blocks a retry.
+        # Reporting WriteError here would tell the caller the mutation failed
+        # when it didn't — worse than the residue, so we swallow this one
+        # deliberately.
         with contextlib.suppress(OSError):
             tmp.unlink()
     fsync_dir(target.parent)

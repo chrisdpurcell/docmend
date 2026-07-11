@@ -73,18 +73,23 @@ def test_no_clobber_publish_unlink_failure__publish_stands(
     reported as a WriteError — the publish already happened, so the caller
     would otherwise be told a lie about the mutation's outcome."""
     target = tmp_path / "a.md"
-    tmp = target.with_name(f".{target.name}.docmend-tmp")
     real_unlink = Path.unlink
+    residue: Path | None = None
 
     def boom(self: Path, missing_ok: bool = False) -> None:
-        if self == tmp:
+        nonlocal residue
+        # Fail on any temp file for this target (randomized names)
+        if self.name.startswith(".a.md.") and self.name.endswith(".docmend-tmp"):
+            residue = self
             raise OSError(5, "I/O error")
         real_unlink(self, missing_ok=missing_ok)
 
     monkeypatch.setattr(Path, "unlink", boom)
     atomic.atomic_write_bytes(target, b"new", clobber=False)
     assert target.read_bytes() == b"new"
-    assert tmp.exists()  # documented residue: a second name for the same inode
+    assert (
+        residue is not None and residue.exists()
+    )  # documented residue: a second name for the same inode
 
 
 def test_rename_no_clobber__moves_and_refuses(tmp_path: Path) -> None:
@@ -190,3 +195,31 @@ def test_write_failure__wraps_oserror(tmp_path: Path, monkeypatch: pytest.Monkey
         atomic.atomic_write_bytes(target, b"new")
     monkeypatch.setattr(atomic.os, "fsync", real_fsync)
     assert list(tmp_path.iterdir()) == []
+
+
+def test_stale_staging_residue__does_not_block_retry(tmp_path: Path) -> None:
+    """A hard kill can leave a staging file behind; with the old FIXED temp
+    name (.{name}.docmend-tmp) the next attempt's O_EXCL open failed forever.
+    Randomized names make residue inert (rev 0.26 / adr-0021 staging rule)."""
+    target = tmp_path / "a.md"
+    (tmp_path / ".a.md.docmend-tmp").write_bytes(b"legacy stale residue")
+    atomic.atomic_write_bytes(target, b"fresh\n")
+    assert target.read_bytes() == b"fresh\n"
+    assert (tmp_path / ".a.md.docmend-tmp").read_bytes() == b"legacy stale residue"
+
+
+def test_staging_name_collision__retried_not_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EEXIST on a generated candidate is a NAME COLLISION, not an
+    environmental write failure: the writer must retry a fresh name, leave the
+    colliding residue untouched, and still publish (plan-review F5)."""
+    target = tmp_path / "a.md"
+    residue = tmp_path / ".a.md.deadbeef.docmend-tmp"
+    residue.write_bytes(b"stale residue from a killed run")
+    tokens = iter(["deadbeef", "cafe0000"])
+    monkeypatch.setattr(atomic.secrets, "token_hex", lambda _n: next(tokens))  # type: ignore[reportUnknownArgumentType]
+    atomic.atomic_write_bytes(target, b"fresh\n")
+    assert target.read_bytes() == b"fresh\n"
+    assert residue.read_bytes() == b"stale residue from a killed run"
+    assert not (tmp_path / ".a.md.cafe0000.docmend-tmp").exists()

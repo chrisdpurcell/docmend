@@ -1,11 +1,9 @@
 """`docmend verify` CLI tests (spec: FR-014, IR-004, adr-0012; §18.5 exit taxonomy).
 
 adr-0012 exit taxonomy is the contract under test: 0 clean, 1 findings, 2
-invocation/artifact-input error, 3 safety refusal. v1 checks (RQ-006 / this
-session's scope decision): UTF-8 decodability without replacement, LF-only line
-endings, manifest/report reconciliation, frontmatter validity where present
-(FR-016, adr-0011 — a no-frontmatter document is legal; the v1 pipeline emits
-none), and report<->manifest accounting.
+invocation/artifact-input error, 3 safety refusal. Checks cover corpus content,
+discovery completeness, frontmatter where present, manifest lifecycle and
+recovery evidence, and exactly-once plan coverage across resumed attempts.
 
 verify reuses `discovery.scan`'s walk + facts, so it configures logging the same
 way scan does; the isolate_logging fixture mirrors tests/test_cli_scan.py.
@@ -18,10 +16,20 @@ from pathlib import Path
 
 import pytest
 import structlog
+from tests.helpers.manifest2 import (
+    OTHER_RUN_ID,
+    RUN_ID,
+    SHA_A,
+    header_doc,
+    record_doc,
+    write_set,
+)
 from typer.testing import CliRunner
 
 from docmend import artifacts, cli, lock
+from docmend import verify as verify_module
 from docmend.cli import app
+from docmend.writer import manifest as manifest_io
 
 runner = CliRunner()
 LOCK_RUN_ID = "run_20260711T150000Z_000055"
@@ -107,6 +115,42 @@ def _report_for_manifest(manifest_path: Path) -> Path:
     return manifest_path.with_name(f"docmend-{run_id}-report.json")
 
 
+def _new_artifact(before: set[Path], artifact_dir: Path, pattern: str) -> Path:
+    created = set(artifact_dir.glob(pattern)) - before
+    assert len(created) == 1, created
+    return created.pop()
+
+
+def _run_write_with_backups(
+    corpus: Path,
+    tmp_path: Path,
+    *,
+    overwrite: bool = False,
+) -> tuple[Path, Path, Path]:
+    """Run a real plan/apply write and return its plan, manifest, and report."""
+    plan_path = tmp_path / "backup-plan.json"
+    args = ["plan", str(corpus), "--out", str(plan_path)]
+    if overwrite:
+        config_path = tmp_path / "overwrite.toml"
+        config_path.write_text('[rename]\non_collision = "overwrite"\n', encoding="utf-8")
+        args.extend(["--config", str(config_path)])
+    planned = runner.invoke(app, args)
+    assert planned.exit_code == 0, planned.output
+    applied = runner.invoke(
+        app,
+        [
+            "apply",
+            str(plan_path),
+            "--write",
+            "--backup-dir",
+            str(tmp_path / "backups"),
+        ],
+    )
+    assert applied.exit_code == 0, applied.output
+    [manifest_path] = (tmp_path / ".docmend").glob("docmend-*-manifest.jsonl")
+    return plan_path, manifest_path, _report_for_manifest(manifest_path)
+
+
 def test_verify_reconciles_clean_manifest__exit_0(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -184,6 +228,132 @@ def test_verify_missing_output__exit_1(tmp_path: Path, monkeypatch: pytest.Monke
     assert "doc.md" in result.output
 
 
+@pytest.mark.parametrize("damage", ["missing", "corrupt"])
+def test_verify_source_backup_damage__backup_finding_exit_1(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "doc.txt").write_bytes(b"line one\r\nline two\r\n")
+    plan_path, manifest_path, report_path = _run_write_with_backups(corpus, tmp_path)
+    record = manifest_io.read_manifest_set(manifest_path).records[-1]
+    assert record.backup_path is not None
+    backup = Path(record.backup_path)
+    if damage == "missing":
+        backup.unlink()
+    else:
+        backup.write_bytes(b"corrupt backup")
+
+    result = runner.invoke(
+        app,
+        [
+            "verify",
+            str(corpus),
+            "--plan",
+            str(plan_path),
+            "--manifest",
+            str(manifest_path),
+            "--report",
+            str(report_path),
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "[backup]" in result.output
+    assert "source backup" in result.output
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt"])
+def test_verify_overwritten_backup_damage__backup_finding_exit_1(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "doc.txt").write_bytes(b"new target\n")
+    (corpus / "doc.md").write_bytes(b"old target\n")
+    plan_path, manifest_path, report_path = _run_write_with_backups(
+        corpus, tmp_path, overwrite=True
+    )
+    record = manifest_io.read_manifest_set(manifest_path).records[-1]
+    assert record.overwritten_backup_path is not None
+    backup = Path(record.overwritten_backup_path)
+    if damage == "missing":
+        backup.unlink()
+    else:
+        backup.write_bytes(b"corrupt overwritten backup")
+
+    result = runner.invoke(
+        app,
+        [
+            "verify",
+            str(corpus),
+            "--plan",
+            str(plan_path),
+            "--manifest",
+            str(manifest_path),
+            "--report",
+            str(report_path),
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "[backup]" in result.output
+    assert "overwritten backup" in result.output
+
+
+def test_verify_all_candidates_unreadable_or_timed_out__discovery_and_zero_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from docmend.watchdog import PerFileTimeoutError
+
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "denied.md").write_bytes(b"unreadable\n")
+    (corpus / "slow.md").write_bytes(b"slow\n")
+
+    def fail_classification(path: Path, *_args: object, **_kwargs: object) -> object:
+        if path.name == "slow.md":
+            raise PerFileTimeoutError(0.0)
+        raise OSError("synthetic read refusal")
+
+    monkeypatch.setattr(cli.discovery, "classify_file", fail_classification)
+    result = runner.invoke(app, ["verify", str(corpus)])
+
+    assert result.exit_code == 1, result.output
+    assert "[discovery-unreadable]" in result.output
+    assert "[discovery-timeout]" in result.output
+    assert "[zero-checked]" in result.output
+
+
+@pytest.mark.parametrize("all_excluded", [False, True])
+def test_verify_empty_or_all_excluded__clean_without_zero_checked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    all_excluded: bool,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    args = ["verify", str(corpus)]
+    if all_excluded:
+        (corpus / "excluded.md").write_bytes(b"clean\n")
+        config_path = tmp_path / "exclude.toml"
+        config_path.write_text('[paths]\nexclude = ["*.md"]\n', encoding="utf-8")
+        args.extend(["--config", str(config_path)])
+
+    result = runner.invoke(app, args)
+
+    assert result.exit_code == 0, result.output
+    assert "zero-checked" not in result.output
+
+
 def test_verify_is_read_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """IR-004/adr-0012: verify mutates no corpus file and writes no manifest."""
     monkeypatch.chdir(tmp_path)
@@ -225,6 +395,178 @@ def test_verify_unreadable_manifest__exit_2(
     )
 
     assert result.exit_code == 2, result.output
+
+
+def test_verify_wrong_root_manifest__manifest_root_finding_exit_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "doc.md").write_bytes(b"clean\n")
+    manifest_path = write_set(
+        tmp_path / "wrong-root.jsonl",
+        header_doc(source_root=str(tmp_path / "different-corpus")),
+    )
+
+    result = runner.invoke(app, ["verify", str(corpus), "--manifest", str(manifest_path)])
+
+    assert result.exit_code == 1, result.output
+    assert "[manifest-root]" in result.output
+
+
+def test_verify_dangling_apply_intent__lifecycle_finding_exit_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    target = corpus / "doc.md"
+    target.write_bytes(b"clean\n")
+    manifest_path = write_set(
+        tmp_path / "dangling-apply.jsonl",
+        header_doc(source_root=str(corpus)),
+        record_doc(
+            1,
+            result="intent",
+            original_path=str(target),
+            target_path=str(target),
+        ),
+    )
+
+    result = runner.invoke(app, ["verify", str(corpus), "--manifest", str(manifest_path)])
+
+    assert result.exit_code == 1, result.output
+    assert "[lifecycle]" in result.output
+    assert "pending-intent" in result.output
+
+
+def test_verify_dangling_restore_intent__lifecycle_finding_exit_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    target = corpus / "doc.md"
+    target.write_bytes(b"clean\n")
+    apply_manifest = write_set(
+        tmp_path / "apply.jsonl",
+        header_doc(source_root=str(corpus)),
+        record_doc(
+            1,
+            result="intent",
+            original_path=str(target),
+            target_path=str(target),
+        ),
+        record_doc(
+            1,
+            seq=2,
+            original_path=str(target),
+            target_path=str(target),
+        ),
+    )
+    apply_sha = manifest_io.manifest_sha256(apply_manifest)
+    restore_manifest = write_set(
+        tmp_path / "restore.jsonl",
+        header_doc(
+            run_id=OTHER_RUN_ID,
+            kind="restore",
+            source_root=str(corpus),
+            prior_manifest_sha256=apply_sha,
+            prior_attempt={
+                "run_id": RUN_ID,
+                "report_sha256": None,
+                "manifest_sha256": apply_sha,
+            },
+        ),
+        record_doc(
+            1,
+            result="intent",
+            run_id=OTHER_RUN_ID,
+            original_path=str(target),
+            target_path=str(target),
+            undoes_action_id=f"{RUN_ID}/a1",
+            undoes_run_id=RUN_ID,
+        ),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "verify",
+            str(corpus),
+            "--manifest",
+            str(restore_manifest),
+            "--manifest",
+            str(apply_manifest),
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "[lifecycle]" in result.output
+    assert "pending-restore" in result.output
+
+
+def test_verify_containment_escape__finding_without_opening_escaped_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "doc.md").write_bytes(b"clean\n")
+    escaped = tmp_path / "outside.md"
+    manifest_path = write_set(
+        tmp_path / "escape.jsonl",
+        header_doc(source_root=str(corpus)),
+        record_doc(
+            1,
+            result="intent",
+            original_path=str(escaped),
+            target_path=str(escaped),
+        ),
+    )
+
+    def refuse_open(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("escaped manifest path was opened")
+
+    monkeypatch.setattr(verify_module, "bind_file", refuse_open)
+    result = runner.invoke(app, ["verify", str(corpus), "--manifest", str(manifest_path)])
+
+    assert result.exit_code == 1, result.output
+    assert "[manifest-containment]" in result.output
+    assert "[hash]" not in result.output
+
+
+def test_verify_lifecycle_invalid_manifest__input_error_exit_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    target = corpus / "doc.md"
+    target.write_bytes(b"clean\n")
+    manifest_path = write_set(
+        tmp_path / "invalid-lifecycle.jsonl",
+        header_doc(source_root=str(corpus)),
+        record_doc(
+            1,
+            result="intent",
+            original_path=str(target),
+            target_path=str(target),
+        ),
+        record_doc(
+            1,
+            seq=2,
+            after_sha256=SHA_A,
+            original_path=str(target),
+            target_path=str(target),
+        ),
+    )
+
+    result = runner.invoke(app, ["verify", str(corpus), "--manifest", str(manifest_path)])
+
+    assert result.exit_code == 2, result.output
+    assert "immutable field" in result.output
 
 
 def test_verify_missing_run_id_sidecars__exit_2(
@@ -387,6 +729,116 @@ def test_verify_plan_without_attempt_evidence__coverage_exit_1(
     assert result.exit_code == 1, result.output
     assert "[coverage]" in result.output
     assert "plan action has no terminal outcome" in result.output
+
+
+def test_verify_aborted_report_omitting_trailing_action__coverage_exit_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.txt").write_bytes(b"first\n")
+    (corpus / "b.txt").write_bytes(b"second\n")
+    config_path = tmp_path / "fail-collision.toml"
+    config_path.write_text('[rename]\non_collision = "fail"\n', encoding="utf-8")
+    plan_path = tmp_path / "verify-plan.json"
+    planned = runner.invoke(
+        app,
+        ["plan", str(corpus), "--config", str(config_path), "--out", str(plan_path)],
+    )
+    assert planned.exit_code == 0, planned.output
+    (corpus / "a.md").write_bytes(b"late collision\n")
+    applied = runner.invoke(app, ["apply", str(plan_path), "--write", "--preserved-by", "external"])
+    assert applied.exit_code == 1, applied.output
+    [report_path] = (tmp_path / ".docmend").glob("docmend-*-report.json")
+    report_document = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report_document["outcomes"][-1]["status"] == "not-attempted"
+    report_document["outcomes"].pop()
+    report_document["totals"]["not_attempted"] -= 1
+    report_path.write_text(json.dumps(report_document), encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        ["verify", str(corpus), "--plan", str(plan_path), "--report", str(report_path)],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "[coverage]" in result.output
+    assert "plan action has no terminal outcome" in result.output
+
+
+def test_verify_dry_run_only_report__coverage_uncertified_exit_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "doc.txt").write_bytes(b"line one\r\nline two\r\n")
+    plan_path = _plan_for_verify(corpus, tmp_path)
+    preview = runner.invoke(app, ["apply", str(plan_path)])
+    assert preview.exit_code == 0, preview.output
+    [report_path] = (tmp_path / ".docmend").glob("docmend-*-report.json")
+
+    result = runner.invoke(
+        app,
+        ["verify", str(corpus), "--plan", str(plan_path), "--report", str(report_path)],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "[coverage-uncertified]" in result.output
+
+
+def test_verify_apply_manifest_missing_report__coverage_unprovable_exit_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "doc.txt").write_bytes(b"clean\n")
+    manifest_path = _apply_corpus(corpus, tmp_path)
+    report_path = _report_for_manifest(manifest_path)
+    report_path.unlink()
+
+    result = runner.invoke(
+        app,
+        [
+            "verify",
+            str(corpus),
+            "--plan",
+            str(tmp_path / "plan.json"),
+            "--manifest",
+            str(manifest_path),
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "[coverage-unprovable]" in result.output
+
+
+def test_verify_plan_aware_single_write__clean_exit_0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "doc.txt").write_bytes(b"clean\n")
+    manifest_path = _apply_corpus(corpus, tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "verify",
+            str(corpus),
+            "--plan",
+            str(tmp_path / "plan.json"),
+            "--manifest",
+            str(manifest_path),
+            "--report",
+            str(_report_for_manifest(manifest_path)),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
 
 
 def test_verify_out__writes_schema_valid_report_and_no_default_result(
@@ -567,6 +1019,157 @@ def test_verify_repeatable_shuffled_evidence__report_only_predecessor_and_reloca
 
     assert explicit.exit_code == 0, explicit.output
     assert combined.exit_code == 0, combined.output
+
+
+def test_verify_double_resume_lineage__clean_exit_0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "doc.txt").write_bytes(b"line one\r\nline two\r\n")
+    plan_path = _plan_for_verify(corpus, tmp_path)
+    artifact_dir = tmp_path / ".docmend"
+
+    first = runner.invoke(app, ["apply", str(plan_path), "--write"])
+    assert first.exit_code == 3, first.output
+    [r1] = artifact_dir.glob("docmend-*-report.json")
+
+    reports_before = set(artifact_dir.glob("docmend-*-report.json"))
+    second = runner.invoke(
+        app,
+        [
+            "apply",
+            str(plan_path),
+            "--write",
+            "--preserved-by",
+            "external",
+            "--prior-report",
+            str(r1),
+        ],
+    )
+    assert second.exit_code == 0, second.output
+    [m2] = artifact_dir.glob("docmend-*-manifest.jsonl")
+    r2 = _new_artifact(reports_before, artifact_dir, "docmend-*-report.json")
+
+    reports_before = set(artifact_dir.glob("docmend-*-report.json"))
+    third = runner.invoke(
+        app,
+        [
+            "apply",
+            str(plan_path),
+            "--write",
+            "--preserved-by",
+            "external",
+            "--prior-report",
+            str(r1),
+            "--resume-manifest",
+            str(m2),
+            "--prior-report",
+            str(r2),
+        ],
+    )
+    assert third.exit_code == 0, third.output
+    r3 = _new_artifact(reports_before, artifact_dir, "docmend-*-report.json")
+
+    result = runner.invoke(
+        app,
+        [
+            "verify",
+            str(corpus),
+            "--plan",
+            str(plan_path),
+            "--report",
+            str(r3),
+            "--manifest",
+            str(m2),
+            "--report",
+            str(r1),
+            "--report",
+            str(r2),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+
+
+def test_verify_composed_lineage_missing_middle_report__orders_then_finds_gap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.txt").write_bytes(b"first\n")
+    (corpus / "b.txt").write_bytes(b"second\n")
+    plan_path = _plan_for_verify(corpus, tmp_path)
+    artifact_dir = tmp_path / ".docmend"
+
+    preview = runner.invoke(app, ["apply", str(plan_path)])
+    assert preview.exit_code == 0, preview.output
+    [r1] = artifact_dir.glob("docmend-*-report.json")
+    (corpus / "b.md").write_bytes(b"late collision\n")
+
+    manifests_before = set(artifact_dir.glob("docmend-*-manifest.jsonl"))
+    reports_before = set(artifact_dir.glob("docmend-*-report.json"))
+    second = runner.invoke(
+        app,
+        [
+            "apply",
+            str(plan_path),
+            "--write",
+            "--preserved-by",
+            "external",
+            "--prior-report",
+            str(r1),
+        ],
+    )
+    assert second.exit_code == 1, second.output
+    m2 = _new_artifact(manifests_before, artifact_dir, "docmend-*-manifest.jsonl")
+    r2 = _new_artifact(reports_before, artifact_dir, "docmend-*-report.json")
+    r2.unlink()
+    (corpus / "b.md").unlink()
+
+    manifests_before = set(artifact_dir.glob("docmend-*-manifest.jsonl"))
+    reports_before = set(artifact_dir.glob("docmend-*-report.json"))
+    third = runner.invoke(
+        app,
+        [
+            "apply",
+            str(plan_path),
+            "--write",
+            "--preserved-by",
+            "external",
+            "--prior-report",
+            str(r1),
+            "--resume-manifest",
+            str(m2),
+        ],
+    )
+    assert third.exit_code == 0, third.output
+    m3 = _new_artifact(manifests_before, artifact_dir, "docmend-*-manifest.jsonl")
+    r3 = _new_artifact(reports_before, artifact_dir, "docmend-*-report.json")
+
+    result = runner.invoke(
+        app,
+        [
+            "verify",
+            str(corpus),
+            "--plan",
+            str(plan_path),
+            "--manifest",
+            str(m3),
+            "--report",
+            str(r1),
+            "--manifest",
+            str(m2),
+            "--report",
+            str(r3),
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "coverage-unprovable" in result.output
+    assert "attempt lineage" not in result.output
 
 
 class TestVerifyLock:

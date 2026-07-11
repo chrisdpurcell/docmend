@@ -59,10 +59,37 @@ def test_restore_drill__manifest_replay_reproduces_original_corpus(drill_corpus:
     assert applied.exit_code == 0, applied.output
     assert _snapshot(drill_corpus) != before  # the corpus really changed
     manifest = _artifact(r"manifest: (\S+)", applied.output)
+    report = _artifact(r"report: (\S+)", applied.output)
+    manifests_before_restore = set(Path(".docmend").glob("docmend-*-manifest.jsonl"))
 
     restored = runner.invoke(app, ["restore", "--manifest", str(manifest), "--write"])
     assert restored.exit_code == 0, restored.output
     assert _snapshot(drill_corpus) == before  # IR-008: bytes match pre-apply hashes
+    restore_manifests = (
+        set(Path(".docmend").glob("docmend-*-manifest.jsonl")) - manifests_before_restore
+    )
+    assert len(restore_manifests) == 1
+    restore_manifest = restore_manifests.pop()
+
+    verified = runner.invoke(
+        app,
+        [
+            "verify",
+            str(drill_corpus),
+            "--plan",
+            "plan.json",
+            "--manifest",
+            str(restore_manifest),
+            "--manifest",
+            str(manifest),
+            "--report",
+            str(report),
+        ],
+    )
+    assert verified.exit_code == 1, verified.output
+    assert "[lifecycle]" in verified.output
+    assert "restored" in verified.output
+    assert "coverage-unprovable" not in verified.output
 
 
 def test_single_file_journey__scan_plan_apply_with_defaults(

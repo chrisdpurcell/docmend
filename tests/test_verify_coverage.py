@@ -323,7 +323,7 @@ def test_apply_restore_chain__restore_orders_last_without_missing_report_finding
         (RUN_1, "apply"),
         (RUN_2, "restore"),
     ]
-    assert not any(finding.check == "coverage-unprovable" for finding in evidence.findings)
+    assert evidence.findings == ()
 
 
 def test_report_claiming_restore_run__is_structural_contradiction(tmp_path: Path) -> None:

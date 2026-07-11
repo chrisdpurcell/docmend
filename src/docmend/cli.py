@@ -30,6 +30,8 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from pathspec import PathSpec
+from pathspec.patterns.gitignore.spec import GitIgnoreSpecPattern
 from pydantic import ValidationError
 
 from docmend import __version__, artifacts, discovery, lock, planning
@@ -131,6 +133,34 @@ def _load_effective_config(
     return config
 
 
+def _guard_artifact_paths(
+    destinations: list[Path],
+    *,
+    corpus_root: Path | None,
+    input_artifacts: list[Path],
+    config: DocmendConfig,
+) -> None:
+    """Refuse unsafe artifact destinations BEFORE the pipeline runs (rev 0.26
+    IR-007, adr-0021): a refused write must not follow a completed scan. The
+    .docmend/ carve-out is licensed per destination against the effective
+    exclude patterns — if the operator's excludes no longer cover a
+    destination, that destination is scannable corpus space and loses its
+    license (guard_artifact_destination owns the decision)."""
+    exclude = PathSpec.from_lines(GitIgnoreSpecPattern, config.paths.exclude)
+    artifact_root = Path(ARTIFACT_DIR_NAME).resolve()
+    for destination in destinations:
+        refusal = artifacts.guard_artifact_destination(
+            destination,
+            corpus_root=corpus_root,
+            input_artifacts=input_artifacts,
+            artifact_root=artifact_root,
+            exclude=exclude,
+        )
+        if refusal is not None:
+            typer.echo(f"refused [artifact-destination]: {refusal}", err=True)
+            raise typer.Exit(3)
+
+
 @app.command()
 def scan(
     ctx: typer.Context,
@@ -186,8 +216,11 @@ def scan(
     log = get_logger(__name__)
     log.info("scan starting", path=str(path))
 
-    inventory = discovery.scan(path, config, run_id=run_id, generated_at=now.isoformat())
     out_path = report if report is not None else artifact_dir / f"docmend-{run_id}-inventory.json"
+    corpus_root = (path if path.is_dir() else path.parent).resolve()
+    _guard_artifact_paths([out_path], corpus_root=corpus_root, input_artifacts=[], config=config)
+
+    inventory = discovery.scan(path, config, run_id=run_id, generated_at=now.isoformat())
     artifacts.write_inventory(inventory, out_path)
 
     totals = inventory.totals

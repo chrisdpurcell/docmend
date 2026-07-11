@@ -151,3 +151,63 @@ class TestScanExitCodes:
             locked.chmod(0o644)
         assert result.exit_code == 1
         assert "unreadable 1" in result.output
+
+
+class TestScanArtifactGuard:
+    """rev 0.26 IR-007 / adr-0021 / DMR-02: unsafe --report destinations are
+    refused at exit 3 BEFORE the walk; the OQ-034 default keeps working."""
+
+    def test_report_inside_corpus__refused_exit_3_source_intact(self, corpus: Path) -> None:
+        victim = corpus / "a.txt"
+        before = victim.read_bytes()
+        result = runner.invoke(app, ["scan", str(corpus), "--report", str(victim)])
+        assert result.exit_code == 3
+        assert "artifact-destination" in result.output
+        assert victim.read_bytes() == before
+
+    def test_default_docmend_root__still_works(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OQ-034/NFR-006: the zero-setup default (`scan .` writing under
+        ./.docmend/) is binding behavior — the carve-out must keep it."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "doc.txt").write_text("clean\n")
+        result = runner.invoke(app, ["scan", "."])
+        assert result.exit_code == 0, result.output
+        assert list(Path(".docmend").glob("docmend-run_*-inventory.json"))
+
+    def test_docmend_exclusion_removed__default_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The carve-out is licensed by the exclusion (adr-0021): --exclude
+        REPLACES the exclude set (OQ-029), so a set without .docmend/
+        withdraws the license and the default in-corpus destination refuses."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "doc.txt").write_text("clean\n")
+        result = runner.invoke(app, ["scan", ".", "--exclude", "*.bin"])
+        assert result.exit_code == 3
+        assert "artifact-destination" in result.output
+        assert not list(Path(".docmend").glob("docmend-run_*-inventory.json"))
+
+    def test_negated_default_destination__refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """plan-review F2: a negation re-including the exact inventory
+        destination withdraws that one destination's license even though the
+        rest of .docmend/ stays excluded."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "doc.txt").write_text("clean\n")
+        result = runner.invoke(
+            app,
+            [
+                "scan",
+                ".",
+                "--exclude",
+                "**/.docmend/**",
+                "--exclude",
+                "!.docmend/docmend-*-inventory.json",
+            ],
+        )
+        assert result.exit_code == 3
+        assert "artifact-destination" in result.output
+        assert not list(Path(".docmend").glob("docmend-run_*-inventory.json"))

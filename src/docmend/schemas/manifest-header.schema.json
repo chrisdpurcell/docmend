@@ -1,0 +1,82 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://raw.githubusercontent.com/chrisdpurcell/docmend/main/src/docmend/schemas/manifest-header.schema.json",
+	"title": "docmend manifest header (adr-0019)",
+	"description": "Line 1 of every manifest 2.0 NDJSON file: the header envelope anchoring run identity, source root, plan binding, backup-store root, and attempt lineage (safety-core design, Manifest 2.0 Wire Model). Every subsequent line is a docmend/manifest-record. The subchain link (prior_manifest_sha256) is null only on a chain's root manifest; prior_attempt is the discriminated attempt-lineage edge persisted redundantly here and in the run's report so it survives whichever artifact an interruption erases. backup_root is THIS run's resolved tool-backup root — null when the run took no tool backups (restore runs always carry null).",
+	"type": "object",
+	"additionalProperties": false,
+	"required": [
+		"schema",
+		"schema_version",
+		"run_id",
+		"kind",
+		"source_root",
+		"backup_root",
+		"plan_sha256",
+		"prior_manifest_sha256",
+		"prior_attempt",
+		"created_at"
+	],
+	"properties": {
+		"schema": { "const": "docmend/manifest-header" },
+		"schema_version": { "type": "string", "pattern": "^2\\.[0-9]+$" },
+		"run_id": { "$ref": "#/$defs/run_id" },
+		"kind": {
+			"description": "'apply' covers the first apply and every resume; 'restore' is an inverse-replay run.",
+			"enum": ["apply", "restore"]
+		},
+		"source_root": {
+			"description": "Absolute resolved corpus root; every record path must resolve inside it.",
+			"type": "string",
+			"minLength": 1
+		},
+		"backup_root": {
+			"description": "This run's resolved tool-backup root (the BackupStore trust anchor), or null when the run took no tool backups.",
+			"type": ["string", "null"]
+		},
+		"plan_sha256": { "$ref": "#/$defs/sha256" },
+		"prior_manifest_sha256": {
+			"description": "sha256 of the newest earlier manifest in the attempt lineage; null only on the chain's root manifest.",
+			"oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
+		},
+		"prior_attempt": {
+			"description": "Attempt-lineage edge: the predecessor run plus exactly one of its report sha256 or closed-manifest sha256; null for a true first attempt.",
+			"oneOf": [
+				{ "type": "null" },
+				{
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["run_id", "report_sha256", "manifest_sha256"],
+					"properties": {
+						"run_id": { "$ref": "#/$defs/run_id" },
+						"report_sha256": {
+							"oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
+						},
+						"manifest_sha256": {
+							"oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
+						}
+					},
+					"oneOf": [
+						{
+							"properties": {
+								"report_sha256": { "$ref": "#/$defs/sha256" },
+								"manifest_sha256": { "type": "null" }
+							}
+						},
+						{
+							"properties": {
+								"report_sha256": { "type": "null" },
+								"manifest_sha256": { "$ref": "#/$defs/sha256" }
+							}
+						}
+					]
+				}
+			]
+		},
+		"created_at": { "type": "string", "format": "date-time" }
+	},
+	"$defs": {
+		"run_id": { "type": "string", "pattern": "^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{6}$" },
+		"sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+	}
+}

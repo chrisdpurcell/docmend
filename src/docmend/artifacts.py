@@ -42,13 +42,16 @@ from docmend.writer.atomic import fsync_dir
 # "frontmatter" is the product-document schema (DR-005, adr-0011), not a run
 # artifact — it rides the same registry so its validator is compiled once and
 # works from an installed wheel like the other four.
-type ArtifactKind = Literal["inventory", "plan", "report", "manifest", "frontmatter"]
+type ArtifactKind = Literal[
+    "inventory", "plan", "report", "manifest", "manifest-header", "frontmatter"
+]
 
 ARTIFACT_KINDS: tuple[ArtifactKind, ...] = (
     "inventory",
     "plan",
     "report",
     "manifest",
+    "manifest-header",
     "frontmatter",
 )
 

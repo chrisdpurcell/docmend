@@ -24,14 +24,50 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from docmend.artifacts import ArtifactError, validate_artifact
 from docmend.inventory import RunId, Sha256
+from docmend.lineage import PriorAttempt
 from docmend.observability import get_logger
 from docmend.plan import ActionId, DocmendId
 from docmend.report import ErrorInfo
 from docmend.writer.atomic import fsync_dir
 
 MANIFEST_SCHEMA_VERSION = "1.3"
+MANIFEST_HEADER_SCHEMA_VERSION = "2.0"
 
 type ManifestOperation = Literal["rename", "rewrite", "rename_and_rewrite"]
+type ManifestKind = Literal["apply", "restore"]
+
+
+class ManifestHeader(BaseModel):
+    """Line 1 of every 2.0 manifest (adr-0019: the header envelope anchoring
+    run, root, plan, backup-store, and attempt-lineage facts that records were
+    previously trusted to repeat per line).
+
+    - `backup_root` is THIS run's resolved tool-backup root, null when the run
+      took no tool backups — restore runs always carry null (their inverse
+      records hold no backup references; Plan B review CR-NEW-003).
+    - `prior_manifest_sha256` is the mutation-ledger subchain link; null only
+      on the root manifest of a chain.
+    - `prior_attempt` is the redundant attempt-lineage edge (also stamped on
+      the run's report); a ROOT manifest may carry a report-flavored edge —
+      its predecessor attempts were report-only and produced no manifest.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid", strict=True, populate_by_name=True, serialize_by_alias=True
+    )
+
+    schema_kind: Literal["docmend/manifest-header"] = Field(
+        default="docmend/manifest-header", alias="schema"
+    )
+    schema_version: Annotated[str, Field(pattern=r"^2\.\d+$")] = MANIFEST_HEADER_SCHEMA_VERSION
+    run_id: RunId
+    kind: ManifestKind
+    source_root: Annotated[str, Field(min_length=1)]
+    backup_root: str | None
+    plan_sha256: Sha256
+    prior_manifest_sha256: Sha256 | None
+    prior_attempt: PriorAttempt | None
+    created_at: str
 
 
 class ManifestRecord(BaseModel):

@@ -9,14 +9,62 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from docmend.artifacts import ArtifactError
-from docmend.writer.manifest import ManifestRecord, ManifestWriter, read_manifest
+from docmend.artifacts import ArtifactError, validate_artifact
+from docmend.lineage import PriorAttempt
+from docmend.writer.manifest import ManifestHeader, ManifestRecord, ManifestWriter, read_manifest
 
 RUN_ID = "run_20260706T000000Z_00006d"
 SHA_A = "sha256:" + "a" * 64
 SHA_B = "sha256:" + "b" * 64
 UUID7 = "01980000-0000-7000-8000-000000000001"
+
+
+class TestManifestHeader:
+    """Manifest 2.0 header + lineage wire primitives (adr-0019, Plan B Task 1)."""
+
+    def test_header__validates_and_serializes_by_alias(self) -> None:
+        header = ManifestHeader(
+            run_id=RUN_ID,
+            kind="apply",
+            source_root="/lib",
+            backup_root="/bak",
+            plan_sha256=SHA_A,
+            prior_manifest_sha256=None,
+            prior_attempt=None,
+            created_at="2026-07-10T00:00:00+00:00",
+        )
+        doc = header.model_dump(mode="json")
+        assert doc["schema"] == "docmend/manifest-header"
+        assert doc["schema_version"] == "2.0"
+        validate_artifact("manifest-header", doc)
+
+    def test_prior_attempt__requires_exactly_one_sha(self) -> None:
+        with pytest.raises(ValidationError):
+            PriorAttempt(run_id=RUN_ID, report_sha256=None, manifest_sha256=None)
+        with pytest.raises(ValidationError):
+            PriorAttempt(run_id=RUN_ID, report_sha256=SHA_A, manifest_sha256=SHA_B)
+        edge = PriorAttempt(run_id=RUN_ID, report_sha256=SHA_A, manifest_sha256=None)
+        assert edge.report_sha256 == SHA_A
+
+    def test_header_schema__rejects_future_major_and_extra_members(self) -> None:
+        base = ManifestHeader(
+            run_id=RUN_ID,
+            kind="restore",
+            source_root="/lib",
+            backup_root=None,
+            plan_sha256=SHA_A,
+            prior_manifest_sha256=SHA_B,
+            prior_attempt=PriorAttempt(run_id=RUN_ID, report_sha256=None, manifest_sha256=SHA_B),
+            created_at="2026-07-10T00:00:00+00:00",
+        ).model_dump(mode="json")
+        good = dict(base)
+        validate_artifact("manifest-header", good)
+        with pytest.raises(ArtifactError):
+            validate_artifact("manifest-header", {**base, "schema_version": "3.0"})
+        with pytest.raises(ArtifactError):
+            validate_artifact("manifest-header", {**base, "surprise": True})
 
 
 def _record(seq_free_suffix: int) -> ManifestRecord:

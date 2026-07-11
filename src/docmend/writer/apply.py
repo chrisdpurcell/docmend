@@ -28,6 +28,7 @@ from pathspec import PathSpec
 from pathspec.patterns.gitignore.spec import GitIgnoreSpecPattern
 
 from docmend import __version__
+from docmend.artifacts import ArtifactError
 from docmend.config import DocmendConfig
 from docmend.discovery import sniff_bom
 from docmend.lineage import ObjectIdentity, PriorAttempt
@@ -47,6 +48,7 @@ from docmend.transform.dispatch import (
     non_whitespace_count,
 )
 from docmend.transform.encoding import decode_source, encode_utf8
+from docmend.writer.adjudicate import adjudicate_dangling_intent, finish_remaining
 from docmend.writer.atomic import (
     StagedWrite,
     WriteError,
@@ -59,10 +61,12 @@ from docmend.writer.atomic import (
 from docmend.writer.backup import BackupError, backup_file
 from docmend.writer.gate import ApplyOptions, is_content_rewrite
 from docmend.writer.manifest import (
+    ManifestChain,
     ManifestHeader,
     ManifestOperation,
     ManifestRecord,
     ManifestWriter,
+    reduce_lifecycle,
 )
 
 
@@ -252,7 +256,7 @@ def _record_intent(
     )
 
 
-def _reconcile_intent(
+def _adjudicate_pending_intent(
     action: PlanAction,
     record: ManifestRecord,
     root_resolved: Path,
@@ -260,26 +264,20 @@ def _reconcile_intent(
     manifest: ManifestWriter | None,
     run_id: str,
 ) -> ApplyOutcome | None:
-    """Resume decision for a DANGLING intent record (1.3): a prior run was
-    killed inside a multi-step mutation's window and left evidence but no
-    final record. Disk state decides:
+    """Resume decision for a DANGLING intent (2.0, adr-0019): the shared
+    adjudication table classifies the crash-after disk state against the
+    intent's persisted hashes and identities. `None` means the mutation never
+    happened — the action executes normally, still behind the FR-003 guard.
 
-    - live target matches the intent's expected after-hash → the publish
-      happened; complete the action (unlink a still-present source) or adopt
-      the finished-but-unrecorded mutation, appending the applied record the
-      interrupted run never wrote — the union of manifests stays the complete
-      restore evidence.
-    - target missing, or still holding the recorded to-be-overwritten bytes →
-      the publish never happened; return None so the action executes normally
-      (still behind the FR-003 hash guard).
-    - anything else → ERR-002 external interference; mutate nothing.
+    §13.5 containment runs first, symmetric with `_execute_action`: the
+    record's ABSOLUTE paths come from an operator-supplied manifest, and the
+    finish arm below can unlink a name — a crafted/wrong record must never
+    read or mutate outside the plan's source root. (read_manifest_set already
+    proved containment for CLI inputs; this engine-level belt keeps direct
+    library callers honest until Plan C's WriteSafetyContext.)
     """
-    target = Path(record.target_path)
     source = Path(record.original_path)
-    # §13.5 containment, symmetric with _execute_action: the record's ABSOLUTE
-    # paths come from an operator-supplied manifest, and the completion arm
-    # below unlinks `source` — a crafted/wrong record must never read or
-    # mutate outside the plan's source root (PR #18 review).
+    target = Path(record.target_path)
     for candidate in (source, target):
         if not candidate.resolve().is_relative_to(root_resolved):
             return _failed(
@@ -288,88 +286,44 @@ def _reconcile_intent(
                 f"{candidate}: intent record path resolves outside the plan's "
                 f"source root; refusing reconciliation",
             )
-    try:
-        target_data = target.read_bytes()
-    except FileNotFoundError:
+    verdict = adjudicate_dangling_intent(record)
+    if verdict.verdict == "never-happened":
         return None
-    except OSError as exc:
+    if verdict.verdict == "external-interference":
         return _failed(
             action,
             "ERR-002",
-            f"{target}: unreadable while reconciling the intent recorded in "
-            f"{record.run_id} ({exc.strerror or exc})",
+            f"{target}: {verdict.detail} — changed since the intent recorded in {record.run_id}",
         )
-    if _sha(target_data) == record.after_sha256:
-        source_data: bytes | None
-        if source == target:
-            # 2.0 journals SAME-PATH mutations (rewrite) too: the publish is
-            # the only step, so a matching after-hash means the action fully
-            # completed — there is no separate source to verify or unlink.
-            # (Task 7's adjudication table replaces this special case.)
-            source_data = None
-        else:
-            try:
-                source_data = source.read_bytes()
-            except FileNotFoundError:
-                source_data = None
-            except OSError as exc:
-                return _failed(
-                    action,
-                    "ERR-002",
-                    f"{source}: unreadable while reconciling the intent recorded in "
-                    f"{record.run_id} ({exc.strerror or exc})",
-                )
-        if source_data is not None and _sha(source_data) != record.before_sha256:
-            return _failed(
-                action,
-                "ERR-002",
-                f"{source}: changed since the intent recorded in {record.run_id}; "
-                f"resume must not remove it",
-            )
-        if not options.write:
-            return ApplyOutcome(
-                action_id=action.action_id,
-                path=action.path,
-                status="would_apply",
-                before_sha256=action.source_sha256,
-                after_sha256=None,
-                skip_reason=None,
-                error=None,
-            )
-        if source_data is not None:
-            try:
-                source.unlink()
-            except OSError as exc:
-                return _failed(
-                    action,
-                    "ERR-003",
-                    f"{source}: target already published but source not removed "
-                    f"on resume ({exc.strerror or exc})",
-                )
-        if manifest is not None:
-            # seq/recorded_at/source_root re-stamped by the writer; run_id is
-            # the resuming run's — it is the run asserting this evidence.
-            manifest.append(record.model_copy(update={"result": "applied", "run_id": run_id}))
+    if not options.write:
         return ApplyOutcome(
             action_id=action.action_id,
             path=action.path,
-            status="applied",
+            status="would_apply",
             before_sha256=action.source_sha256,
-            after_sha256=record.after_sha256,
+            after_sha256=None,
             skip_reason=None,
             error=None,
         )
-    if record.overwritten_sha256 is not None and _sha(target_data) == record.overwritten_sha256:
-        return None
-    if source == target and _sha(target_data) == record.before_sha256:
-        # Same-path rewrite whose publish never landed: the path still holds
-        # the exact before-bytes — re-execute normally (FR-003 guard intact).
-        return None
-    return _failed(
-        action,
-        "ERR-002",
-        f"{target}: neither the expected output nor the recorded pre-overwrite "
-        f"content (intent recorded in {record.run_id}; changed externally)",
+    if verdict.verdict == "finish-remaining":
+        try:
+            finish_remaining(record)
+        except WriteError as exc:
+            return _failed(action, "ERR-003", str(exc))
+    if manifest is not None:
+        # The adjudication terminal (adr-0019): the intent's immutable fields
+        # verbatim; seq/recorded_at re-stamped by the writer; run_id is the
+        # resuming run's — it is the run asserting this evidence. Chain scope
+        # proves it closes exactly this dangling intent (CR-NEW-002).
+        manifest.append(record.model_copy(update={"result": "applied", "run_id": run_id}))
+    return ApplyOutcome(
+        action_id=action.action_id,
+        path=action.path,
+        status="applied",
+        before_sha256=action.source_sha256,
+        after_sha256=record.after_sha256,
+        skip_reason=None,
+        error=None,
     )
 
 
@@ -717,7 +671,7 @@ def execute_plan(
     manifest_path: Path,
     started_at: str,
     now: Callable[[], str] = lambda: datetime.now(UTC).isoformat(),
-    resume_records: list[ManifestRecord] | None = None,
+    resume_chain: ManifestChain | None = None,
     prior_manifest_sha256: str | None = None,
     prior_attempt: PriorAttempt | None = None,
 ) -> Report:
@@ -728,24 +682,22 @@ def execute_plan(
     include = PathSpec.from_lines(GitIgnoreSpecPattern, config.paths.include)
     exclude = PathSpec.from_lines(GitIgnoreSpecPattern, config.paths.exclude)
 
-    # FR-013 (adr-0006): actions a prior run's manifest records as applied are
-    # reconciled read-only instead of executed; the LATEST applied record per
-    # action wins (an apply→restore→apply chain can record one action twice).
-    # Sorted by (recorded_at, seq) rather than caller order so a multi-resume
-    # chain passed out of flag order cannot let a stale record win and raise a
-    # spurious ERR-002 (PR #10 review). A 1.3 intent record with no LATER
-    # final record for its action is DANGLING — the kill landed inside that
-    # action's mutation window — and, being the newest evidence, it takes
-    # precedence over any earlier applied record for the same action.
-    completed: dict[str, ManifestRecord] = {}
-    dangling_intents: dict[str, ManifestRecord] = {}
-    for record in sorted(resume_records or [], key=lambda r: (r.recorded_at, r.seq)):
-        if record.result == "intent":
-            dangling_intents[record.action_id] = record
-        else:
-            dangling_intents.pop(record.action_id, None)
-            if record.result == "applied":
-                completed[record.action_id] = record
+    # FR-013 (adr-0019): ONE lifecycle reducer drives resume — the same fold
+    # restore and verify consume. Chain order then seq decides which record is
+    # an action's newest evidence; the old per-consumer (recorded_at, seq)
+    # interpretation is deleted. A `pending-intent` state is a kill inside
+    # that action's mutation window, adjudicated from disk; restore-family
+    # states cannot legally reach an apply resume (the chain rules reject the
+    # shapes; re-application after restore requires a fresh plan).
+    lifecycle = reduce_lifecycle(resume_chain) if resume_chain is not None else {}
+    for state in lifecycle.values():
+        if state.state in ("pending-restore", "restored", "restore-failed"):
+            msg = (
+                f"{state.record.action_id}: resume input contains restore-kind "
+                f"evidence — re-application after a restore requires a fresh plan "
+                f"(adr-0019)"
+            )
+            raise ArtifactError(msg)
 
     outcomes: list[ApplyOutcome] = []
     manifest: ManifestWriter | None = None
@@ -774,33 +726,19 @@ def execute_plan(
         for action in plan.actions:
             if abort:
                 break
-            prior = completed.get(action.action_id)
-            intent = dangling_intents.get(action.action_id)
-            if intent is not None:
-                # Newest evidence wins: a None verdict means the publish never
-                # happened, so the action executes normally below — never via
-                # _reconcile_completed against an older, superseded record.
-                reconciled = _reconcile_intent(
-                    action, intent, root_resolved, options, manifest, run_id
+            state = lifecycle.get(action.action_id)
+            outcome = None
+            if state is not None and state.state == "pending-intent":
+                # A None verdict means the mutation never happened, so the
+                # action executes normally below (FR-003 guard intact).
+                outcome = _adjudicate_pending_intent(
+                    action, state.record, root_resolved, options, manifest, run_id
                 )
-                if reconciled is not None:
-                    outcome = reconciled
-                else:
-                    outcome, abort = _execute_action(
-                        action,
-                        source_root,
-                        root_resolved,
-                        config,
-                        options,
-                        include,
-                        exclude,
-                        manifest,
-                        run_id,
-                        log,
-                    )
-            elif prior is not None:
-                outcome = _reconcile_completed(action, prior)
-            else:
+            elif state is not None and state.state == "applied":
+                outcome = _reconcile_completed(action, state.record)
+            # state "failed" (a recorded prior failure) retries normally —
+            # the failed → intent → applied transition is chain-legal.
+            if outcome is None:
                 outcome, abort = _execute_action(
                     action,
                     source_root,

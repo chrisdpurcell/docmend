@@ -13,7 +13,7 @@ import shutil
 from pathlib import Path
 
 import pytest
-from tests.helpers.manifest2 import read_records
+from tests.helpers.manifest2 import chain_of, read_records
 
 from corpus import FileRecipe, materialize, seeded_faker
 from docmend import discovery, planning
@@ -72,7 +72,9 @@ def _execute(
         manifest_path=manifest_path,
         started_at=GENERATED_AT,
         now=lambda: NOW,
-        resume_records=resume_records,
+        # Engine tests feed evidence subsets directly; the CLI path reads a
+        # validated chain via read_manifest_chain (tests/test_cli_resume.py).
+        resume_chain=chain_of(resume_records) if resume_records is not None else None,
     )
 
 
@@ -654,28 +656,62 @@ def test_resume_dry_run_dangling_intent__previews_completion_writes_nothing(
     assert outcome.status == "would_apply"
 
 
-def test_resume_stale_duplicate_record_out_of_order__newest_wins(tmp_path: Path) -> None:
-    """PR #10 review: an apply→restore→apply chain records one action as
-    applied twice; resume must reconcile against the NEWEST record even when
-    the operator passes the manifests out of order — otherwise the stale
-    record's after-hash raises a spurious ERR-002."""
+def test_resume_evidence_order__chain_position_never_wall_clock(tmp_path: Path) -> None:
+    """2.0 (adr-0019, was PR #10's wall-clock fix): the reducer folds records
+    in chain order then seq — recorded_at NEVER decides which record is an
+    action's newest evidence. A superseded terminal carrying a FUTURE
+    wall-clock but an EARLIER fold position loses to the genuine record; the
+    timestamp is inert. (Out-of-order manifest FILES are ordered by hash
+    links at read time — covered in tests/test_manifest_chain.py — so caller
+    order cannot reach the reducer.)"""
     root = tmp_path / "root"
     materialize(root, RECIPES, seeded_faker())
     config = DocmendConfig()
     plan = _plan_for(root, config)
     _execute(plan, config, tmp_path / "manifest.jsonl")
     records = read_records(tmp_path / "manifest.jsonl")
-    stale = records[0].model_copy(
-        update={"after_sha256": "sha256:" + "f" * 64, "recorded_at": "2020-01-01T00:00:00+00:00"}
+    genuine = records[0]
+    stale = genuine.model_copy(
+        update={"after_sha256": "sha256:" + "f" * 64, "recorded_at": "2099-01-01T00:00:00+00:00"}
     )
+    reordered = [stale, *records]  # stale first; genuine later in fold order
 
     report = _execute(
         plan,
         config,
         tmp_path / "resume-manifest.jsonl",
         run_id=RESUME_RUN_ID,
-        resume_records=[*records, stale][::-1],  # stale record deliberately first
+        resume_records=reordered,
     )
 
-    outcome = next(o for o in report.outcomes if o.action_id == records[0].action_id)
+    outcome = next(o for o in report.outcomes if o.action_id == genuine.action_id)
     assert (outcome.status, outcome.skip_reason) == ("skipped", "already-applied")
+
+
+def test_resume_input_with_restore_evidence__rejected(tmp_path: Path) -> None:
+    """adr-0019: re-application after a restore requires a FRESH plan — resume
+    evidence containing restore-kind records is an input error, refused before
+    any action executes."""
+    from docmend.artifacts import ArtifactError
+
+    root = tmp_path / "root"
+    materialize(root, RECIPES, seeded_faker())
+    config = DocmendConfig()
+    plan = _plan_for(root, config)
+    _execute(plan, config, tmp_path / "manifest.jsonl")
+    records = read_records(tmp_path / "manifest.jsonl")
+    inverse = records[0].model_copy(
+        update={
+            "undoes_action_id": records[0].action_id,
+            "undoes_run_id": records[0].run_id,
+        }
+    )
+
+    with pytest.raises(ArtifactError, match="fresh plan"):
+        _execute(
+            plan,
+            config,
+            tmp_path / "resume-manifest.jsonl",
+            run_id=RESUME_RUN_ID,
+            resume_records=[*records, inverse],
+        )

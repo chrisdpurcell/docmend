@@ -36,6 +36,7 @@ from pydantic import ValidationError
 
 from docmend import __version__, artifacts, discovery, lock, planning
 from docmend.config import ConfigError, DocmendConfig, PathsConfig, load_config
+from docmend.lineage import PriorAttempt
 from docmend.observability import configure_logging, get_logger, new_run_id
 from docmend.plan import PLAN_SCHEMA_VERSION, ArtifactRef
 from docmend.report import Report, ReportTotals
@@ -541,7 +542,20 @@ def apply(
         typer.echo(f"error: {plan_path}: config snapshot invalid — {exc}", err=True)
         raise typer.Exit(2) from exc
 
-    resume_records = _read_resume_records(resume_manifest, resume_run_id, source_root)
+    resume_chain = _read_resume_chain(resume_manifest, resume_run_id, source_root)
+    # Attempt lineage (adr-0019): a resuming run's manifest links the chain
+    # tip so `read_manifest_chain` can prove the succession. (The full
+    # attempt GRAPH — report-only predecessors, --prior-report — is Plan B
+    # Task 9; manifest-flavored edges cover every resume that left a
+    # manifest.)
+    prior_manifest_sha256: str | None = None
+    prior_attempt: PriorAttempt | None = None
+    if resume_chain is not None and resume_chain.sets:
+        tip = resume_chain.sets[-1]
+        prior_manifest_sha256 = tip.sha256
+        prior_attempt = PriorAttempt(
+            run_id=tip.header.run_id, report_sha256=None, manifest_sha256=tip.sha256
+        )
 
     backup_root = backup_dir if backup_dir is not None else config.write.backup_dir
     options = ApplyOptions(
@@ -612,7 +626,9 @@ def apply(
             options=options,
             manifest_path=manifest_path,
             started_at=started_at,
-            resume_records=resume_records,
+            resume_chain=resume_chain,
+            prior_manifest_sha256=prior_manifest_sha256,
+            prior_attempt=prior_attempt,
         )
         # rev 0.26: the report finalizes under the same run lock as the
         # mutations it records — a run's artifacts and corpus effects commit
@@ -660,42 +676,40 @@ def _resume_manifest_paths(
     return paths
 
 
-def _read_resume_records(
+def _read_resume_chain(
     resume_manifest: list[Path] | None,
     resume_run_id: list[str] | None,
     source_root: Path,
-) -> list[manifest.ManifestRecord] | None:
-    """Load and sanity-check the FR-013 resume manifests (adr-0006).
+) -> manifest.ManifestChain | None:
+    """Load and cross-validate the FR-013 resume manifests as ONE chain
+    (adr-0019): links, coherence, lifecycle, containment, and the F5 backup
+    trust boundary are all proven before any referenced path is touched.
 
-    Every record's stamped source_root must match the plan's — a manifest from
-    a different tree can never legitimately reconcile (its action-IDs belong to
+    The chain's source_root must match the plan's — a manifest from a
+    different tree can never legitimately reconcile (its action-IDs belong to
     another plan), and silently re-executing everything would hide the
-    operator's mix-up (ERR-006 posture, exit 2). Pre-1.2 manifests carry no
-    source_root; they load unchecked, protected by the action-ID match itself.
+    operator's mix-up (ERR-006 posture, exit 2).
     """
     paths = _resume_manifest_paths(resume_manifest, resume_run_id)
     if not paths:
         return None
     root_resolved = str(source_root.resolve())
-    records: list[manifest.ManifestRecord] = []
-    for path in paths:
-        try:
-            loaded = manifest.read_manifest_set(path)
-        except manifest.ManifestContainmentError as exc:
-            typer.echo(f"refused [manifest-containment]: {exc}", err=True)
-            raise typer.Exit(3) from exc
-        except artifacts.ArtifactError as exc:
-            typer.echo(f"error: {exc}", err=True)
-            raise typer.Exit(2) from exc
-        if loaded.header.source_root != root_resolved:
-            typer.echo(
-                f"error: {path}: manifest source root {loaded.header.source_root} does not "
-                f"match the plan's ({root_resolved}) — wrong manifest for this plan (ERR-006)",
-                err=True,
-            )
-            raise typer.Exit(2)
-        records.extend(loaded.records)
-    return records
+    try:
+        chain = manifest.read_manifest_chain(paths)
+    except manifest.ManifestContainmentError as exc:
+        typer.echo(f"refused [manifest-containment]: {exc}", err=True)
+        raise typer.Exit(3) from exc
+    except artifacts.ArtifactError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+    if chain.sets and chain.sets[0].header.source_root != root_resolved:
+        typer.echo(
+            f"error: manifest source root {chain.sets[0].header.source_root} does not "
+            f"match the plan's ({root_resolved}) — wrong manifest for this plan (ERR-006)",
+            err=True,
+        )
+        raise typer.Exit(2)
+    return chain
 
 
 def _write_refusal_report(

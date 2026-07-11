@@ -851,3 +851,33 @@ class TestJournalEveryMutation:
         assert record.result == "failed"
         assert record.source_identity is None
         assert record.expected_published_identity is None
+
+
+def test_no_clobber_race_lost__intent_closed_report_skips(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FR-011 race window: a target appearing between the collision check and
+    the publish is external interference (ERR-002). The REPORT keeps the
+    collision skip; the MANIFEST closes the intent with a failed terminal so
+    it never dangles for a live run."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "clean.txt").write_bytes(b"already clean\n")
+    config = DocmendConfig()
+    plan = _plan_for(root, config)
+
+    real = apply_module.rename_no_clobber
+
+    def race_lost(*args: object, **kwargs: object) -> None:
+        raise FileExistsError("target appeared inside the race window")
+
+    monkeypatch.setattr(apply_module, "rename_no_clobber", race_lost)
+    report = _execute(plan, config, tmp_path, write=True)
+    monkeypatch.setattr(apply_module, "rename_no_clobber", real)
+
+    outcome = report.outcomes[0]
+    assert (outcome.status, outcome.skip_reason) == ("skipped", "collision")
+    records = read_records(tmp_path / "manifest.jsonl")
+    assert [r.result for r in records] == ["intent", "failed"]
+    assert records[1].error is not None
+    assert records[1].error.error_class == "ERR-002"

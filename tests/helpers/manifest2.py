@@ -8,7 +8,13 @@ fields — that the strict models would refuse to construct.
 import json
 from pathlib import Path
 
-from docmend.writer.manifest import ManifestRecord, read_manifest_set
+from docmend.writer.manifest import (
+    ManifestChain,
+    ManifestHeader,
+    ManifestRecord,
+    ManifestSet,
+    read_manifest_set,
+)
 
 RUN_ID = "run_20260706T000000Z_00006d"
 
@@ -18,6 +24,24 @@ def read_records(path: Path) -> list[ManifestRecord]:
     replacement for the deleted 1.x `read_manifest` in tests that only
     inspect mutation records."""
     return read_manifest_set(path).records
+
+
+def chain_of(records: list[ManifestRecord], *, source_root: str = "/corpus") -> ManifestChain:
+    """A synthetic single-set chain over arbitrary (possibly gappy) record
+    subsets — for ENGINE tests that feed resume evidence directly, bypassing
+    file-level validation the way a validated CLI read would have passed it.
+    The reducer only folds records; header facts are inert here."""
+    header = ManifestHeader.model_validate(header_doc(source_root=source_root))
+    return ManifestChain(
+        sets=[
+            ManifestSet(
+                header=header,
+                records=records,
+                path=Path("/synthetic-manifest.jsonl"),
+                sha256=SHA_C,
+            )
+        ]
+    )
 
 
 OTHER_RUN_ID = "run_20260707T000000Z_00007e"

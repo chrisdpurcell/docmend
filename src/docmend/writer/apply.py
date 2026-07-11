@@ -51,14 +51,22 @@ from docmend.writer.adjudicate import adjudicate_dangling_intent, finish_remaini
 from docmend.writer.atomic import (
     StagedWrite,
     WriteError,
+    abort_staged,
     atomic_write_bytes,
     publish_staged,
-    rename_no_clobber,
     rename_overwrite,
     stage_bytes,
 )
 from docmend.writer.backup import BackupError, backup_file
-from docmend.writer.commit import BoundFile, InterferenceError, bind_file
+from docmend.writer.commit import (
+    NO_HOOKS,
+    BoundFile,
+    CommitHooks,
+    InterferenceError,
+    bind_file,
+    check_bound,
+    guarded_rename_no_clobber,
+)
 from docmend.writer.gate import ApplyOptions, is_content_rewrite, strategy_active
 from docmend.writer.manifest import (
     ManifestChain,
@@ -361,6 +369,7 @@ def _execute_action(
     manifest: ManifestWriter | None,
     run_id: str,
     log: structlog.stdlib.BoundLogger,
+    hooks: CommitHooks,
 ) -> tuple[ApplyOutcome, bool]:
     source = source_root / action.path
     # FR-003 + adr-0020: one non-following descriptor supplies the bytes for
@@ -559,16 +568,28 @@ def _execute_action(
         identities,
     )
     try:
-        mode = bound.mode
         if kind == "rewrite":
             assert staged is not None
+            hooks.before_step("publish", source)
+            check_bound(staged.tmp, staged.identity, root_resolved=root_resolved)
+            check_bound(source, bound.identity, root_resolved=root_resolved)
             publish_staged(staged, source)
         elif kind == "rename":
             assert target is not None
             if clobber:
-                rename_overwrite(source, target)  # codex CR-NEW-001: fsync'd, WriteError-wrapped
+                assert target_bound is not None
+                hooks.before_step("replace-target", target)
+                check_bound(source, bound.identity, root_resolved=root_resolved)
+                check_bound(target, target_bound.identity, root_resolved=root_resolved)
+                rename_overwrite(source, target)
             else:
-                rename_no_clobber(source, target)
+                guarded_rename_no_clobber(
+                    source,
+                    target,
+                    bound.identity,
+                    root_resolved=root_resolved,
+                    hooks=hooks,
+                )
         else:  # rename_and_rewrite
             assert target is not None
             assert staged is not None
@@ -583,7 +604,7 @@ def _execute_action(
                 # target), then fail honestly with the original untouched.
                 try:
                     if target_bound is not None:
-                        atomic_write_bytes(target, target_bound.data, mode=mode)
+                        atomic_write_bytes(target, target_bound.data, mode=bound.mode)
                     else:
                         target.unlink()
                 # PEP 758 (Python 3.14): unparenthesized multi-type except reads as
@@ -600,6 +621,32 @@ def _execute_action(
                     f"rolled back ({unlink_exc.strerror or unlink_exc})"
                 )
                 raise WriteError(msg) from unlink_exc
+    except InterferenceError as exc:
+        if staged is not None:
+            abort_staged(staged, root_resolved=root_resolved)
+        if exc.intermediate:
+            log.error(
+                "commit interference with unproven rollback; intent left for adjudication",
+                path=action.path,
+                detail=str(exc),
+            )
+            return _failed(action, "ERR-002", f"{exc} (resume adjudicates)"), False
+        interference = _failed(action, "ERR-002", f"{exc} (adr-0020 commit boundary)")
+        _record(
+            manifest,
+            action,
+            kind,
+            source,
+            target,
+            backup_path,
+            None,
+            overwritten_sha,
+            overwritten_backup,
+            run_id,
+            interference,
+            identities,
+        )
+        return _skip(action, "external-interference"), False
     except FileExistsError:
         # No-clobber race lost (FR-011): a target appeared inside the
         # check-to-publish window — external interference with the corpus
@@ -609,7 +656,7 @@ def _execute_action(
         race_outcome = _failed(
             action,
             "ERR-002",
-            f"{target}: no-clobber publish lost a collision race (FR-011); no mutation occurred",
+            f"{target}: no-clobber publish lost a collision race (DMR-07); no mutation occurred",
         )
         _record(
             manifest,
@@ -625,7 +672,7 @@ def _execute_action(
             race_outcome,
             identities,
         )
-        return _skip(action, "collision"), False
+        return _skip(action, "collision-unpreserved"), False
     except (WriteError, OSError) as exc:
         outcome = _failed(action, "ERR-003", str(exc))
         _record(
@@ -684,6 +731,7 @@ def execute_plan(
     resume_chain: ManifestChain | None = None,
     prior_manifest_sha256: str | None = None,
     prior_attempt: PriorAttempt | None = None,
+    hooks: CommitHooks = NO_HOOKS,
 ) -> Report:
     log = get_logger(__name__)
     assert plan.source_root is not None  # CLI refused earlier (ERR-006)
@@ -760,6 +808,7 @@ def execute_plan(
                     manifest,
                     run_id,
                     log,
+                    hooks,
                 )
             outcomes.append(outcome)
             log.info(

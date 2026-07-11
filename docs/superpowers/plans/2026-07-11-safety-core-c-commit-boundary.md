@@ -2224,7 +2224,7 @@ Run: `uv run pytest tests/unit/writer/test_commit.py -k WriteSafety -q` Expected
 
 - [ ] **Step 3: Implement**
 
-> **OWNER-APPROVAL CHECKPOINT (review round 4, CR-006): do not begin this task until the owner has approved the `effective_excludes` wire-model addition** (item 3 below plus its design/adr-0019 amendment). It is an additive required field inside the unreleased manifest 2.0 header; everything else in this plan is independent of it, so Tasks 1-7 may proceed while the decision is pending, but Task 8 STOPS here without sign-off.
+> **OWNER-APPROVAL CHECKPOINT (review round 4, CR-006): SATISFIED — the owner approved the `effective_excludes` wire-model addition on 2026-07-11** (additive required field in the unreleased manifest 2.0 header, licensed-against-recorded-excludes semantics, recorded via the design + adr-0019 amendment sentences in item 4). Task 8 may execute.
 
 In `manifest.py`, `lineage.py`, and `report.py` (reviews rounds 3-4, CR-002 + CR-006):
 

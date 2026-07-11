@@ -91,6 +91,12 @@ def _failed(action: PlanAction, error_class: str, message: str) -> ApplyOutcome:
     )
 
 
+def _action_seq(action: PlanAction) -> str:
+    """The `aN` tail of `action_id` (`{run_id}/aN`) — the BackupStore's
+    per-action key segment (adr-0019/adr-0004 amendment)."""
+    return action.action_id.rsplit("/", 1)[-1]
+
+
 def _operation_kind(action: PlanAction) -> ManifestOperation:
     renames = "rename" in action.operations
     if renames and is_content_rewrite(action):
@@ -433,6 +439,8 @@ def _execute_action(
                     target_bytes,
                     backup_root=options.backup_root,
                     run_id=run_id,
+                    action_seq=_action_seq(action),
+                    role="overwritten",
                     relative_path=str(action.target_path),
                     expected_sha256=overwritten_sha,
                 )
@@ -460,6 +468,8 @@ def _execute_action(
                 data,
                 backup_root=options.backup_root,
                 run_id=run_id,
+                action_seq=_action_seq(action),
+                role="source",
                 relative_path=action.path,
                 expected_sha256=action.source_sha256,
             )

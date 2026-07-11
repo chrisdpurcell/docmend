@@ -16,8 +16,9 @@ from corpus import FileRecipe, materialize, seeded_faker
 from docmend import discovery, planning
 from docmend.artifacts import sha256_of_file
 from docmend.config import DocmendConfig, RenameConfig, WriteConfig
-from docmend.plan import ArtifactRef, Plan
-from docmend.transform.dispatch import apply_text_transforms, classify_suffix
+from docmend.plan import ActionProvenance, ArtifactRef, Plan, PlanAction, PlanTotals
+from docmend.restore import run_restore
+from docmend.transform.dispatch import Operation, apply_text_transforms, classify_suffix
 from docmend.transform.encoding import decode_source, encode_utf8
 from docmend.writer import apply as apply_module
 from docmend.writer.apply import execute_plan
@@ -627,3 +628,105 @@ def test_rename_and_rewrite_unlink_failure__publish_rolled_back(
     assert outcome_b.error.error_class == "ERR-003"
     assert (root_b / "legacy.txt").read_bytes() == original_bytes_b
     assert (root_b / "legacy.md").read_bytes() == b"old target content\n"
+
+
+def _sha256(data: bytes) -> str:
+    return f"sha256:{hashlib.sha256(data).hexdigest()}"
+
+
+def _dmr01_action(
+    run_id: str,
+    seq: int,
+    path: str,
+    ops: list[Operation],
+    target: str | None,
+    data: bytes,
+) -> PlanAction:
+    return PlanAction(
+        action_id=f"{run_id}/a{seq}",
+        docmend_id=f"00000000-0000-7000-8000-00000000000{seq}",
+        path=path,
+        source_sha256=_sha256(data),
+        source_size_bytes=len(data),
+        operations=ops,
+        target_path=target,
+        provenance=ActionProvenance(
+            detected_encoding=None,
+            newline_style="crlf" if b"\r" in data else "lf",
+        ),
+    )
+
+
+def test_dmr01_colliding_backup_keys__both_preserved_and_restorable(tmp_path: Path) -> None:
+    """DMR-01 defense in depth: a crafted plan with an in-place rewrite of a.md
+    AND a rename a.txt -> a.md (overwrite policy) must preserve every byte
+    stream under distinct backup keys, and restore must reproduce both
+    originals. The Task 5 output ledger stops the planner emitting this plan,
+    but execute_plan accepts crafted plans — the backup layer must not rely on
+    the planner being correct."""
+    root = tmp_path / "corpus"
+    root.mkdir()
+    md_original = b"alpha\r\n"  # dirty: CRLF forces a rewrite action
+    txt_original = b"bravo\n"  # clean content: rename-only action
+    (root / "a.md").write_bytes(md_original)
+    (root / "a.txt").write_bytes(txt_original)
+
+    config = DocmendConfig()
+    config = config.model_copy(
+        update={"rename": config.rename.model_copy(update={"on_collision": "overwrite"})}
+    )
+    run_id = "run_20260710T000000Z_00d0a1"
+
+    plan = Plan(
+        run_id=run_id,
+        generated_at="2026-07-10T00:00:00+00:00",
+        generated_by="docmend test",
+        inventory_ref=ArtifactRef(path="unused", run_id=run_id, sha256=_sha256(b"")),
+        source_root=str(root),
+        config=config.model_dump(mode="json"),
+        actions=[
+            _dmr01_action(run_id, 1, "a.md", ["normalize_newlines"], None, md_original),
+            _dmr01_action(run_id, 2, "a.txt", ["rename"], "a.md", txt_original),
+        ],
+        skips=[],
+        totals=PlanTotals(actions=2, skips=0),
+    )
+
+    backup_root = tmp_path / "backups"
+    manifest_path = tmp_path / "manifest.jsonl"
+    report = execute_plan(
+        plan,
+        config,
+        run_id=run_id,
+        plan_ref=ArtifactRef(path="unused", run_id=run_id, sha256=_sha256(b"")),
+        options=ApplyOptions(
+            write=True, backup_root=backup_root, preserved_by=None, allow_no_backup=False
+        ),
+        manifest_path=manifest_path,
+        started_at="2026-07-10T00:00:00+00:00",
+    )
+    assert report.totals.applied == 2, [o.status for o in report.outcomes]
+
+    records = read_manifest(manifest_path)
+    backup_paths = {r.backup_path for r in records if r.backup_path is not None} | {
+        r.overwritten_backup_path for r in records if r.overwritten_backup_path is not None
+    }
+    # a1's source copy of a.md, a2's source copy of a.txt, and a2's
+    # overwritten-role copy of the (already rewritten) a.md — three distinct
+    # keys, none clobbered.
+    assert len(backup_paths) == 3
+    stored = {Path(p).read_bytes() for p in backup_paths}
+    assert stored == {md_original, txt_original, b"alpha\n"}
+
+    outcomes = run_restore(
+        records,
+        run_id="run_20260710T000001Z_00d0a2",
+        write=True,
+        only_ids=None,
+        manifest_out=tmp_path / "restore-manifest.jsonl",
+    )
+    assert all(o.status == "restored" for o in outcomes), [
+        (o.path, o.status, o.detail) for o in outcomes
+    ]
+    assert (root / "a.md").read_bytes() == md_original
+    assert (root / "a.txt").read_bytes() == txt_original

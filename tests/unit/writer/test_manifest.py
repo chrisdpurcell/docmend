@@ -36,6 +36,7 @@ from docmend.writer.manifest import (
     ManifestHeader,
     ManifestRecord,
     ManifestWriter,
+    inspect_manifest_chain,
     manifest_sha256,
     read_manifest_set,
 )
@@ -348,6 +349,148 @@ def _backup_tree(
     terminal = record_doc(1, seq=2, **fields)
     (tmp_path / "corpus").mkdir(exist_ok=True)
     return backup_root, header, intent, terminal
+
+
+class TestManifestInspection:
+    """Read-only verify policy: structure still aborts; containment is evidence."""
+
+    def test_path_escape__is_finding_without_dereference(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        escaped = tmp_path / "outside" / "doc.md"
+        target = corpus / "doc.md"
+        intent = record_doc(
+            1,
+            result="intent",
+            original_path=str(escaped),
+            target_path=str(target),
+        )
+        terminal = record_doc(
+            1,
+            seq=2,
+            original_path=str(escaped),
+            target_path=str(target),
+        )
+        path = write_set(
+            tmp_path / "m.jsonl",
+            header_doc(source_root=str(corpus)),
+            intent,
+            terminal,
+        )
+        real_read_bytes = Path.read_bytes
+
+        def reject_escaped_read(candidate: Path) -> bytes:
+            if candidate == escaped:
+                raise AssertionError("inspection dereferenced an escaped corpus path")
+            return real_read_bytes(candidate)
+
+        monkeypatch.setattr(Path, "read_bytes", reject_escaped_read)
+        inspected = inspect_manifest_chain([path])
+        assert inspected.chain.sets
+        assert [(finding.action_id, finding.check) for finding in inspected.findings] == [
+            (f"{RUN_ID}/a1", "manifest-containment"),
+        ]
+
+    def test_resolved_symlink_escape__is_finding_without_dereference(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        corpus = tmp_path / "corpus"
+        outside = tmp_path / "outside"
+        corpus.mkdir()
+        outside.mkdir()
+        (corpus / "alias").symlink_to(outside, target_is_directory=True)
+        escaped = corpus / "alias" / "doc.md"
+        intent = record_doc(
+            1,
+            result="intent",
+            original_path=str(escaped),
+            target_path=str(escaped),
+        )
+        terminal = record_doc(
+            1,
+            seq=2,
+            original_path=str(escaped),
+            target_path=str(escaped),
+        )
+        path = write_set(
+            tmp_path / "m.jsonl",
+            header_doc(source_root=str(corpus)),
+            intent,
+            terminal,
+        )
+        real_read_bytes = Path.read_bytes
+
+        def reject_escaped_read(candidate: Path) -> bytes:
+            if candidate == escaped:
+                raise AssertionError("inspection opened a path through a symlink component")
+            return real_read_bytes(candidate)
+
+        monkeypatch.setattr(Path, "read_bytes", reject_escaped_read)
+        inspected = inspect_manifest_chain([path])
+        assert [(finding.action_id, finding.check) for finding in inspected.findings] == [
+            (f"{RUN_ID}/a1", "manifest-containment"),
+        ]
+
+    def test_off_key_backup__is_finding_without_dereference(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backup_root, header, intent, terminal = _backup_tree(tmp_path)
+        stray = backup_root / "stray.md"
+        stray.write_bytes(b"untrusted")
+        for record in (intent, terminal):
+            record["backup_path"] = str(stray)
+        path = write_set(tmp_path / "m.jsonl", header, intent, terminal)
+        real_read_bytes = Path.read_bytes
+
+        def reject_untrusted_read(candidate: Path) -> bytes:
+            if candidate == stray:
+                raise AssertionError("inspection opened an untrusted backup leaf")
+            return real_read_bytes(candidate)
+
+        monkeypatch.setattr(Path, "read_bytes", reject_untrusted_read)
+        inspected = inspect_manifest_chain([path])
+        assert [(finding.action_id, finding.check) for finding in inspected.findings] == [
+            (f"{RUN_ID}/a1", "backup-containment"),
+        ]
+
+    def test_backup_symlink_component__is_finding_without_opening_leaf(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backup_root, header, intent, terminal = _backup_tree(tmp_path)
+        role_dir = backup_root / RUN_ID / "a1" / "source"
+        moved = tmp_path / "moved-role-dir"
+        role_dir.rename(moved)
+        role_dir.symlink_to(moved, target_is_directory=True)
+        leaf = role_dir / "f1.md"
+        path = write_set(tmp_path / "m.jsonl", header, intent, terminal)
+        real_read_bytes = Path.read_bytes
+
+        def reject_untrusted_read(candidate: Path) -> bytes:
+            if candidate == leaf:
+                raise AssertionError("inspection opened a backup through a symlink component")
+            return real_read_bytes(candidate)
+
+        monkeypatch.setattr(Path, "read_bytes", reject_untrusted_read)
+        inspected = inspect_manifest_chain([path])
+        assert [(finding.action_id, finding.check) for finding in inspected.findings] == [
+            (f"{RUN_ID}/a1", "backup-containment"),
+        ]
+
+    def test_missing_backup__is_left_for_integrity_check(self, tmp_path: Path) -> None:
+        backup_root, header, intent, terminal = _backup_tree(tmp_path)
+        (backup_root / RUN_ID / "a1" / "source" / "f1.md").unlink()
+        path = write_set(tmp_path / "m.jsonl", header, intent, terminal)
+        assert inspect_manifest_chain([path]).findings == ()
+
+    def test_lifecycle_error__stays_input_error(self, tmp_path: Path) -> None:
+        first = record_doc(1)
+        second = record_doc(1, seq=2)
+        second["action_id"] = first["action_id"]
+        path = write_set(tmp_path / "m.jsonl", header_doc(), first, second)
+        with pytest.raises(ArtifactError, match="terminal"):
+            inspect_manifest_chain([path])
 
 
 class TestBackupTrustBoundary:

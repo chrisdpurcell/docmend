@@ -249,6 +249,14 @@ class ManifestSet:
     sha256: str | None = None
 
 
+@dataclass(frozen=True)
+class ManifestInspectionFinding:
+    path: str
+    action_id: str
+    check: Literal["manifest-containment", "backup-containment"]
+    detail: str
+
+
 #: Fields an action's intent and terminal record must agree on (adr-0019
 #: immutable-field rule) — only result/error/seq/recorded_at (and the
 #: set-scope run_id, for adjudication terminals appended by a later run)
@@ -372,26 +380,45 @@ def _validate_kind(path: Path, header: ManifestHeader, records: list[ManifestRec
             raise ArtifactError(msg)
 
 
-def _validate_containment(
-    path: Path, header: ManifestHeader, records: list[ManifestRecord], *, resolve: bool
-) -> None:
-    root = header.source_root
-    for record in records:
+def _manifest_containment_findings(
+    manifest_set: ManifestSet, *, resolve_paths: bool
+) -> list[ManifestInspectionFinding]:
+    root = manifest_set.header.source_root
+    resolved_root = Path(root).resolve() if resolve_paths else None
+    findings: list[ManifestInspectionFinding] = []
+    seen: set[tuple[str, str]] = set()
+    for record in manifest_set.records:
         for candidate in (record.original_path, record.target_path):
+            key = (record.action_id, candidate)
+            if key in seen:
+                continue
+            seen.add(key)
             inside = _lexically_inside(candidate, root)
-            if inside and resolve:
-                inside = Path(candidate).resolve().is_relative_to(Path(root).resolve())
-            if not inside:
-                msg = (
-                    f"{path}: {record.action_id}: recorded path {candidate} escapes "
-                    f"the manifest's source root {root}"
+            if inside and resolved_root is not None:
+                inside = Path(candidate).resolve().is_relative_to(resolved_root)
+            if inside:
+                continue
+            detail = (
+                f"{manifest_set.path}: {record.action_id}: recorded path {candidate} escapes "
+                f"the manifest's source root {root}"
+            )
+            findings.append(
+                ManifestInspectionFinding(
+                    path=candidate,
+                    action_id=record.action_id,
+                    check="manifest-containment",
+                    detail=detail,
                 )
-                raise ManifestContainmentError(msg)
+            )
+    return findings
 
 
-def _validate_backup_trust(
-    path: Path, header: ManifestHeader, records: list[ManifestRecord], *, check_objects: bool
-) -> None:
+def _backup_trust_findings(
+    manifest_set: ManifestSet,
+    *,
+    check_objects: bool,
+    include_missing_objects: bool,
+) -> list[ManifestInspectionFinding]:
     """The complete F5 BackupStore trust boundary (Plan B review CR-002): a
     backup reference is DERIVABLE evidence, never a free-form path. The key's
     run segment is the PERFORMING run's run_id — which equals this set's
@@ -403,56 +430,110 @@ def _validate_backup_trust(
     the same provisional-set/strict-chain split as the lifecycle rule.
     NOTE: action_id's run prefix is the PLAN run, never the key's run segment.
     """
+    path = manifest_set.path
+    header = manifest_set.header
+    records = manifest_set.records
+    findings: list[ManifestInspectionFinding] = []
     intent_actions = {r.action_id for r in records if r.result == "intent"}
+    seen: set[tuple[str, str, str]] = set()
     for record in records:
         references = (
             (record.backup_path, "source", record.original_path),
             (record.overwritten_backup_path, "overwritten", record.target_path),
         )
         if record.overwritten_backup_path is not None and record.overwritten_sha256 is None:
-            msg = f"{path}: {record.action_id}: overwritten backup without overwritten_sha256"
-            raise ManifestContainmentError(msg)
+            key = (record.action_id, "overwritten-sha", record.overwritten_backup_path)
+            if key not in seen:
+                seen.add(key)
+                detail = (
+                    f"{path}: {record.action_id}: overwritten backup without overwritten_sha256"
+                )
+                findings.append(
+                    ManifestInspectionFinding(
+                        path=record.overwritten_backup_path,
+                        action_id=record.action_id,
+                        check="backup-containment",
+                        detail=detail,
+                    )
+                )
         for recorded, role, base in references:
             if recorded is None:
                 continue
             if record.result != "intent" and record.action_id not in intent_actions:
                 continue  # standalone terminal: key proven at chain scope (see docstring)
+            key = (record.action_id, role, recorded)
+            if key in seen:
+                continue
+            seen.add(key)
             if header.backup_root is None:
-                msg = (
+                detail = (
                     f"{path}: {record.action_id}: backup reference with no backup_root "
                     f"in the header (BackupStore trust boundary)"
                 )
-                raise ManifestContainmentError(msg)
+                findings.append(
+                    ManifestInspectionFinding(
+                        path=recorded,
+                        action_id=record.action_id,
+                        check="backup-containment",
+                        detail=detail,
+                    )
+                )
+                continue
             _, _, action_part = record.action_id.partition("/")
             try:
                 rel = Path(os.path.normpath(base)).relative_to(os.path.normpath(header.source_root))
-            except ValueError as exc:
-                msg = f"{path}: {record.action_id}: backup base path outside source root"
-                raise ManifestContainmentError(msg) from exc
+            except ValueError:
+                detail = f"{path}: {record.action_id}: backup base path outside source root"
+                findings.append(
+                    ManifestInspectionFinding(
+                        path=base,
+                        action_id=record.action_id,
+                        check="backup-containment",
+                        detail=detail,
+                    )
+                )
+                continue
             expected = Path(header.backup_root) / header.run_id / action_part / role / rel
             if os.path.normpath(recorded) != os.path.normpath(str(expected)):
-                msg = (
+                detail = (
                     f"{path}: {record.action_id}: backup path {recorded} does not "
                     f"reconstruct from its BackupStore key (expected {expected})"
                 )
-                raise ManifestContainmentError(msg)
+                findings.append(
+                    ManifestInspectionFinding(
+                        path=recorded,
+                        action_id=record.action_id,
+                        check="backup-containment",
+                        detail=detail,
+                    )
+                )
+                continue
             # F5's "at most one path per role per action" holds without a
             # dedicated check at set scope: the immutable-field rule already
             # forces an action's intent and terminal to agree on both backup
             # fields, and a second record pair for the action is illegal.
             # Cross-SET agreement (adoption terminals) is chain scope (Task 3).
             if check_objects:
-                _validate_backup_object(
-                    path,
-                    record.action_id,
-                    Path(header.backup_root),
-                    (header.run_id, action_part, role, *rel.parts),
+                findings.extend(
+                    _backup_object_findings(
+                        manifest_path=path,
+                        action_id=record.action_id,
+                        backup_root=Path(header.backup_root),
+                        components=(header.run_id, action_part, role, *rel.parts),
+                        include_missing=include_missing_objects,
+                    )
                 )
+    return findings
 
 
-def _validate_backup_object(
-    path: Path, action_id: str, backup_root: Path, components: tuple[str, ...]
-) -> None:
+def _backup_object_findings(
+    *,
+    manifest_path: Path,
+    action_id: str,
+    backup_root: Path,
+    components: tuple[str, ...],
+    include_missing: bool,
+) -> list[ManifestInspectionFinding]:
     """Filesystem half of F5, run BEFORE any backup is opened: the leaf must
     be a regular file and no component below backup_root may be a symlink.
     `components` is the full derivable key below the root — the same
@@ -463,31 +544,77 @@ def _validate_backup_object(
         try:
             st = os.lstat(current)
         except OSError as exc:
-            msg = f"{path}: {action_id}: backup component {current} missing/unreadable ({exc})"
-            raise ManifestContainmentError(msg) from exc
+            if not include_missing:
+                return []
+            detail = (
+                f"{manifest_path}: {action_id}: backup component {current} "
+                f"missing/unreadable ({exc})"
+            )
+            return [
+                ManifestInspectionFinding(
+                    path=str(current),
+                    action_id=action_id,
+                    check="backup-containment",
+                    detail=detail,
+                )
+            ]
         leaf = index == len(components) - 1
         if stat.S_ISLNK(st.st_mode):
-            msg = f"{path}: {action_id}: symlink component {current} below the backup root"
-            raise ManifestContainmentError(msg)
+            detail = (
+                f"{manifest_path}: {action_id}: symlink component {current} below the backup root"
+            )
+            return [
+                ManifestInspectionFinding(
+                    path=str(current),
+                    action_id=action_id,
+                    check="backup-containment",
+                    detail=detail,
+                )
+            ]
         if leaf and not stat.S_ISREG(st.st_mode):
-            msg = f"{path}: {action_id}: backup object {current} is not a regular file"
-            raise ManifestContainmentError(msg)
+            detail = f"{manifest_path}: {action_id}: backup object {current} is not a regular file"
+            return [
+                ManifestInspectionFinding(
+                    path=str(current),
+                    action_id=action_id,
+                    check="backup-containment",
+                    detail=detail,
+                )
+            ]
         if not leaf and not stat.S_ISDIR(st.st_mode):
-            msg = f"{path}: {action_id}: backup path component {current} is not a directory"
-            raise ManifestContainmentError(msg)
+            detail = (
+                f"{manifest_path}: {action_id}: backup path component {current} is not a directory"
+            )
+            return [
+                ManifestInspectionFinding(
+                    path=str(current),
+                    action_id=action_id,
+                    check="backup-containment",
+                    detail=detail,
+                )
+            ]
+    return []
 
 
-def read_manifest_set(path: Path, *, check_backup_objects: bool = True) -> ManifestSet:
-    """Read and validate ONE manifest file (adr-0019: header presence and
-    version, single run, contiguous seq, provisional per-set lifecycle, kind
-    lineage, source-root containment, and the full F5 BackupStore trust
-    boundary) — before any referenced path is touched by a consumer.
+def _containment_findings(
+    manifest_set: ManifestSet,
+    *,
+    resolve_paths: bool,
+    check_backup_objects: bool,
+    include_missing_backup_objects: bool,
+) -> tuple[ManifestInspectionFinding, ...]:
+    return (
+        *_manifest_containment_findings(manifest_set, resolve_paths=resolve_paths),
+        *_backup_trust_findings(
+            manifest_set,
+            check_objects=check_backup_objects,
+            include_missing_objects=include_missing_backup_objects,
+        ),
+    )
 
-    `check_backup_objects=False` skips the live-filesystem half of F5 (regular
-    file, no symlink components); mutating consumers use the default so every
-    check runs before `_verified_backup` opens anything, while read-only
-    verify (Plan D) re-runs those checks as findings.
-    """
+
+def _read_manifest_set_structural(path: Path) -> ManifestSet:
+    """Validate one set without inspecting any referenced filesystem path."""
     documents = _parse_lines(path)
     if not documents:
         raise ArtifactError(f"{path}: manifest has no header")
@@ -507,9 +634,30 @@ def read_manifest_set(path: Path, *, check_backup_objects: bool = True) -> Manif
             raise ArtifactError(msg)
     _validate_lifecycle(path, records)
     _validate_kind(path, header, records)
-    _validate_containment(path, header, records, resolve=check_backup_objects)
-    _validate_backup_trust(path, header, records, check_objects=check_backup_objects)
     return ManifestSet(header=header, records=tuple(records), path=path)
+
+
+def read_manifest_set(path: Path, *, check_backup_objects: bool = True) -> ManifestSet:
+    """Read and validate ONE manifest file (adr-0019: header presence and
+    version, single run, contiguous seq, provisional per-set lifecycle, kind
+    lineage, source-root containment, and the full F5 BackupStore trust
+    boundary) — before any referenced path is touched by a consumer.
+
+    `check_backup_objects=False` skips the live-filesystem half of F5 (regular
+    file, no symlink components); mutating consumers use the default so every
+    check runs before `_verified_backup` opens anything, while read-only
+    verify (Plan D) re-runs those checks as findings.
+    """
+    manifest_set = _read_manifest_set_structural(path)
+    findings = _containment_findings(
+        manifest_set,
+        resolve_paths=check_backup_objects,
+        check_backup_objects=check_backup_objects,
+        include_missing_backup_objects=True,
+    )
+    if findings:
+        raise ManifestContainmentError(findings[0].detail)
+    return manifest_set
 
 
 @dataclass(frozen=True)
@@ -517,6 +665,12 @@ class ManifestChain:
     """Validated manifest sets ordered root→tip by their hash links."""
 
     sets: tuple[ManifestSet, ...]
+
+
+@dataclass(frozen=True)
+class ManifestInspection:
+    chain: ManifestChain
+    findings: tuple[ManifestInspectionFinding, ...]
 
 
 def _order_chain(paths: Sequence[Path], sets: list[ManifestSet]) -> list[ManifestSet]:
@@ -698,14 +852,23 @@ def _validate_undoes_references(ordered: list[ManifestSet]) -> None:
                 raise ArtifactError(msg)
 
 
+def _finish_chain_validation(paths: Sequence[Path], sets: list[ManifestSet]) -> ManifestChain:
+    if not sets:
+        return ManifestChain(sets=())
+    ordered = _order_chain(paths, sets)
+    _validate_chain_coherence(ordered)
+    _validate_attempt_lineage(ordered)
+    _validate_cross_set_lifecycle(ordered)
+    _validate_undoes_references(ordered)
+    return ManifestChain(sets=tuple(ordered))
+
+
 def read_manifest_chain(
     paths: Sequence[Path], *, check_backup_objects: bool = True
 ) -> ManifestChain:
     """Read, hash, order, and cross-validate a set of manifest files as one
     chain (adr-0019). An EMPTY input is a legal empty chain: a report-only
     predecessor produced no manifest (review CR-004)."""
-    if not paths:
-        return ManifestChain(sets=())
     sets = [
         replace(
             read_manifest_set(path, check_backup_objects=check_backup_objects),
@@ -713,12 +876,26 @@ def read_manifest_chain(
         )
         for path in paths
     ]
-    ordered = _order_chain(paths, sets)
-    _validate_chain_coherence(ordered)
-    _validate_attempt_lineage(ordered)
-    _validate_cross_set_lifecycle(ordered)
-    _validate_undoes_references(ordered)
-    return ManifestChain(sets=tuple(ordered))
+    return _finish_chain_validation(paths, sets)
+
+
+def inspect_manifest_chain(paths: Sequence[Path]) -> ManifestInspection:
+    """Validate structure without touching referenced objects; return containment defects."""
+    sets = [
+        replace(_read_manifest_set_structural(path), sha256=manifest_sha256(path)) for path in paths
+    ]
+    chain = _finish_chain_validation(paths, sets)
+    findings = tuple(
+        finding
+        for manifest_set in chain.sets
+        for finding in _containment_findings(
+            manifest_set,
+            resolve_paths=True,
+            check_backup_objects=True,
+            include_missing_backup_objects=False,
+        )
+    )
+    return ManifestInspection(chain=chain, findings=findings)
 
 
 type LifecycleState = Literal[

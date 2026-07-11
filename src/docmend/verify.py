@@ -10,8 +10,6 @@ against `schemas/frontmatter.schema.json`.
 """
 
 import hashlib
-from collections import Counter
-from collections.abc import Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,12 +17,10 @@ from typing import Literal
 
 from docmend.frontmatter import validate_frontmatter
 from docmend.inventory import Inventory
-from docmend.report import Report
 from docmend.writer.commit import InterferenceError, bind_file
 from docmend.writer.manifest import (
     ManifestChain,
     ManifestInspection,
-    ManifestRecord,
     reduce_lifecycle,
 )
 
@@ -232,70 +228,4 @@ def check_backups(
             )
             if finding is not None:
                 findings.append(finding)
-    return findings
-
-
-def reconcile_manifest(records: Sequence[ManifestRecord]) -> list[VerifyFinding]:
-    """Reconcile applied outputs against the manifest (adr-0012, FR-014).
-
-    The FR-014 'hash mismatch' defect class: each applied record's live target
-    must still hash to the after_sha256 the manifest recorded at apply time.
-    Only result=='applied' records with a recorded after-hash are reconcilable;
-    'failed' records left the original untouched (nothing to compare against).
-    """
-    findings: list[VerifyFinding] = []
-    for record in records:
-        if record.result != "applied" or record.after_sha256 is None:
-            continue
-        target = Path(record.target_path)
-        try:
-            live = target.read_bytes()
-        except OSError:
-            findings.append(
-                VerifyFinding(record.target_path, "hash", "applied output missing or unreadable")
-            )
-            continue
-        if _sha(live) != record.after_sha256:
-            findings.append(
-                VerifyFinding(
-                    record.target_path, "hash", "live hash does not match recorded after-hash"
-                )
-            )
-    return findings
-
-
-def reconcile_report(report: Report, records: Sequence[ManifestRecord]) -> list[VerifyFinding]:
-    """Cross-artifact accounting (FR-014 'skipped-file accounting / artifact
-    internal consistency', OQ-006): every applied report outcome must have an
-    applied manifest record and vice versa. The intra-report totals rule
-    (totals == outcome counts) is already enforced by `artifacts.read_report`;
-    this is the BETWEEN-artifacts half it cannot see.
-    """
-    findings: list[VerifyFinding] = []
-    applied_outcomes = {o.action_id for o in report.outcomes if o.status == "applied"}
-    applied_records = {r.action_id for r in records if r.result == "applied"}
-    for action_id in sorted(applied_outcomes - applied_records):
-        findings.append(
-            VerifyFinding(
-                action_id, "accounting", "report records applied but manifest has no applied record"
-            )
-        )
-    for action_id in sorted(applied_records - applied_outcomes):
-        findings.append(
-            VerifyFinding(
-                action_id,
-                "accounting",
-                "manifest records applied but report has no applied outcome",
-            )
-        )
-    # A duplicate applied record for one action would slip past the set logic.
-    duplicates = [
-        a
-        for a, n in Counter(r.action_id for r in records if r.result == "applied").items()
-        if n > 1
-    ]
-    for action_id in sorted(duplicates):
-        findings.append(
-            VerifyFinding(action_id, "accounting", "manifest holds duplicate applied records")
-        )
     return findings

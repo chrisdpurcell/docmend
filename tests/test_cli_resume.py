@@ -623,10 +623,19 @@ class TestAttemptGraphRefusals:
     ) -> None:
         plan_path, r1, _r2 = self._two_attempts(tmp_path, monkeypatch)
         report = tmp_path / ".docmend" / f"docmend-{r1}-report.json"
+        duplicate = tmp_path / "duplicate-report.json"
+        shutil.copyfile(report, duplicate)
 
         result = runner.invoke(
             app,
-            ["apply", str(plan_path), "--prior-report", str(report), "--prior-report", str(report)],
+            [
+                "apply",
+                str(plan_path),
+                "--prior-report",
+                str(report),
+                "--prior-report",
+                str(duplicate),
+            ],
         )
 
         assert result.exit_code == 2, result.output

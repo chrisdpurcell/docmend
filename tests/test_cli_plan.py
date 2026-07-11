@@ -245,6 +245,7 @@ class TestPlanLock:
         monkeypatch.setattr(cli.lock, "acquire", _raise_oserror)
         result = runner.invoke(app, ["plan", str(corpus)])
         assert result.exit_code == 0, result.output
+        assert "run lock unavailable" in result.output
 
 
 class TestPlanArtifactGuard:

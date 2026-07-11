@@ -16,6 +16,7 @@ import pytest
 import structlog
 from typer.testing import CliRunner
 
+from docmend import cli, lock
 from docmend.artifacts import read_inventory
 from docmend.cli import app
 
@@ -36,6 +37,11 @@ def isolate_logging() -> Iterator[None]:
     root.setLevel(saved_level)
     structlog.reset_defaults()
     structlog.contextvars.clear_contextvars()
+
+
+@pytest.fixture(autouse=True)
+def isolate_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
 
 
 @pytest.fixture
@@ -85,6 +91,28 @@ class TestScanCommand:
         artifact = next(Path(".docmend").glob("docmend-run_*-inventory.json"))
         inventory = read_inventory(artifact)
         assert [record.path for record in inventory.files] == ["a.txt"]
+
+
+class TestScanLock:
+    def test_same_root_lock_contention__exit_3(self, corpus: Path) -> None:
+        held = lock.acquire(corpus.resolve(), run_id="run_20260711T150000Z_000055", command="apply")
+        try:
+            result = runner.invoke(app, ["scan", str(corpus)])
+        finally:
+            held.release()
+        assert result.exit_code == 3, result.output
+        assert "another docmend run holds the lock" in result.output
+
+    def test_lock_creation_failure__warns_and_continues(
+        self, corpus: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def refuse_lock(*_args: object, **_kwargs: object) -> lock.RunLock:
+            raise PermissionError("state directory is unwritable")
+
+        monkeypatch.setattr(cli.lock, "acquire", refuse_lock)
+        result = runner.invoke(app, ["scan", str(corpus)])
+        assert result.exit_code == 0, result.output
+        assert "run lock unavailable" in result.output
 
 
 class TestScanFilters:

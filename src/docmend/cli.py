@@ -41,7 +41,19 @@ from docmend.observability import configure_logging, get_logger, new_run_id
 from docmend.plan import PLAN_SCHEMA_VERSION, ArtifactRef
 from docmend.report import Report, ReportTotals
 from docmend.restore import preview_restore, run_restore
-from docmend.verify import check_content, check_frontmatter, reconcile_manifest, reconcile_report
+from docmend.verify import (
+    VerifyFinding,
+    check_backups,
+    check_content,
+    check_discovery,
+    check_frontmatter,
+    check_lifecycle,
+    check_manifest_root,
+    check_outputs,
+    manifest_inspection_findings,
+)
+from docmend.verify_coverage import check_plan_coverage, load_verification_evidence
+from docmend.verify_report import VerifyFindingRecord, VerifyReport
 from docmend.writer import commit, manifest
 from docmend.writer.apply import execute_plan, preview_plan
 from docmend.writer.commit import _load_apply_predecessors  # pyright: ignore[reportPrivateUsage]
@@ -217,8 +229,13 @@ def scan(
     corpus_root = (path if path.is_dir() else path.parent).resolve()
     _guard_artifact_paths([out_path], corpus_root=corpus_root, input_artifacts=[], config=config)
 
-    inventory = discovery.scan(path, config, run_id=run_id, generated_at=now.isoformat())
-    artifacts.write_inventory(inventory, out_path)
+    run_lock = _acquire_read_lock(corpus_root, run_id=run_id, command="scan")
+    try:
+        inventory = discovery.scan(path, config, run_id=run_id, generated_at=now.isoformat())
+        artifacts.write_inventory(inventory, out_path)
+    finally:
+        if run_lock is not None:
+            run_lock.release()
 
     totals = inventory.totals
     reasons = totals.skipped_by_reason
@@ -319,7 +336,7 @@ def plan(
             input_artifacts=[],
             config=config,
         )
-        run_lock = _acquire_run_lock(scan_root, run_id=run_id)
+        run_lock = _acquire_read_lock(scan_root, run_id=run_id, command="plan")
         log.info("plan starting (scan shorthand)", path=str(path))
         inventory = discovery.scan(path, config, run_id=run_id, generated_at=now.isoformat())
         artifacts.write_inventory(inventory, inventory_artifact)
@@ -340,7 +357,7 @@ def plan(
         )
         # The root is only known once the inventory is read, so the lock is
         # acquired here rather than up front (OQ-027).
-        run_lock = _acquire_run_lock(Path(inventory.source_root), run_id=run_id)
+        run_lock = _acquire_read_lock(Path(inventory.source_root), run_id=run_id, command="plan")
 
     try:
         inventory_ref = ArtifactRef(
@@ -398,15 +415,14 @@ def plan(
             run_lock.release()
 
 
-def _acquire_run_lock(source_root: Path, *, run_id: str) -> lock.RunLock | None:
-    """Acquire the OQ-027 run lock for `plan`, mapping contention to exit 3.
+def _acquire_read_lock(source_root: Path, *, run_id: str, command: str) -> lock.RunLock | None:
+    """Acquire a read-only command's run lock, mapping contention to exit 3.
 
-    `plan` is read-only (§3.1), so a lock the tool cannot even create (e.g. an
-    unwritable state dir) must not block it — that OSError degrades to a
-    warning and an unlocked run, per the OQ-036 posture.
+    A lock the tool cannot create must not block scan, plan, or verify; that
+    OSError degrades to a warning and an unlocked run per OQ-036.
     """
     try:
-        return lock.acquire(source_root, run_id=run_id, command="plan")
+        return lock.acquire(source_root, run_id=run_id, command=command)
     except lock.LockHeldError as exc:
         typer.echo(f"refused: {exc}", err=True)
         raise typer.Exit(3) from exc
@@ -418,7 +434,7 @@ def _acquire_run_lock(source_root: Path, *, run_id: str) -> lock.RunLock | None:
 def _acquire_run_lock_strict(source_root: Path, *, run_id: str, command: str) -> lock.RunLock:
     """Acquire the OQ-027 run lock for a write-capable command (e.g. `apply`).
 
-    Unlike `plan`'s `_acquire_run_lock`, a write-capable command must REFUSE
+    Unlike `_acquire_read_lock`, a write-capable command must REFUSE
     (exit 3) when the lock cannot even be created — an unwritable state dir is
     not a reason to proceed unlocked into a run that can mutate the library
     (AW-005; contrast the OQ-036 read-only posture that lets `plan` degrade).
@@ -559,9 +575,16 @@ def apply(
         typer.echo(f"error: {plan_path}: config snapshot invalid — {exc}", err=True)
         raise typer.Exit(2) from exc
 
-    manifest_inputs, report_inputs = _resolve_resume_evidence_paths(
-        resume_manifest, resume_run_id, prior_report
-    )
+    try:
+        manifest_inputs, report_inputs = _resolve_evidence_paths(
+            resume_manifest,
+            resume_run_id,
+            prior_report,
+            option_name="--resume-run-id",
+        )
+    except artifacts.ArtifactError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
     manifest_path = artifact_dir / f"docmend-{run_id}-manifest.jsonl"
     report_path = report if report is not None else artifact_dir / f"docmend-{run_id}-report.json"
     plan_ref = ArtifactRef(path=str(plan_path), run_id=plan.run_id, sha256=plan_sha256)
@@ -703,15 +726,17 @@ def apply(
         raise typer.Exit(1)
 
 
-def _resolve_resume_evidence_paths(
-    resume_manifest: list[Path] | None,
-    resume_run_id: list[str] | None,
-    prior_report: list[Path] | None,
+def _resolve_evidence_paths(
+    manifests: list[Path] | None,
+    run_ids: list[str] | None,
+    reports: list[Path] | None,
+    *,
+    option_name: str,
 ) -> tuple[list[Path], list[Path]]:
     """Resolve explicit and sidecar predecessor evidence without inventing paths."""
-    manifest_paths = list(resume_manifest or [])
-    report_paths = list(prior_report or [])
-    for run_id in resume_run_id or []:
+    manifest_paths = list(manifests or [])
+    report_paths = list(reports or [])
+    for run_id in run_ids or []:
         sidecar_manifest = Path(ARTIFACT_DIR_NAME) / f"docmend-{run_id}-manifest.jsonl"
         sidecar_report = Path(ARTIFACT_DIR_NAME) / f"docmend-{run_id}-report.json"
         found = False
@@ -722,13 +747,11 @@ def _resolve_resume_evidence_paths(
             report_paths.append(sidecar_report)
             found = True
         if not found:
-            typer.echo(
-                f"error: --resume-run-id {run_id}: neither sidecar exists — the named "
-                "predecessor left no evidence (ERR-006)",
-                err=True,
+            raise artifacts.ArtifactError(
+                f"{option_name} {run_id}: neither default manifest nor report sidecar exists "
+                "(the named predecessor left no evidence; ERR-006)"
             )
-            raise typer.Exit(2)
-    return manifest_paths, report_paths
+    return list(dict.fromkeys(manifest_paths)), list(dict.fromkeys(report_paths))
 
 
 def _write_refusal_report(
@@ -917,27 +940,34 @@ def verify(
             help="Converted file or directory tree to verify; a single file is first-class (NFR-006).",
         ),
     ],
-    manifest_path: Annotated[
-        Path | None,
+    manifest_paths_arg: Annotated[
+        list[Path] | None,
         typer.Option(
-            "--manifest", help="Reconcile against this manifest (DR-004 NDJSON); optional."
+            "--manifest",
+            help="Manifest evidence to consume (repeatable; DR-004 NDJSON).",
         ),
     ] = None,
-    run_id_arg: Annotated[
-        str | None,
+    run_ids_arg: Annotated[
+        list[str] | None,
         typer.Option(
             "--run-id",
-            help="Reconcile against .docmend/docmend-<ID>-manifest.jsonl (OQ-034 sidecar convention; "
-            "the run's report is reconciled too when its sidecar exists).",
+            help="Resolve default manifest/report sidecars for ID (repeatable and combinable).",
         ),
     ] = None,
-    report_path: Annotated[
-        Path | None,
+    report_paths_arg: Annotated[
+        list[Path] | None,
         typer.Option(
             "--report",
-            help="Reconcile report↔manifest accounting against this DR-003 report "
-            "(requires a manifest via --manifest or --run-id).",
+            help="Apply-report evidence to consume (repeatable; DR-003).",
         ),
+    ] = None,
+    plan_path: Annotated[
+        Path | None,
+        typer.Option("--plan", help="Plan artifact whose complete coverage must be certified."),
+    ] = None,
+    out_path: Annotated[
+        Path | None,
+        typer.Option("--out", help="Write an optional durable verify-report artifact to FILE."),
     ] = None,
     config_path: Annotated[
         Path | None,
@@ -946,31 +976,12 @@ def verify(
 ) -> None:
     """Verify converted output read-only against the FR-014 checks (IR-004, adr-0012).
 
-    Read-only: reuses `scan`'s walk + facts, mutates nothing, writes no manifest.
-    Content checks (UTF-8 decodability, LF-only) and frontmatter-where-present
-    validation (FR-016, adr-0011) always run over PATH; manifest reconciliation
-    runs when a manifest is supplied (flag or sidecar), and report↔manifest
-    accounting when a report is too. Exit codes (adr-0012): 0 clean; 1 findings
-    (bad encoding, CRLF, invalid frontmatter, hash mismatch, accounting drift);
-    2 input error (bad flags, unreadable/invalid artifact).
+    Content checks always run. Optional plan/report/manifest evidence activates
+    lifecycle, recovery, and exactly-once plan certification. Exit codes:
+    0 clean; 1 findings; 2 invocation/structural input error; 3 safety refusal.
     """
     opts = _global_options(ctx)
     config = _load_effective_config(config_path, None, None)
-    if manifest_path is not None and run_id_arg is not None:
-        raise typer.BadParameter("provide at most one of --manifest or --run-id")
-    if report_path is not None and manifest_path is None and run_id_arg is None:
-        # Accounting is a CROSS-artifact check: a report alone has its internal
-        # totals rule enforced at read time; without a manifest there is nothing
-        # to reconcile it against.
-        raise typer.BadParameter("--report requires a manifest (--manifest or --run-id)")
-    if run_id_arg is not None:
-        manifest_path = Path(ARTIFACT_DIR_NAME) / f"docmend-{run_id_arg}-manifest.jsonl"
-        if report_path is None:
-            # Sidecar convention: reconcile the run's report too when present;
-            # absence is legal (the operator may have relocated it via --report).
-            sidecar_report = Path(ARTIFACT_DIR_NAME) / f"docmend-{run_id_arg}-report.json"
-            if sidecar_report.is_file():
-                report_path = sidecar_report
     now = datetime.now(UTC)
     run_id = new_run_id(now)
     artifact_dir = Path(ARTIFACT_DIR_NAME)
@@ -983,27 +994,96 @@ def verify(
     )
     log = get_logger(__name__)
     log.info("verify starting", path=str(path))
-    inventory = discovery.scan(path, config, run_id=run_id, generated_at=now.isoformat())
-    findings = check_content(inventory) + check_frontmatter(inventory)
-    if manifest_path is not None:
-        try:
-            # check_backup_objects=False: verify is read-only — the live-
-            # filesystem half of the F5 trust boundary becomes FINDINGS under
-            # Plan D's verify redesign, never a hard abort here.
-            records = manifest.read_manifest_set(manifest_path, check_backup_objects=False).records
-        except artifacts.ArtifactError as exc:
-            # Unreadable/corrupt input artifact is an invocation error, not a
-            # finding (adr-0012 exit 2), mirroring restore's read guard.
-            typer.echo(f"error: {exc}", err=True)
-            raise typer.Exit(2) from exc
-        findings = findings + reconcile_manifest(records)
-        if report_path is not None:
+
+    try:
+        manifest_paths, report_paths = _resolve_evidence_paths(
+            manifest_paths_arg,
+            run_ids_arg,
+            report_paths_arg,
+            option_name="--run-id",
+        )
+    except artifacts.ArtifactError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+    if report_paths and not manifest_paths and plan_path is None:
+        raise typer.BadParameter("--report without --plan requires at least one manifest")
+
+    corpus_root = (path if path.is_dir() else path.parent).resolve()
+    input_artifacts = [*manifest_paths, *report_paths]
+    if plan_path is not None:
+        input_artifacts.append(plan_path)
+    if out_path is not None:
+        _guard_artifact_paths(
+            [out_path],
+            corpus_root=corpus_root,
+            input_artifacts=input_artifacts,
+            config=config,
+        )
+
+    started_at = now.isoformat()
+    run_lock = _acquire_read_lock(corpus_root, run_id=run_id, command="verify")
+    try:
+        inventory = discovery.scan(path, config, run_id=run_id, generated_at=started_at)
+        findings = (
+            check_content(inventory) + check_frontmatter(inventory) + check_discovery(inventory)
+        )
+        evidence = None
+        if manifest_paths or report_paths or plan_path is not None:
             try:
-                run_report = artifacts.read_report(report_path)
+                evidence = load_verification_evidence(
+                    plan_path,
+                    manifest_paths,
+                    report_paths,
+                )
+            except manifest.ManifestContainmentError as exc:
+                # Inspection owns containment; this is a defense-in-depth
+                # fallback if a future refactor lets one escape as an error.
+                findings.append(VerifyFinding(str(path), "manifest-containment", str(exc)))
             except artifacts.ArtifactError as exc:
                 typer.echo(f"error: {exc}", err=True)
                 raise typer.Exit(2) from exc
-            findings = findings + reconcile_report(run_report, records)
+            if evidence is not None:
+                inspection = evidence.manifest_inspection
+                findings.extend(evidence.findings)
+                findings.extend(manifest_inspection_findings(inspection))
+                root_findings = check_manifest_root(inspection.chain, corpus_root)
+                findings.extend(root_findings)
+                findings.extend(check_lifecycle(inspection.chain))
+                if not root_findings:
+                    unsafe = frozenset(item.action_id for item in inspection.findings)
+                    findings.extend(check_outputs(inspection.chain, unsafe_action_ids=unsafe))
+                    findings.extend(check_backups(inspection.chain, unsafe_action_ids=unsafe))
+        if plan_path is not None and evidence is not None:
+            findings.extend(check_plan_coverage(evidence).findings)
+        if out_path is not None:
+            result_report = VerifyReport(
+                run_id=run_id,
+                generated_by=f"docmend {__version__}",
+                verified_path=str(path),
+                source_root=str(corpus_root),
+                started_at=started_at,
+                completed_at=datetime.now(UTC).isoformat(),
+                inputs=list(evidence.inputs) if evidence is not None else [],
+                checked_files=inventory.totals.files,
+                findings=[
+                    VerifyFindingRecord(
+                        path=item.path,
+                        check=item.check,
+                        detail=item.detail,
+                    )
+                    for item in findings
+                ],
+                clean=not findings,
+            )
+            try:
+                artifacts.write_verify_report(result_report, out_path)
+            except artifacts.ArtifactError as exc:
+                typer.echo(f"error: {exc}", err=True)
+                raise typer.Exit(2) from exc
+    finally:
+        if run_lock is not None:
+            run_lock.release()
+
     for finding in findings:
         typer.echo(f"finding [{finding.check}] {finding.path}: {finding.detail}")
     typer.echo(f"verify: {inventory.totals.files} files checked, {len(findings)} findings")

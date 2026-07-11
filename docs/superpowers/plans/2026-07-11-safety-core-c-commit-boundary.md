@@ -10,7 +10,9 @@
 
 **Revision note (round 3):** revised per plan-review round 3, all findings verified. CR-002: `ManifestHeader`/`ManifestRecord` become `frozen=True` pydantic models (the writer already stamps via `model_copy`, so producers are unaffected) with an inner-field-mutation regression, and the tuple migration enumerates ALL construction sites (`manifest.py:494/690/703`, `tests/helpers/manifest2.py`, `tests/test_restore.py:66`). CR-003: `guarded_replace` gains a `survivor` parameter verified INSIDE the primitive, immediately before publish — the earlier survivor checks ran before staging, leaving the survivor swappable during it. CR-004: `_rollback_link`/`_undo_publish` check containment FIRST (an identity observation through an interposed parent proves nothing about the real location), `_observe_name` returns a four-state observation so permission/IO errors are "unobservable" (unproven) rather than collapsing into absence, and `abort_staged` gains an optional containment root. CR-006: the round-2 default-discovery claim was inverted a second way — list flags REPLACE the config set, so defaults can re-license `.docmend/**` an operator-replaced set had withdrawn; the fix persists the apply run's effective excludes in the manifest 2.0 header (pre-release additive field) and the restore factory licenses against the RECORDED excludes, with a change-control step for the wire-model addition. CR-NEW-001: adjudication's `_observe` becomes descriptor-bound (identity and bytes from one object) and `_verified_unlink` verifies the required survivor before destroying anything. CR-NEW-004: `publish_staged`'s internal cleanup paths route through identity-checked removal (blind `tmp.unlink` could delete an interloper after a staged-name race). CR-NEW-005: the dry-run report publishes no-clobber (adr-0021: a dry run leaves prior artifacts untouched). CR-NEW-006: the sealed constructor gives `_attest` a `None` default so the sealing `TypeError` — not Python argument binding — is what rejects direct construction. Also fixed: the plan document itself now passes the repo's markdownlint (MD049 underscore emphasis) and Prettier.
 
-**Architecture:** One new module `src/docmend/writer/commit.py` owns the commit boundary (adr-0020): `bind_file` reads an object's bytes exactly once through an `O_RDONLY | O_NOFOLLOW | O_NONBLOCK` descriptor and captures its identity; `check_bound` is the at-commit half — `lstat` (never following symlinks), exact `(st_dev, st_ino)` compare, and a full-path containment re-resolve — called immediately before each pathname mutation step; `check_destination` is its absent-name counterpart; `guarded_replace` is the stage-first replacement primitive. The same module owns `WriteSafetyContext`, the sealed capability (adr-0004 amendment) whose only factories acquire the run lock, evaluate the apply gate / perform the restore chain preflight, run the artifact destination guard, bind an immutable attestation of exactly what they authorized (model digests included), and stay held through manifest close and report publication. `writer/apply.py`, `restore.py`, and `writer/adjudicate.py` consume both halves; `cli.py` rewires to the split entrypoints. Plan B already persists the identities in intent records — this plan hardens their _capture_ (descriptor-bound, was `os.stat` by design) and adds the _at-commit re-checks_.
+**Revision note (round 4):** revised per plan-review round 4, all findings verified (the nested-model assignment reproduced live). CR-002: immutability goes to the leaves — `ObjectIdentity`/`PriorAttempt` (lineage.py) and `ErrorInfo` (report.py) gain `frozen=True`, making the chain deep-frozen through every nesting level; and the apply capability now CARRIES deep copies of the gated `Plan`/`DocmendConfig` (exact symmetry with restore's `safety.chain`) — `execute_plan` consumes `safety.plan`/`safety.config`, so post-confirmation mutation of caller-held objects is structurally unreachable and the round-2 digest machinery is deleted as redundant. CR-004: the `rename_and_rewrite` source-swap outcome is corrected to a DANGLING intent (the interloper destroyed the original's name — pre-action state is unprovable even after our publish rolls back; the round-3 test premise of a `failed` closure violated the plan's own terminal-honesty rule), with the survivor-lost case split by clobber shape; and both engines now pass `root_resolved` to `abort_staged`. CR-006: the `effective_excludes` wire-model addition gains an explicit OWNER-APPROVAL CHECKPOINT — Task 8 must not begin until the owner signs off. CR-NEW-001: `_verified_unlink` re-authorizes the pathname with `check_bound` immediately before the unlink (the descriptor observation closes before deletion), and the survivor is verified after the long target read, containment included. CR-NEW-004: `stage_bytes` becomes descriptor-clean — `os.fchmod` on the open descriptor replaces the pathname `chmod`, the exclusively-created inode's identity is captured at open, and failure cleanup is identity-checked. CR-NEW-007: `Literal` added to Task 1's typing import (the plan's own code failed to import). CR-NEW-008: the entire `effective_excludes` production moves INTO Task 8 (model + schema + both current header constructors + fixtures) so the task gates green atomically; its commit block stages every file the task touches; `read_records`' annotation follows the tuple migration.
+
+**Architecture:** One new module `src/docmend/writer/commit.py` owns the commit boundary (adr-0020): `bind_file` reads an object's bytes exactly once through an `O_RDONLY | O_NOFOLLOW | O_NONBLOCK` descriptor and captures its identity; `check_bound` is the at-commit half — `lstat` (never following symlinks), exact `(st_dev, st_ino)` compare, and a full-path containment re-resolve — called immediately before each pathname mutation step; `check_destination` is its absent-name counterpart; `guarded_replace` is the stage-first replacement primitive. The same module owns `WriteSafetyContext`, the sealed capability (adr-0004 amendment) whose only factories acquire the run lock, evaluate the apply gate / perform the restore chain preflight, run the artifact destination guard, bind an immutable attestation of exactly what they authorized — carrying deep copies of the gated plan/config and the validated chain — and stay held through manifest close and report publication. `writer/apply.py`, `restore.py`, and `writer/adjudicate.py` consume both halves; `cli.py` rewires to the split entrypoints. Plan B already persists the identities in intent records — this plan hardens their _capture_ (descriptor-bound, was `os.stat` by design) and adds the _at-commit re-checks_.
 
 **Tech Stack:** Python 3.14 (PEP 758 in the codebase), pydantic v2 strict models, typer CLI, pytest + coverage, `os.open`/`os.fstat`/`os.lstat` POSIX identity primitives.
 
@@ -34,7 +36,7 @@
 
 | File | Role in this plan |
 | --- | --- |
-| `src/docmend/writer/commit.py` (create) | Commit boundary: `InterferenceError` (with `intermediate` flag), `BoundFile`, `bind_file`, `check_bound`, `check_destination`, `guarded_replace`, `CommitHooks`, `guarded_rename_no_clobber`; F8: `WriteSafetyContext` (attested with model digests), `SafetyRefusedError` family, `apply_write_context`, `restore_write_context` |
+| `src/docmend/writer/commit.py` (create) | Commit boundary: `InterferenceError` (with `intermediate` flag), `BoundFile`, `bind_file`, `check_bound`, `check_destination`, `guarded_replace`, `CommitHooks`, `guarded_rename_no_clobber`; F8: `WriteSafetyContext` (attested; carries the gated plan/config copies and the deep-frozen chain), `SafetyRefusedError` family, `apply_write_context`, `restore_write_context` |
 | `src/docmend/writer/atomic.py` (modify) | `abort_staged` becomes identity-checked (CR-004) |
 | `src/docmend/writer/apply.py` (modify) | Source/target binding, action-time overwrite invariant, per-step checks, boundary-checked rollback, hooks threading, `preview_plan`/`execute_plan` split via shared `_run_plan` |
 | `src/docmend/writer/adjudicate.py` (modify) | `finish_remaining` mutations routed through the boundary — containment, hooks, `guarded_replace` (CR-NEW-001) |
@@ -556,7 +558,7 @@ import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
 from docmend.lineage import ObjectIdentity
 from docmend.writer.atomic import (
@@ -852,6 +854,30 @@ Also in `atomic.py` (review round 3, CR-NEW-004): `publish_staged`'s three inter
 ```
 
 (with the post-link arm keeping its `contextlib.suppress(OSError)` wrapper and its existing lossless-residue comment). A staged-name replacement followed by a publication failure now leaves the interloper's file intact — the residue is ours to leak, never theirs to delete.
+
+`stage_bytes` itself becomes descriptor-clean (review round 4, CR-NEW-004): it currently `tmp.chmod(...)` by PATHNAME after the descriptor closes and blind-unlinks the temp on failure — both blind pathname mutations inside the module that defines the discipline. Rework its body:
+
+```python
+    st = os.fstat(fd)  # OUR exclusively-created inode, identified before any write
+    staged = StagedWrite(tmp=tmp, identity=ObjectIdentity(dev=st.st_dev, ino=st.st_ino))
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            if mode is not None:
+                # Descriptor-bound (CR-NEW-004 round 4): a pathname chmod
+                # after close would follow a swapped name onto someone
+                # else's object.
+                os.fchmod(fh.fileno(), mode & 0o7777)
+            os.fsync(fh.fileno())
+    except OSError as exc:
+        abort_staged(staged)  # identity-checked; a raced name is never deleted
+        msg = f"{target}: cannot stage write ({exc.strerror or exc})"
+        raise WriteError(msg) from exc
+    return staged
+```
+
+(The `fd = -1` handoff bookkeeping of the current implementation goes away — `os.fdopen` owns the descriptor from construction, and `abort_staged` operates by name+identity. Add the regression: fail the staging write after a name swap via a monkeypatched `os.fsync`, assert the interloper's file survives; plus a mode test proving `fchmod` applied the mode before any failure window.)
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1369,7 +1395,7 @@ Run: `uv run pytest tests/test_apply.py -k CommitBoundaryRaces -q` Expected: FAI
         # DANGLING (adjudication owns the recorded intermediate) and the
         # action reports failed.
         if staged is not None:
-            abort_staged(staged)  # identity-checked; a raced temp survives
+            abort_staged(staged, root_resolved=root_resolved)  # identity+containment-checked
         if exc.intermediate:
             log.error(
                 "commit interference with unproven rollback; intent left for adjudication",
@@ -1421,18 +1447,19 @@ git commit -m "feat(apply): at-commit identity checks for rewrite/rename — sur
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-    def test_rename_and_rewrite__source_swapped_in_unlink_window__publish_rolled_back(
+    def test_rename_and_rewrite__source_swapped_in_unlink_window__rolled_back_dangling(
         self, tmp_path: Path
     ) -> None:
         """The target is already published when the source check refuses:
-        the publish must roll back (boundary-checked), the interloper's file
-        at the source name must survive, and the intent closes failed —
-        pre-action state proven. NOTE the last-copy distinction (CR-004
-        round 2): a RENAME's target link is the original inode and is never
-        removed when the source is lost; a rename_and_rewrite's published
-        target is the staged OUTPUT — the original's bytes are independently
-        preserved (backup or re-derivable), so removing our output IS the
-        rollback."""
+        our OUTPUT rolls back (boundary-checked — a rename_and_rewrite's
+        published target is the staged output, not the original inode, so
+        removing it is honest cleanup of our own object), and the
+        interloper's file at the source name survives. But the interloper
+        DESTROYED the original's name — the pre-action state is NOT provable
+        (review round 4, CR-004: the round-3 `failed` closure here violated
+        the terminal-honesty rule) — so the intent stays DANGLING and the
+        action reports failed; a later resume adjudicates from disk (source
+        identity mismatch → external-interference verdict, nothing touched)."""
         root, plan, config, options, manifest_path = self._planned_rename_rewrite(tmp_path)
         action = plan.actions[0]
         source = root / action.path
@@ -1444,19 +1471,24 @@ git commit -m "feat(apply): at-commit identity checks for rewrite/rename — sur
                 source.write_bytes(b"interloper")
 
         report = self._execute(plan, config, options, manifest_path, hooks=CommitHooks(swap))
-        assert report.outcomes[0].skip_reason == "external-interference"
+        outcome = report.outcomes[0]
+        assert outcome.status == "failed"
+        assert outcome.error is not None and outcome.error.error_class == "ERR-002"
         assert source.read_bytes() == b"interloper"
-        assert not target.exists()  # rolled back
-        assert [r["result"] for r in read_records(manifest_path)] == ["intent", "failed"]
+        assert not target.exists()  # our output rolled back
+        assert [r["result"] for r in read_records(manifest_path)] == ["intent"]  # dangling
 
-    def test_rename_and_rewrite__published_target_replaced_before_unlink__dangling_intent(
+    def test_rename_and_rewrite__published_target_replaced_before_unlink__proven_failed(
         self, tmp_path: Path
     ) -> None:
-        """CR-003 + CR-004 composed: the published name was replaced by an
-        interloper before the source unlink. Their object must not be
-        touched (rollback would destroy it), the source is retained, and —
-        because our published copy's fate is not provably pre-action — the
-        intent stays DANGLING for adjudication; the action reports failed."""
+        """CR-003 + CR-004 (semantics settled round 4): the published name
+        was replaced by an interloper before the source unlink. Their object
+        must not be touched and the source is retained. NO-CLOBBER shape:
+        the source intact IS the pre-action state of our objects (our
+        replaced output is re-derivable from it; the foreign file occupies a
+        name we never owned pre-action) — consistent with the accepted
+        pure-rename survivor-lost rule, the intent closes with a failed
+        terminal and the report skips external-interference."""
         root, plan, config, options, manifest_path = self._planned_rename_rewrite(tmp_path)
         action = plan.actions[0]
         source = root / action.path
@@ -1468,12 +1500,21 @@ git commit -m "feat(apply): at-commit identity checks for rewrite/rename — sur
                 target.write_bytes(b"interloper")
 
         report = self._execute(plan, config, options, manifest_path, hooks=CommitHooks(swap))
-        outcome = report.outcomes[0]
-        assert outcome.status == "failed"
-        assert outcome.error is not None and outcome.error.error_class == "ERR-002"
-        assert source.exists()  # retained — last copy we own
+        assert report.outcomes[0].skip_reason == "external-interference"
+        assert source.exists()  # retained — the original, intact
         assert target.read_bytes() == b"interloper"  # theirs, untouched
-        assert [r["result"] for r in read_records(manifest_path)] == ["intent"]  # dangling
+        assert [r["result"] for r in read_records(manifest_path)] == ["intent", "failed"]
+
+    def test_rename_and_rewrite_clobber__published_target_replaced__dangling(
+        self, tmp_path: Path
+    ) -> None:
+        """CLOBBER shape of the same window (CR-004 round 4): the OLD target
+        we replaced cannot come back — its name is foreign now and its bytes
+        live only in the backup — so pre-action is unprovable and the intent
+        stays DANGLING; the action reports failed."""
+        ...  # overwrite policy with strategy; hook at "unlink" swaps the
+        # published target; assert outcome failed ERR-002, source retained,
+        # interloper untouched, manifest == [intent] (dangling).
 
     def test_dangling_interference_intent__resume_adjudicates_and_leaves_it_dangling(
         self, tmp_path: Path
@@ -1577,19 +1618,30 @@ The arm:
             hooks.before_step("unlink", source)
             try:
                 check_bound(source, bound.identity, root_resolved=root_resolved)
+            except InterferenceError as source_exc:
+                # CR-004 round 4: the interloper destroyed the ORIGINAL's
+                # name — even after our output rolls back cleanly, the
+                # pre-action state (our source at that name) is unprovable.
+                # Roll our output back (it is the staged OUTPUT, not the
+                # original inode — removing it is honest cleanup of our own
+                # object), then leave the intent DANGLING either way.
+                _undo_publish(target, staged.identity, target_bound, root_resolved)
+                msg = f"{source_exc}; publish rolled back, original's pre-action state unprovable"
+                raise InterferenceError(msg, intermediate=True) from source_exc
+            try:
                 # Survivor check (CR-003): the published output must still be
                 # OURS before the source name disappears.
                 check_bound(target, staged.identity, root_resolved=root_resolved)
-            except InterferenceError as check_exc:
-                # Last-copy note (CR-004 rd 2): unlike a pure RENAME, the
-                # published target here is our staged OUTPUT, not the
-                # original inode — the original's bytes are independently
-                # preserved (source name, backup, or re-derivable), so
-                # removing our output IS the honest rollback.
-                if _undo_publish(target, staged.identity, target_bound, root_resolved):
-                    raise
-                msg = f"{check_exc}; publish rollback unproven"
-                raise InterferenceError(msg, intermediate=True) from check_exc
+            except InterferenceError as survivor_exc:
+                # Our output was replaced; the source is intact. No-clobber:
+                # that IS the pre-action state of our objects — failed
+                # terminal legal. Clobber: the OLD target we replaced cannot
+                # come back (its name is foreign now; its bytes live in the
+                # backup) — unprovable, dangling (CR-004 round 4).
+                if clobber:
+                    msg = f"{survivor_exc}; clobbered target unrecovered at a foreign name"
+                    raise InterferenceError(msg, intermediate=True) from survivor_exc
+                raise
             try:
                 source.unlink()
             except OSError as unlink_exc:
@@ -1774,7 +1826,7 @@ Run: `uv run pytest tests/test_restore.py -k RestoreCommitBoundary -q` Expected:
                 target.unlink()
     except InterferenceError as exc:
         if staged is not None:
-            abort_staged(staged)
+            abort_staged(staged, root_resolved=root_resolved)  # CR-004 rd 4
         if mutated or exc.intermediate:
             # Terminal-honesty (CR-004): a step landed and the loss-proof
             # ordering guarantees a SUPERSET on disk — the intent stays
@@ -1802,7 +1854,7 @@ Run: `uv run pytest tests/test_restore.py -k RestoreCommitBoundary -q` Expected:
         )
     except (WriteError, OSError, FileExistsError) as exc:
         if staged is not None:
-            abort_staged(staged)
+            abort_staged(staged, root_resolved=root_resolved)  # CR-004 rd 4
         if mutated:
             # Same honesty rule for environmental failures after the first
             # landed step: superset on disk, intent dangling.
@@ -1936,6 +1988,12 @@ def _verified_unlink(
     document — if that other name was swapped since adjudication, this
     unlink would remove the last valid copy."""
     hooks.before_step("unlink", path)
+    observed = _observe(path)  # descriptor-bound: identity+bytes of ONE object
+    if not _is(observed, identity, sha256):
+        msg = f"{path}: object changed between adjudication and unlink; refusing"
+        raise WriteError(msg)
+    # Survivor AFTER the (potentially long) target read and immediately
+    # before the destructive step, containment included (CR-NEW-001 rd 4).
     if survivor is not None:
         survivor_path, survivor_identity, survivor_sha = survivor
         if not _is(_observe(survivor_path), survivor_identity, survivor_sha):
@@ -1944,13 +2002,20 @@ def _verified_unlink(
                 f"and finish; refusing to unlink {path}"
             )
             raise WriteError(msg)
-    observed = _observe(path)
-    if not _is(observed, identity, sha256):
-        msg = f"{path}: object changed between adjudication and unlink; refusing"
-        raise WriteError(msg)
-    if not path.resolve().is_relative_to(root_resolved):
-        msg = f"{path}: no longer resolves inside {root_resolved}; refusing finish"
-        raise WriteError(msg)
+        assert survivor_identity is not None  # finish rows always recorded it
+        try:
+            check_bound(survivor_path, survivor_identity, root_resolved=root_resolved)
+        except InterferenceError as exc:
+            raise WriteError(str(exc)) from exc
+    # Re-authorize the PATHNAME at the deletion instant (CR-NEW-001 rd 4):
+    # the descriptor observation above closed — the name can have been
+    # repointed since. check_bound lstat-compares and re-resolves
+    # containment; the lstat-to-unlink interval is the adr-0020 residual.
+    assert identity is not None  # _is above proved the identity predicate rows
+    try:
+        check_bound(path, identity, root_resolved=root_resolved)
+    except InterferenceError as exc:
+        raise WriteError(str(exc)) from exc
     try:
         path.unlink()
     except OSError as exc:
@@ -2003,16 +2068,18 @@ git commit -m "feat(adjudicate): finish-remaining mutations through the commit b
 
 - Modify: `src/docmend/writer/commit.py` (append the F8 half)
 - Modify: `src/docmend/writer/manifest.py` — deep immutability (review round 3, CR-002): `ManifestHeader` and `ManifestRecord` gain `frozen=True` in their `ConfigDict` (safe: `ManifestWriter.append` already stamps via `model_copy`, and every terminal producer uses `model_copy(update=...)`); `ManifestSet.records` becomes `tuple[ManifestRecord, ...]` and `ManifestChain.sets` becomes `tuple[ManifestSet, ...]` at EVERY construction site — `read_manifest_set` (manifest.py:494), the empty chain (manifest.py:690), `_order_chain`'s result (manifest.py:703), `tests/helpers/manifest2.chain_of`, and `tests/test_restore.py:66`. `ManifestHeader` also gains `effective_excludes: tuple[str, ...]` (CR-006, below).
+- Modify: `src/docmend/lineage.py` (`ObjectIdentity`/`PriorAttempt` gain `frozen=True`) and `src/docmend/report.py` (`ErrorInfo` gains `frozen=True`) — round 4, CR-002: immutability to the leaves
+- Modify: `src/docmend/writer/apply.py` + `src/docmend/restore.py` (the two current `ManifestHeader(...)` constructions gain `effective_excludes` — producers in the SAME task, round 4 CR-NEW-008)
 - Modify: `src/docmend/schemas/manifest-header.schema.json` — required array field `effective_excludes` (pre-release 2.0 extension: the clean-break format has never shipped, so no version bump)
-- Modify: `docs/superpowers/specs/2026-07-10-safety-core-remediation-design.md` + `docs/adr/adr-0019-manifest-2-recovery-model.md` (change-control step below)
-- Test: `tests/unit/writer/test_commit.py`, `tests/unit/writer/test_manifest.py`
+- Modify: `docs/superpowers/specs/2026-07-10-safety-core-remediation-design.md` + `docs/adr/adr-0019-manifest-2-recovery-model.md` (change-control step below, behind the owner-approval checkpoint)
+- Test: `tests/unit/writer/test_commit.py`, `tests/unit/writer/test_manifest.py`, `tests/test_restore.py`
 
 **Interfaces:**
 
 - Consumes: `docmend.lock` (`acquire`, `LockHeldError`), `docmend.writer.gate` (`ApplyOptions`, `evaluate_gate`, `GateRefusal`), `docmend.artifacts.guard_artifact_destination`, `docmend.writer.manifest` (`ManifestChain`, `read_manifest_chain`, `manifest_sha256`), `docmend.plan.Plan`, `pathspec`, `hashlib`, `pydantic.BaseModel`.
 - Produces (Tasks 9-10 rely on these exactly):
   - `class SafetyRefusedError(Exception)` — base; `LockRefusedError(SafetyRefusedError)`, `DestinationRefusedError(SafetyRefusedError)`, `WriteRefusedError(SafetyRefusedError)` with attribute `refusals: list[GateRefusal]`
-  - `@final class WriteSafetyContext` — sealed AND attested over the ACTUAL gated inputs (CR-002 round 2): methods `confirm_apply(*, plan, config, plan_sha256, source_root, run_id, options, manifest_path) -> None` (recomputes the plan/config model digests from the PRESENTED objects and compares to the digests the factory computed from the objects it GATED), `confirm_restore(*, run_id, manifest_out) -> None`, `confirm_report(report_path: Path) -> None`, property `chain: ManifestChain` (restore contexts only; immutable by the tuple change)
+  - `@final class WriteSafetyContext` — sealed AND attested over the ACTUAL gated inputs (CR-002 rounds 2-4): methods `confirm_apply(*, plan_sha256, run_id, options, manifest_path) -> None` (scalars only), `confirm_restore(*, run_id, manifest_out) -> None`, `confirm_report(report_path: Path) -> None`; properties `plan: Plan` / `config: DocmendConfig` (apply contexts: DEEP COPIES the factory took at gate time — the engine executes these, so caller-side mutation after the ceremony is unreachable) and `chain: ManifestChain` (restore contexts: deep-frozen — tuple containers + frozen models down to `ObjectIdentity`/`PriorAttempt`/`ErrorInfo` leaves)
   - `apply_write_context(plan, config, *, source_root, options, plan_sha256, run_id, manifest_path, report_path, manifest_dir, input_artifacts=(), artifact_root=None, lock_state_dir=None, on_refusal=None) -> Iterator[WriteSafetyContext]` (contextmanager)
   - `restore_write_context(manifest_paths, *, run_id, manifest_out, artifact_root=None, lock_state_dir=None) -> Iterator[WriteSafetyContext]` (contextmanager) — performs the chain preflight ITSELF (CR-002) and licenses the carve-out against the chain root header's RECORDED `effective_excludes` (CR-006 round 3; no caller-supplied exclude exists to disagree with it)
 
@@ -2032,13 +2099,12 @@ class TestWriteSafetyContext:
             leaked.confirm_apply(**self._matching_attestation_kwargs())
 
     def test_attestation_mismatch__each_field_refused(self, tmp_path: Path) -> None:
-        """CR-002: a capability issued for plan/root/run/options/destination
-        A must not authorize B. One factory entry, per-field mismatch probes."""
+        """CR-002: a capability issued for run/options/destination A must
+        not authorize B. One factory entry, per-scalar mismatch probes."""
         with apply_write_context(...) as safety:
             good = self._matching_attestation_kwargs()
             for field, bad in [
                 ("plan_sha256", "sha256:" + "f" * 64),
-                ("source_root", tmp_path / "other-root"),
                 ("run_id", "run_20260711T000000Z_ffffff"),
                 ("options", replace(good["options"], preserved_by="external")),
                 ("manifest_path", tmp_path / "elsewhere.jsonl"),
@@ -2046,20 +2112,23 @@ class TestWriteSafetyContext:
                 with pytest.raises(RuntimeError, match="attestation"):
                     safety.confirm_apply(**{**good, field: bad})
 
-    def test_attestation_binds_the_gated_models_not_a_caller_hash(
+    def test_capability_carries_the_gated_plan__caller_mutation_unreachable(
         self, tmp_path: Path
     ) -> None:
-        """CR-002 round 2: gating benign plan A while declaring plan B's hash
-        must not authorize executing B — the digests are computed from the
-        OBJECTS the factory gated and recomputed from the objects presented
-        at confirm time."""
-        with apply_write_context(plan_a, config, ..., plan_sha256=sha_of_b) as safety:
-            with pytest.raises(RuntimeError, match="attestation"):
-                safety.confirm_apply(plan=plan_b, config=config, plan_sha256=sha_of_b, ...)
+        """CR-002 round 4: the factory deep-copies the plan/config it gated;
+        `safety.plan` is what executes. Mutating the caller-held plan AFTER
+        the ceremony must not reach the attested copy (the round-2/3 digest
+        approach only proved equality at one instant)."""
+        with apply_write_context(plan, config, ...) as safety:
+            plan.actions[0].target_path = "escape.md"  # caller-side mutation
+            assert safety.plan.actions[0].target_path != "escape.md"
+            assert safety.plan is not plan
+            assert safety.config is not config
 
-    def test_attestation_binds_config(self, tmp_path: Path) -> None:
-        ...  # same factory entry; confirm with a config whose collision
-        # policy differs -> RuntimeError("attestation")
+    def test_restore_capability_has_no_plan(self, tmp_path: Path) -> None:
+        with restore_write_context([m1], ...) as safety:
+            with pytest.raises(RuntimeError, match="attestation|command"):
+                _ = safety.plan
 
     def test_confirm_report__bound_to_guarded_destination(self, tmp_path: Path) -> None:
         with apply_write_context(..., report_path=tmp_path / "r.json") as safety:
@@ -2131,6 +2200,14 @@ class TestWriteSafetyContext:
                 safety.chain.sets[0].records[0].target_path = "/elsewhere"  # type: ignore[misc]
             with pytest.raises(ValidationError):
                 safety.chain.sets[0].header.source_root = "/elsewhere"  # type: ignore[misc]
+            # Round 4: frozen must reach the LEAVES — a frozen parent does
+            # not freeze nested models (reproduced on dev).
+            record = safety.chain.sets[0].records[0]
+            assert record.source_identity is not None
+            with pytest.raises(ValidationError):
+                record.source_identity.dev = 99  # type: ignore[misc]
+            with pytest.raises(ValidationError):
+                safety.chain.sets[0].header.prior_attempt.run_id = "run_x"  # type: ignore[union-attr,misc]
 
     def test_restore_factory__locks_chain_root_guards_out_exposes_chain(
         self, tmp_path: Path
@@ -2147,11 +2224,13 @@ Run: `uv run pytest tests/unit/writer/test_commit.py -k WriteSafety -q` Expected
 
 - [ ] **Step 3: Implement**
 
-In `manifest.py` (review round 3, CR-002 + CR-006):
+> **OWNER-APPROVAL CHECKPOINT (review round 4, CR-006): do not begin this task until the owner has approved the `effective_excludes` wire-model addition** (item 3 below plus its design/adr-0019 amendment). It is an additive required field inside the unreleased manifest 2.0 header; everything else in this plan is independent of it, so Tasks 1-7 may proceed while the decision is pending, but Task 8 STOPS here without sign-off.
 
-1. Add `frozen=True` to BOTH `ManifestHeader.model_config` and `ManifestRecord.model_config`. Every producer already writes new state via `model_copy(update=...)` — the writer's stamping included — so this is purely a read-side hardening; a direct field assignment now raises pydantic's frozen-instance `ValidationError`.
-2. Change `ManifestSet.records` to `tuple[ManifestRecord, ...]` and `ManifestChain.sets` to `tuple[ManifestSet, ...]`, wrapping with `tuple(...)` at ALL FIVE construction sites: `read_manifest_set` (line 494), the empty chain (line 690), `_order_chain`'s caller (line 703), `tests/helpers/manifest2.chain_of`, and `tests/test_restore.py:66`.
-3. Add to `ManifestHeader` (CR-006 — consumed by Task 10's restore factory, produced by Task 9's apply header):
+In `manifest.py`, `lineage.py`, and `report.py` (reviews rounds 3-4, CR-002 + CR-006):
+
+1. Add `frozen=True` to `ManifestHeader.model_config` and `ManifestRecord.model_config` — AND to the nested leaf models they embed: `ObjectIdentity` and `PriorAttempt` in `lineage.py`, `ErrorInfo` in `report.py` (round 4: a frozen parent does not freeze its children — `record.source_identity.dev` remained assignable, reproduced live). All five are constructed fresh and never field-assigned anywhere in the tree (the writers stamp via `model_copy`), so this is purely read-side hardening; with every leaf field a primitive, the chain is now deep-frozen at every level.
+2. Change `ManifestSet.records` to `tuple[ManifestRecord, ...]` and `ManifestChain.sets` to `tuple[ManifestSet, ...]`, wrapping with `tuple(...)` at ALL FIVE construction sites: `read_manifest_set` (line 494), the empty chain (line 690), `_order_chain`'s caller (line 703), `tests/helpers/manifest2.chain_of`, and `tests/test_restore.py:66`. Align `tests/helpers/manifest2.read_records`' return annotation with what it now returns (`tuple[ManifestRecord, ...]` — round 4, CR-NEW-008).
+3. Add to `ManifestHeader` (CR-006 — consumed by Task 10's restore factory; produced IN THIS TASK, item 3a, so the task gates green atomically — round 4, CR-NEW-008):
 
 ```python
     # The apply run's EFFECTIVE exclude patterns (adr-0021/plan-C CR-006):
@@ -2168,7 +2247,11 @@ In `manifest.py` (review round 3, CR-002 + CR-006):
         return tuple(value) if isinstance(value, list) else value
 ```
 
-and the matching required array field in `src/docmend/schemas/manifest-header.schema.json`. The manifest 2.0 format has never shipped (the clean break lands with v2.0.0), so this is a pre-release extension of 2.0, not a version bump — Plan B's manifest fixtures (`tests/helpers/manifest2.header_doc`) gain the field with the stock excludes as default. 4. **Change-control step:** append one sentence to the design's manifest 2.0 wire-model section and one to adr-0019's "More Information" ("the header additionally records the run's effective exclude patterns — plan C review CR-006: restore's artifact-destination carve-out must be licensed against the excludes that governed the apply, which per-invocation replacement flags make unreconstructable later"), each with a dated revision-note line. Flagged in the decisions list for owner sign-off — it is an additive wire-model field inside an unreleased format, mirroring the round-2 precedent.
+and the matching required array field in `src/docmend/schemas/manifest-header.schema.json`. The manifest 2.0 format has never shipped (the clean break lands with v2.0.0), so this is a pre-release extension of 2.0, not a version bump — Plan B's manifest fixtures (`tests/helpers/manifest2.header_doc`) gain the field with the stock excludes as default.
+
+Producers land in the SAME task (round 4, CR-NEW-008 — a required field with no producer cannot gate green): the current `execute_plan`'s `ManifestHeader(...)` construction gains `effective_excludes=tuple(config.paths.exclude)` (the engine already holds the config), and `restore.py`'s `run_restore` header construction copies the chain root's: `effective_excludes=root_header.effective_excludes` (a restore run performs no discovery of its own; the license context is the apply's). Task 9's engine split carries both along unchanged.
+
+**Change-control step (owner-approved per the checkpoint above):** append one sentence to the design's manifest 2.0 wire-model section and one to adr-0019's "More Information" ("the header additionally records the run's effective exclude patterns — plan C review CR-006: restore's artifact-destination carve-out must be licensed against the excludes that governed the apply, which per-invocation replacement flags make unreconstructable later"), each with a dated revision-note line.
 
 Append to `src/docmend/writer/commit.py`:
 
@@ -2201,31 +2284,29 @@ class WriteRefusedError(SafetyRefusedError):
 _FACTORY_TOKEN: Final[object] = object()
 
 
-def _model_digest(model: BaseModel) -> str:
-    """Canonical content digest of a pydantic model — what binds the gated
-    plan/config to the executed plan/config (CR-002 round 2). model_dump_json
-    is deterministic for a given model instance's field values."""
-    return hashlib.sha256(model.model_dump_json().encode()).hexdigest()
-
-
 @dataclass(frozen=True)
 class _Attestation:
     """What a capability actually authorized (review CR-002): the mutation
-    entrypoints re-present their inputs and any divergence refuses — a
-    context acquired for run A cannot authorize run B, an apply capability
-    cannot authorize a restore, and gating plan A cannot execute plan B."""
+    entrypoints re-present their scalar inputs and any divergence refuses —
+    a context acquired for run A cannot authorize run B and an apply
+    capability cannot authorize a restore. The gated Plan/DocmendConfig are
+    not compared but CARRIED (round 4): the factory deep-copies them at gate
+    time and the engine consumes `safety.plan`/`safety.config`, in exact
+    symmetry with restore's `safety.chain` — mutating the caller's objects
+    after the ceremony cannot reach what executes (the round-2/3 digest
+    check only proved equality at one instant)."""
 
     command: str  # "apply" | "restore"
     source_root: Path  # resolved
     run_id: str
-    plan_digest: str | None  # _model_digest of the GATED Plan (apply)
-    config_digest: str | None  # _model_digest of the GATED config (apply)
+    plan: Plan | None  # deep copy of the GATED plan (apply)
+    config: DocmendConfig | None  # deep copy of the GATED config (apply)
     plan_sha256: str | None  # the plan ARTIFACT hash the header will carry
     subject_sha256: str | None  # chain tip manifest sha (restore)
     options: ApplyOptions | None
     manifest_path: Path  # resolved; restore: manifest_out
     report_path: Path | None  # resolved (apply)
-    chain: ManifestChain | None  # restore only — tuple-frozen, factory-validated
+    chain: ManifestChain | None  # restore only — deep-frozen, factory-validated
 
 
 @final
@@ -2272,40 +2353,37 @@ class WriteSafetyContext:
     def confirm_apply(
         self,
         *,
-        plan: Plan,
-        config: DocmendConfig,
         plan_sha256: str,
-        source_root: Path,
         run_id: str,
         options: ApplyOptions,
         manifest_path: Path,
     ) -> None:
+        """Scalar confirmation only (round 4): the plan and config are not
+        re-presented — the engine consumes `self.plan`/`self.config`, the
+        deep copies this capability's factory gated."""
         a = self._confirm_active("apply")
-        presented = (
-            _model_digest(plan),
-            _model_digest(config),
-            plan_sha256,
-            source_root.resolve(),
-            run_id,
-            options,
-            manifest_path.resolve(),
-        )
-        issued = (
-            a.plan_digest,
-            a.config_digest,
-            a.plan_sha256,
-            a.source_root,
-            a.run_id,
-            a.options,
-            a.manifest_path,
-        )
+        presented = (plan_sha256, run_id, options, manifest_path.resolve())
+        issued = (a.plan_sha256, a.run_id, a.options, a.manifest_path)
         if presented != issued:
             msg = (
                 "WriteSafetyContext attestation mismatch: this capability was "
-                "issued for a different plan/config/root/run/options/destination "
-                "(F8/CR-002)"
+                "issued for a different run/options/destination (F8/CR-002)"
             )
             raise RuntimeError(msg)
+
+    @property
+    def plan(self) -> Plan:
+        """The GATED plan (apply contexts only): a deep copy taken by the
+        factory, unreachable through any caller-held reference (CR-002 rd 4)."""
+        attest = self._confirm_active("apply")
+        assert attest.plan is not None
+        return attest.plan
+
+    @property
+    def config(self) -> DocmendConfig:
+        attest = self._confirm_active("apply")
+        assert attest.config is not None
+        return attest.config
 
     def confirm_restore(self, *, run_id: str, manifest_out: Path) -> None:
         a = self._confirm_active("restore")
@@ -2377,8 +2455,8 @@ def apply_write_context(
     then stay held through manifest close and report publication (the
     caller finalizes both inside this context; rev 0.26). On gate refusal,
     `on_refusal` runs IN-LOCK (CR-007) before WriteRefusedError raises.
-    The attestation digests are computed from the plan/config objects THIS
-    factory gated (CR-002 round 2)."""
+    The attestation CARRIES deep copies of the plan/config THIS factory
+    gated (CR-002 round 4) — `safety.plan`/`safety.config` are what execute."""
     exclude = PathSpec.from_lines(GitIgnoreSpecPattern, config.paths.exclude)
     for destination in (report_path, manifest_path):
         _guard_or_refuse(
@@ -2408,8 +2486,14 @@ def apply_write_context(
                 command="apply",
                 source_root=source_root.resolve(),
                 run_id=run_id,
-                plan_digest=_model_digest(plan),
-                config_digest=_model_digest(config),
+                # Deep copies at gate time (CR-002 round 4): what the gate
+                # evaluated is what the engine will execute — the caller's
+                # references cannot reach these. One-time cost proportional
+                # to plan size; the opt-in scale lane verifies the NFR-001
+                # budget still holds (the plan is a whole-run artifact by
+                # design, DR-002).
+                plan=plan.model_copy(deep=True),
+                config=config.model_copy(deep=True),
                 plan_sha256=plan_sha256,
                 subject_sha256=None,
                 options=options,
@@ -2473,8 +2557,8 @@ def restore_write_context(
             command="restore",
             source_root=source_root.resolve(),
             run_id=run_id,
-            plan_digest=None,
-            config_digest=None,
+            plan=None,
+            config=None,
             plan_sha256=None,
             subject_sha256=tip.sha256 or manifest_sha256(tip.path),
             options=None,
@@ -2498,8 +2582,14 @@ Run: `uv run pytest tests/unit/writer/test_commit.py tests/unit/writer/test_mani
 
 ```bash
 git add src/docmend/writer/commit.py src/docmend/writer/manifest.py \
-        tests/helpers/manifest2.py tests/unit/writer/test_commit.py
-git commit -m "feat(writer): attested WriteSafetyContext — gated-model digests, immutable chain, factory preflight (F8)"
+        src/docmend/lineage.py src/docmend/report.py \
+        src/docmend/writer/apply.py src/docmend/restore.py \
+        src/docmend/schemas/manifest-header.schema.json \
+        docs/superpowers/specs/2026-07-10-safety-core-remediation-design.md \
+        docs/adr/adr-0019-manifest-2-recovery-model.md \
+        tests/helpers/manifest2.py tests/test_restore.py \
+        tests/unit/writer/test_commit.py tests/unit/writer/test_manifest.py
+git commit -m "feat(writer): attested WriteSafetyContext — carried gated models, deep-frozen chain, factory preflight (F8)"
 ```
 
 ---
@@ -2518,7 +2608,7 @@ git commit -m "feat(writer): attested WriteSafetyContext — gated-model digests
 
 - Produces:
   - `preview_plan(plan, config, *, run_id, plan_ref, started_at, now=..., resume_chain=None, prior_attempt=None) -> Report` — read-only, synthesizes `ApplyOptions(write=False, backup_root=None, preserved_by=None, allow_no_backup=False)` internally; no manifest, no gate, no capability.
-  - `execute_plan(plan, config, *, run_id, plan_ref, plan_sha256, options, manifest_path, started_at, safety: WriteSafetyContext, now=..., resume_chain=None, prior_manifest_sha256=None, prior_attempt=None, hooks=NO_HOOKS) -> Report` — first statement is the attestation confirmation (below), then `if not options.write: raise ValueError("execute_plan is the mutation entrypoint; use preview_plan (F8)")`.
+  - `execute_plan(*, run_id, plan_ref, plan_sha256, options, manifest_path, started_at, safety: WriteSafetyContext, now=..., resume_chain=None, prior_manifest_sha256=None, prior_attempt=None, hooks=NO_HOOKS) -> Report` — NO plan/config parameters (round 4, CR-002): the engine executes `safety.plan`/`safety.config`, the factory's gated deep copies; first statement is the scalar attestation confirmation, then `if not options.write: raise ValueError("execute_plan is the mutation entrypoint; use preview_plan (F8)")`.
   - `tests/helpers/writectx.py: apply_safety(plan, config, *, options, plan_sha256, manifest_path, report_path, run_id, state_dir) -> ContextManager[WriteSafetyContext]`.
 
 - [ ] **Step 1: Write the failing engine tests**
@@ -2531,15 +2621,23 @@ class TestEntrypointSplit:
         with pytest.raises(RuntimeError, match="factory scope"):
             execute_plan(..., safety=safety)
 
-    def test_execute_plan_with_mismatched_plan__attestation_refused(
+    def test_execute_plan_runs_the_gated_copy__not_the_caller_object(
         self, tmp_path: Path
     ) -> None:
-        """CR-002 round 2 at the engine seam: a capability from plan A's
-        ceremony must not execute plan B — even when the caller supplies
-        plan B's artifact hash to BOTH (the model digest catches it)."""
-        with apply_safety(plan_a, ..., plan_sha256=sha_of_b) as safety:
-            with pytest.raises(RuntimeError, match="attestation"):
-                execute_plan(plan_b, ..., plan_sha256=sha_of_b, safety=safety)
+        """CR-002 round 4 at the engine seam: there is no plan parameter to
+        mismatch — the engine executes safety.plan. Mutate the caller-held
+        plan after entering the ceremony (retarget an action at an in-root
+        victim) and prove the run performed the ORIGINAL gated action, not
+        the mutated one."""
+        with apply_safety(plan, config, ...) as safety:
+            victim = root / "victim.md"
+            plan.actions[0].target_path = "victim.md"  # caller-side sabotage
+            report = execute_plan(run_id=RUN, plan_ref=ref, plan_sha256=SHA,
+                                  options=options, manifest_path=mp,
+                                  started_at=TS, safety=safety)
+        assert report.outcomes[0].status == "applied"
+        assert not victim.exists()  # the mutation never reached execution
+        assert (root / original_target).exists()  # the gated action ran
 
     def test_preview_plan__no_lock_no_manifest_no_mutation(self, tmp_path: Path) -> None:
         report = preview_plan(plan, config, run_id=..., plan_ref=..., started_at=...)
@@ -2550,13 +2648,7 @@ class TestEntrypointSplit:
 
 - [ ] **Step 2: Split the engine**
 
-In `apply.py`: rename the current `execute_plan` to `_run_plan(...)` (same parameters plus `hooks`; `manifest_path` becomes `Path | None`, only dereferenced when `options.write and plan.actions` — assert there). `_run_plan`'s `ManifestHeader` construction gains the CR-006 witness field from the config it already holds:
-
-```python
-                effective_excludes=tuple(config.paths.exclude),
-```
-
-and `restore.py`'s `_run_restore` header construction copies the chain root's: `effective_excludes=root_header.effective_excludes` (a restore run performs no discovery of its own; the license context is the apply's). Then:
+In `apply.py`: rename the current `execute_plan` to `_run_plan(...)` (same parameters plus `hooks`; `manifest_path` becomes `Path | None`, only dereferenced when `options.write and plan.actions` — assert there; the `effective_excludes` header stamping landed in Task 8 and rides along). Then:
 
 ```python
 def preview_plan(
@@ -2593,8 +2685,6 @@ def preview_plan(
 
 
 def execute_plan(
-    plan: Plan,
-    config: DocmendConfig,
     *,
     run_id: str,
     plan_ref: ArtifactRef,
@@ -2609,15 +2699,13 @@ def execute_plan(
     prior_attempt: PriorAttempt | None = None,
     hooks: CommitHooks = NO_HOOKS,
 ) -> Report:
-    """The mutation entrypoint (F8): requires the sealed capability and
-    proves it was issued for EXACTLY this plan, config, root, run, options,
-    and manifest destination (CR-002 round 2 — model digests, not caller
-    hashes)."""
+    """The mutation entrypoint (F8): requires the sealed capability, proves
+    it was issued for exactly this run/options/destination, and executes
+    THE CAPABILITY'S plan and config — the deep copies its factory gated
+    (CR-002 round 4). There is no plan parameter to disagree with the gate,
+    in exact symmetry with restore's `safety.chain`."""
     safety.confirm_apply(
-        plan=plan,
-        config=config,
         plan_sha256=plan_sha256,
-        source_root=Path(plan.source_root or ""),
         run_id=run_id,
         options=options,
         manifest_path=manifest_path,
@@ -2625,7 +2713,7 @@ def execute_plan(
     if not options.write:
         msg = "execute_plan is the mutation entrypoint; use preview_plan for dry runs (F8)"
         raise ValueError(msg)
-    return _run_plan(...)  # forward everything
+    return _run_plan(safety.plan, safety.config, ...)  # forward everything else
 ```
 
 - [ ] **Step 3: `write_report` no-clobber passthrough (CR-007)**
@@ -2734,7 +2822,7 @@ Replace cli.py's current lock/gate/execute section (lines 608-670). The CLI-side
                 # the context (it presumes a PASSED gate).
                 ...
                 result = execute_plan(
-                    plan, config, run_id=run_id, plan_ref=plan_ref,
+                    run_id=run_id, plan_ref=plan_ref,
                     plan_sha256=plan_sha, options=options, manifest_path=manifest_path,
                     started_at=started_at, safety=safety,
                     resume_chain=resume_chain,
@@ -2805,11 +2893,11 @@ Mechanical pattern, applied to every direct `execute_plan(...)` call in `tests/t
 # BEFORE
 report = execute_plan(plan, config, run_id=RUN, plan_ref=ref, plan_sha256=SHA,
                       options=options, manifest_path=mp, started_at=TS)
-# AFTER (write runs)
+# AFTER (write runs — no plan/config args: the engine runs safety.plan)
 with apply_safety(plan, config, options=options, plan_sha256=SHA, manifest_path=mp,
                   report_path=tmp_path / "report.json", run_id=RUN,
                   state_dir=tmp_path / "locks") as safety:
-    report = execute_plan(plan, config, run_id=RUN, plan_ref=ref, plan_sha256=SHA,
+    report = execute_plan(run_id=RUN, plan_ref=ref, plan_sha256=SHA,
                           options=options, manifest_path=mp, started_at=TS,
                           safety=safety)
 # AFTER (dry runs)
@@ -2827,7 +2915,9 @@ report = preview_plan(plan, config, run_id=RUN, plan_ref=ref, started_at=TS)
             # The gate has passed (no target existed). NOW the target appears
             # — inside the gate->action window the invariant exists for.
             target.write_bytes(b"late arrival")
-            report = execute_plan(plan, config, ..., safety=safety)
+            report = execute_plan(run_id=RUN, plan_ref=ref, plan_sha256=SHA,
+                                  options=options, manifest_path=mp,
+                                  started_at=TS, safety=safety)
         assert report.outcomes[0].skip_reason == "collision-unpreserved"
 ```
 
@@ -3000,7 +3090,7 @@ Under `## [Unreleased]`, update the intro line to "plans A, B and C of four" / "
 - **Overwrite preservation is an action-time invariant (DMR-07):** a target discovered at action time is clobbered only under an active byte-preserving strategy and is backed up through its own descriptor with an identity check immediately before `os.replace`; a target appearing later is published no-clobber and skipped `collision-unpreserved` — never silently overwritten. The gate's plan-time overwrite check remains as early feedback only.
 - **Failed terminals are proofs (spec §10.4):** a `failed` manifest terminal is appended only when the pre-action state is proven — rollbacks are themselves identity-checked, replacement writes stage first, no rollback ever removes the last surviving name of a validated object, and an unprovable intermediate keeps its journal intent for resume/restore adjudication instead of asserting a clean failure.
 - **Post-crash adjudication finishes carry the same boundary:** `finish-remaining` residual steps re-resolve containment at the act instant, use stage-first replacement writes, and preserve the observed object's mode.
-- **Read/write entrypoint split (F8):** `preview_plan`/`preview_restore` are the read-only engines (dry-run behavior unchanged, except a dry run's report now publishes no-clobber — a pre-existing artifact at the destination is preserved, per adr-0021); `execute_plan`/`run_restore` now require a `WriteSafetyContext` — a sealed capability whose only factories acquire the run lock, evaluate the apply gate / perform the restore chain preflight themselves, guard the run's artifact destinations, and attest exactly which plan/config/chain, root, run, options, and destinations they authorized (model digests, not caller-supplied hashes; the validated chain is deep-frozen). Library callers cannot reach corpus mutation without the ceremony, or with a ceremony for different inputs; the CLI's public interface is unchanged.
+- **Read/write entrypoint split (F8):** `preview_plan`/`preview_restore` are the read-only engines (dry-run behavior unchanged, except a dry run's report now publishes no-clobber — a pre-existing artifact at the destination is preserved, per adr-0021); `execute_plan`/`run_restore` now require a `WriteSafetyContext` — a sealed capability whose only factories acquire the run lock, evaluate the apply gate / perform the restore chain preflight themselves, guard the run's artifact destinations, and attest exactly which plan/config/chain, root, run, options, and destinations they authorized — the engines execute the capability's own deep copies of the gated plan and config, and the validated chain is deep-frozen to its leaves. Library callers cannot reach corpus mutation without the ceremony, or with a ceremony for different inputs; the CLI's public interface is unchanged.
 - **The manifest header records the run's effective excludes:** restore's artifact-destination carve-out is licensed against the excludes that governed the APPLY run, read from the chain root header — per-invocation replacement flags made the apply-time exclude set unreconstructable by any later config load (adr-0021's wholesale-withdrawal clause).
 - A gate-refused `apply` publishes its refusal report inside the run lock and never replaces a pre-existing report artifact.
 - New skip reasons: `external-interference`, `collision-unpreserved`. No new exit codes; no schema version changes (the report schema's `skip_reason` is an open string).
@@ -3052,10 +3142,10 @@ git commit -m "docs(spec): §17.3 traceability sync for plans A-C (review CR-009
 ## Self-Review Notes (design-coverage check)
 
 - Design §Commit Boundary F2/F3 → Tasks 1-6; the strategy re-check closes the gate→action window (CR-001) and the migrated test provably exercises it (Task 9). Residual-window statement → Task 11 + `commit.py` docstring. Deterministic hooks for every listed window plus rounds 1-2 additions → mapping table in File Structure.
-- Design §F8 → Tasks 8-10 — the capability attests the GATED models by digest (CR-002 round 2), the restore preflight is factory-owned with a tuple-frozen chain, and adjudication's finish path (invoked by both gated engines) carries the same boundary (CR-NEW-001), so no mutation surface remains outside adr-0020's checks: live commits (Tasks 2-6), rollbacks (Tasks 1/5), staged-temp cleanup (Task 1), and adjudicated finishes (Task 7).
+- Design §F8 → Tasks 8-10 — the capability CARRIES the gated models (deep copies, CR-002 round 4), the restore preflight is factory-owned with a deep-frozen chain (frozen to the ObjectIdentity/PriorAttempt/ErrorInfo leaves), and adjudication's finish path (invoked by both gated engines) carries the same boundary (CR-NEW-001), so no mutation surface remains outside adr-0020's checks: live commits (Tasks 2-6), rollbacks (Tasks 1/5), staged-temp cleanup (Task 1), and adjudicated finishes (Task 7).
 - adr-0020 Confirmation list: every named race test exists; the same-bytes/different-inode probes have live-window counterparts; the dangling-intent → resume-adjudication composition test reflects the ACTUAL interference contract (no closure terminal — CR-NEW-002).
 - adr-0021's exclusion-removed rejection test exists at the restore seam (Task 10), now against the RECORDED header excludes (round 3).
 - Round-3 destructive-step audit: every destroy-or-replace now verifies (a) the destroyed object, (b) containment at the act instant, and (c) the survivor that makes destruction safe — live commits (`guarded_rename_no_clobber`, `guarded_replace(survivor=...)`), rollbacks (containment-first, four-state observation, unobservable ⇒ unproven), staged-temp cleanup (identity-checked in `abort_staged` AND inside `publish_staged`'s own failure paths), and adjudicated finishes (`_verified_unlink(survivor=...)`, descriptor-bound `_observe`).
 - Already landed during review (not plan tasks): the chain validator's standalone-failed rejection — a live Plan B defect making any run with a pre-mutation failure unresumable — fixed as `8c2d5f4` with chain + e2e regressions and the design's lifecycle sentence disambiguated (CR-NEW-002).
-- Deliberate decisions for the reviewer: (1) `WriteSafetyContext` lives in `writer/commit.py` (one new module, per the design's file map); (2) the action-time strategy re-check fires on write runs only — preview options are synthesized without the operator's strategy flags (Task 3 comment); (3) restore's write path parses the chain twice (CLI messaging + factory preflight) — the price of an unforgeable validated-chain capability; (4) preview keeps today's CLI-side locking per F8's "current lock semantics"; (5) `_undo_publish`/`guarded_replace` prove bytes+mode, not inode — `os.replace` cannot resurrect an inode; the recorded backup carries the recovery contract; (6) restore's carve-out excludes come from the chain root header's recorded `effective_excludes` (CR-006 round 3) — an additive field in the unreleased manifest 2.0 header, with a design/adr-0019 amendment step flagged for owner sign-off (Task 8); no restore CLI surface is added (CR-NEW-003); (7) the rename-kind last-copy rule vs the rename_and_rewrite rollback distinction: a rename's target link IS the original inode (never removable when the source is lost), while a rename_and_rewrite's published target is the staged OUTPUT whose source-side original is independently preserved — stated where the code diverges (Tasks 4/5).
-- Type-consistency: primitives' names/signatures identical across Tasks 1-7; `confirm_apply(plan=, config=, ...)`/`confirm_restore`/`confirm_report`/`safety.chain` across 8-10; `apply_safety`/`restore_safety` across 9-10; `plan_sha256` threads factory → engine → header as one value, with the model digests carrying the actual-object binding.
+- Deliberate decisions for the reviewer: (1) `WriteSafetyContext` lives in `writer/commit.py` (one new module, per the design's file map); (2) the action-time strategy re-check fires on write runs only — preview options are synthesized without the operator's strategy flags (Task 3 comment); (3) restore's write path parses the chain twice (CLI messaging + factory preflight) — the price of an unforgeable validated-chain capability; (4) preview keeps today's CLI-side locking per F8's "current lock semantics"; (5) `_undo_publish`/`guarded_replace` prove bytes+mode, not inode — `os.replace` cannot resurrect an inode; the recorded backup carries the recovery contract; (6) restore's carve-out excludes come from the chain root header's recorded `effective_excludes` (CR-006 round 3) — an additive field in the unreleased manifest 2.0 header behind a HARD owner-approval checkpoint at the top of Task 8 (round 4: Tasks 1-7 may proceed while the decision is pending; Task 8 stops without sign-off); no restore CLI surface is added (CR-NEW-003); (6a) the FACTORY deep-copies the gated plan/config once per write run — cost proportional to plan size, with the opt-in scale lane verifying NFR-001 still holds (round 4, CR-002); (7) the rename-kind last-copy rule vs the rename_and_rewrite rollback distinction: a rename's target link IS the original inode (never removable when the source is lost), while a rename_and_rewrite's published target is the staged OUTPUT whose source-side original is independently preserved — stated where the code diverges (Tasks 4/5).
+- Type-consistency: primitives' names/signatures identical across Tasks 1-7; `confirm_apply(plan_sha256=, run_id=, options=, manifest_path=)`/`confirm_restore`/`confirm_report`/`safety.plan`/`safety.config`/`safety.chain` across 8-10; `apply_safety`/`restore_safety` across 9-10; `plan_sha256` threads factory → engine → header as one value, with the capability-carried deep copies making the gated-object binding structural rather than compared.

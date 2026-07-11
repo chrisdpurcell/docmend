@@ -37,6 +37,7 @@ from pathspec.patterns.gitignore.spec import GitIgnoreSpecPattern
 from docmend.inventory import Inventory
 from docmend.plan import Plan
 from docmend.report import Report
+from docmend.writer.atomic import fsync_dir
 
 # "frontmatter" is the product-document schema (DR-005, adr-0011), not a run
 # artifact — it rides the same registry so its validator is compiled once and
@@ -188,6 +189,10 @@ def write_json_artifact(document: dict[str, object], path: Path) -> None:
     finally:
         if not published:
             tmp.unlink(missing_ok=True)
+    # Same durability rule as writer/atomic.py's publish: the replace is
+    # atomic but not durable until the directory entry itself is synced
+    # (2026-07-10 review, data-schema ISSUE-008).
+    fsync_dir(path.parent)
 
 
 def write_inventory(inventory: Inventory, path: Path) -> None:

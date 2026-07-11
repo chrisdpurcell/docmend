@@ -143,6 +143,31 @@ def test_artifact_staging__randomized_and_retry_safe(tmp_path: Path) -> None:
     assert (dest.stat().st_mode & 0o777) == (0o666 & ~umask)
 
 
+def test_artifact_publish__fsyncs_destination_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-07-10 review, data-schema ISSUE-008 durability half: tmp.replace
+    makes the publish atomic but not durable — the parent directory entry must
+    be fsync'd or a power loss can lose the artifact entirely, diverging from
+    writer/atomic.py's publish (which has always fsync'd the parent)."""
+    import stat as stat_module
+
+    dest = tmp_path / "out.json"
+    dir_stat = tmp_path.stat()
+    synced_dirs: list[tuple[int, int]] = []
+    real_fsync = os.fsync
+
+    def recording_fsync(fd: int) -> None:
+        st = os.fstat(fd)
+        if stat_module.S_ISDIR(st.st_mode):
+            synced_dirs.append((st.st_dev, st.st_ino))
+        real_fsync(fd)
+
+    monkeypatch.setattr(artifacts.os, "fsync", recording_fsync)
+    artifacts.write_json_artifact({"k": "v"}, dest)
+    assert (dir_stat.st_dev, dir_stat.st_ino) in synced_dirs
+
+
 def test_artifact_staging__serialization_failure_leaves_no_residue(tmp_path: Path) -> None:
     """plan-review F4: json.dump can raise TypeError on a non-serializable
     document; cleanup must cover that class too, not only OSError."""

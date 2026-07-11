@@ -16,8 +16,10 @@ import pytest
 import structlog
 from typer.testing import CliRunner
 
+import docmend.cli as cli_module
 from docmend import lock
 from docmend.cli import app
+from docmend.report import Report
 
 runner = CliRunner()
 
@@ -437,3 +439,59 @@ class TestPartialUndoWarning:
 
         assert result.exit_code == 0, result.output
         assert "pure renames" not in result.output
+
+
+class TestApplyArtifactGuard:
+    """rev 0.26 IR-007 / adr-0021 / DMR-02: apply's report path is guarded
+    before the gate, and the report finalizes while the run lock is held."""
+
+    def test_report_inside_corpus__refused_exit_3_before_gate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`apply --report <corpus file>` used to clobber the file even on a
+        dry run and even when the write was later refused (DMR-02 repro)."""
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        make_corpus(corpus)
+        plan_path = _make_plan(corpus)
+        victim = corpus / "b.md"
+        before = victim.read_bytes()
+        result = runner.invoke(app, ["apply", str(plan_path), "--report", str(victim)])
+        assert result.exit_code == 3
+        assert "artifact-destination" in result.output
+        assert victim.read_bytes() == before
+
+    def test_write__report_published_inside_run_lock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """rev 0.26: report finalization happens while the run lock is held,
+        so a run's artifacts and corpus effects commit under one coordination
+        boundary. Spies are installed AFTER plan creation (plan takes its own
+        lock) and the event list starts empty for the apply invocation."""
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        make_corpus(corpus)
+        plan_path = _make_plan(corpus)
+
+        events: list[str] = []
+        real_release = lock.RunLock.release
+        real_write_report = cli_module.artifacts.write_report
+
+        def spy_release(self: lock.RunLock) -> None:
+            events.append("lock-released")
+            real_release(self)
+
+        def spy_write_report(report: Report, path: Path) -> None:
+            events.append("report-written")
+            real_write_report(report, path)
+
+        monkeypatch.setattr(lock.RunLock, "release", spy_release)
+        monkeypatch.setattr(cli_module.artifacts, "write_report", spy_write_report)
+
+        result = runner.invoke(
+            app,
+            ["apply", str(plan_path), "--write", "--backup-dir", str(tmp_path / "bk")],
+        )
+        assert result.exit_code == 0, result.output
+        assert "report-written" in events and "lock-released" in events
+        assert events.index("report-written") < events.index("lock-released")

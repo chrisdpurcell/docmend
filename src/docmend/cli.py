@@ -579,6 +579,12 @@ def apply(
     )
     started_at = now.isoformat()
 
+    _guard_artifact_paths(
+        [report_path, manifest_path],
+        corpus_root=source_root,
+        input_artifacts=[plan_path, *(resume_manifest or [])],
+        config=config,
+    )
     run_lock = _acquire_run_lock_strict(source_root, run_id=run_id, command="apply")
     try:
         if write:
@@ -623,10 +629,13 @@ def apply(
             started_at=started_at,
             resume_records=resume_records,
         )
+        # rev 0.26: the report finalizes under the same run lock as the
+        # mutations it records — a run's artifacts and corpus effects commit
+        # or refuse under one coordination boundary (adr-0004 amendment).
+        artifacts.write_report(result, report_path)
     finally:
         run_lock.release()
 
-    artifacts.write_report(result, report_path)
     totals = result.totals
     typer.echo(f"report: {report_path}")
     # exists() and not just the counts: resume reconciliation can fail actions

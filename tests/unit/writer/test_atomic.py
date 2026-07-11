@@ -245,3 +245,47 @@ def test_staging_name_exhaustion__write_error_original_untouched(
         atomic.atomic_write_bytes(target, b"x")
     assert not target.exists()
     assert residue.read_bytes() == b"stale residue that always collides"
+
+
+class TestStagedWriteApi:
+    """Plan B Task 5 (adr-0019/adr-0020 seam): staging exposes the staged
+    inode's identity BEFORE publication, so the intent record can carry
+    expected_published_identity — atomic publish moves the inode onto the
+    target name, so the identity survives the kill window."""
+
+    def test_stage_bytes__target_untouched_identity_matches_temp(self, tmp_path: Path) -> None:
+        target = tmp_path / "a.md"
+        staged = atomic.stage_bytes(target, b"payload")
+        assert not target.exists()
+        st = staged.tmp.stat()
+        assert (staged.identity.dev, staged.identity.ino) == (st.st_dev, st.st_ino)
+        assert staged.tmp.read_bytes() == b"payload"
+
+    def test_publish_staged__inode_moves_onto_target(self, tmp_path: Path) -> None:
+        target = tmp_path / "a.md"
+        staged = atomic.stage_bytes(target, b"payload")
+        atomic.publish_staged(staged, target)
+        st = target.stat()
+        assert (st.st_dev, st.st_ino) == (staged.identity.dev, staged.identity.ino)
+        assert target.read_bytes() == b"payload"
+
+    def test_publish_staged_no_clobber__refuses_existing_target(self, tmp_path: Path) -> None:
+        target = tmp_path / "a.md"
+        target.write_bytes(b"occupied")
+        staged = atomic.stage_bytes(target, b"payload")
+        with pytest.raises(FileExistsError):
+            atomic.publish_staged(staged, target, clobber=False)
+        assert target.read_bytes() == b"occupied"
+
+    def test_abort_staged__removes_temp(self, tmp_path: Path) -> None:
+        target = tmp_path / "a.md"
+        staged = atomic.stage_bytes(target, b"payload")
+        atomic.abort_staged(staged)
+        assert not staged.tmp.exists()
+        atomic.abort_staged(staged)  # idempotent
+
+    def test_stage_bytes__mode_carried(self, tmp_path: Path) -> None:
+        target = tmp_path / "a.md"
+        staged = atomic.stage_bytes(target, b"payload", mode=0o644)
+        atomic.publish_staged(staged, target)
+        assert target.stat().st_mode & 0o777 == 0o644

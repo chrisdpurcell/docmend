@@ -22,11 +22,26 @@ else in docmend calls os.replace/os.link on library files. Invariants:
 import contextlib
 import os
 import secrets
+from dataclasses import dataclass
 from pathlib import Path
+
+from docmend.lineage import ObjectIdentity
 
 
 class WriteError(Exception):
     """A mutation failed environmentally (ERR-003); the original is intact."""
+
+
+@dataclass(frozen=True)
+class StagedWrite:
+    """A fully written, fsync'd temp file plus its inode identity — captured
+    BEFORE publication so an intent record can carry
+    expected_published_identity (adr-0019/adr-0020 seam): the atomic publish
+    moves this exact inode onto the target name, so the identity is knowable
+    pre-mutation and survives a kill inside the publish window."""
+
+    tmp: Path
+    identity: ObjectIdentity
 
 
 def fsync_dir(path: Path) -> None:
@@ -42,46 +57,52 @@ def fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
-def _write_temp(target: Path, data: bytes, mode: int | None) -> Path:
-    # Randomized per attempt (rev 0.26): a fixed staging name meant a hard
-    # kill's residue blocked every later attempt at the same target with a
-    # spurious O_EXCL failure, and made the staging path predictable to an
-    # interfering process. Residue from a killed attempt is inert; EEXIST on
-    # a candidate is a name collision to retry with a fresh name (bounded so
-    # a pathological directory cannot loop forever), never an environmental
-    # write failure — those propagate as OSError.
+def stage_bytes(target: Path, data: bytes, *, mode: int | None = None) -> StagedWrite:
+    """Write and fsync `data` to a randomized `O_EXCL` sibling of `target`,
+    returning the staged inode's identity. The target itself is untouched.
+
+    Randomized per attempt (rev 0.26): a fixed staging name meant a hard
+    kill's residue blocked every later attempt at the same target with a
+    spurious O_EXCL failure, and made the staging path predictable to an
+    interfering process. Residue from a killed attempt is inert; EEXIST on
+    a candidate is a name collision to retry with a fresh name (bounded so
+    a pathological directory cannot loop forever), never an environmental
+    write failure — those become WriteError.
+    """
     for _ in range(8):
         tmp = target.with_name(f".{target.name}.{secrets.token_hex(4)}.docmend-tmp")
         try:
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except FileExistsError:
             continue
+        except OSError as exc:
+            msg = f"{target}: cannot stage write ({exc.strerror or exc})"
+            raise WriteError(msg) from exc
         break
     else:
-        msg = f"{target}: could not allocate a staging name in 8 attempts"
-        raise OSError(msg)
+        msg = f"{target}: cannot stage write (could not allocate a staging name in 8 attempts)"
+        raise WriteError(msg)
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
+            st = os.fstat(fh.fileno())
         if mode is not None:
             tmp.chmod(mode & 0o7777)
-    except OSError:
-        tmp.unlink(missing_ok=True)
-        raise
-    return tmp
-
-
-def atomic_write_bytes(
-    target: Path, data: bytes, *, mode: int | None = None, clobber: bool = True
-) -> None:
-    """Write `data` to `target` with no partial-write window (NFR-002)."""
-    try:
-        tmp = _write_temp(target, data, mode)
     except OSError as exc:
+        tmp.unlink(missing_ok=True)
         msg = f"{target}: cannot stage write ({exc.strerror or exc})"
         raise WriteError(msg) from exc
+    return StagedWrite(tmp=tmp, identity=ObjectIdentity(dev=st.st_dev, ino=st.st_ino))
+
+
+def publish_staged(staged: StagedWrite, target: Path, *, clobber: bool = True) -> None:
+    """Atomically publish a staged write onto `target` (NFR-002): the staged
+    inode MOVES onto the target name, preserving the identity `stage_bytes`
+    reported. FileExistsError (clobber=False collision race) is deliberately
+    NOT wrapped — the caller maps it to the collision policy."""
+    tmp = staged.tmp
     try:
         if clobber:
             tmp.replace(target)
@@ -105,6 +126,18 @@ def atomic_write_bytes(
         with contextlib.suppress(OSError):
             tmp.unlink()
     fsync_dir(target.parent)
+
+
+def abort_staged(staged: StagedWrite) -> None:
+    """Discard an unpublished staged write (idempotent)."""
+    staged.tmp.unlink(missing_ok=True)
+
+
+def atomic_write_bytes(
+    target: Path, data: bytes, *, mode: int | None = None, clobber: bool = True
+) -> None:
+    """Write `data` to `target` with no partial-write window (NFR-002)."""
+    publish_staged(stage_bytes(target, data, mode=mode), target, clobber=clobber)
 
 
 def link_no_clobber(source: Path, target: Path) -> None:

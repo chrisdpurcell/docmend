@@ -4,7 +4,7 @@ All notable changes to docmend are recorded here. The format follows [Keep a Cha
 
 ## [Unreleased]
 
-Safety-core remediation, plans A and B of four (spec rev 0.26/0.27; 2026-07-10 comprehensive review findings DMR-01..DMR-04; ADRs 0019–0021). Targets the eventual v2.0.0.
+Safety-core remediation, plans A, B and C of four (spec rev 0.26/0.27; 2026-07-10 comprehensive review findings DMR-01..DMR-04 and DMR-06/07; ADRs 0019–0021). Targets the eventual v2.0.0.
 
 ### Changed — manifest 2.0 (plan B, BREAKING)
 
@@ -16,6 +16,17 @@ Safety-core remediation, plans A and B of four (spec rev 0.26/0.27; 2026-07-10 c
 - Reports partition every plan action exactly once: a `fail`-policy abort's unreached actions get an explicit `not-attempted` outcome and totals entry (report schema 2.0).
 - `restore --manifest`/`--run-id` are now repeatable and combinable (a multiply-resumed run restores as one chain); `restore --id` values matching nothing exit 1 with a finding instead of reporting an all-zero success.
 - `scan` and `plan` runs containing watchdog-timeout skips now exit 1 (partial result), matching the unreadable-skip posture.
+
+### Changed — commit boundary (plan C, BREAKING for library callers)
+
+- **Every mutation commits against the object it validated (adr-0020, DMR-06):** apply and restore read each file's bytes exactly once through an `O_NOFOLLOW` descriptor whose `(st_dev, st_ino)` identity is captured and journaled. Immediately before every publish and unlink, the pathname is `lstat`-compared against that identity and containment is re-resolved, including staged temporary files, absent destinations' parent chains, and the survivor required before a destructive second step. Pre-mutation interference skips as `external-interference`; an unprovable post-mutation intermediate retains every possibly-last copy and leaves its intent for adjudication. The `lstat`-to-rename interval remains the stated POSIX residual.
+- **Overwrite preservation is an action-time invariant (DMR-07):** a target discovered at action time is clobbered only under an active byte-preserving strategy and is backed up through its own descriptor with an identity check immediately before replacement. A target appearing later publishes no-clobber and skips as `collision-unpreserved`, never silently overwriting. The gate's plan-time overwrite check remains early feedback.
+- **Failed terminals are proofs (spec §10.4):** a `failed` manifest terminal is appended only when the pre-action state is proven. Rollbacks are identity-checked, replacement writes stage first, no rollback removes the last surviving name of a validated object, and an unprovable intermediate keeps its journal intent for resume or restore adjudication.
+- **Post-crash adjudication uses the same boundary:** `finish-remaining` steps re-resolve containment at the mutation instant, distinguish unobservable names from absence, use stage-first replacement writes, and preserve the mode captured with identity and bytes through one descriptor.
+- **Read/write entrypoint split (F8):** `preview_plan` and `preview_restore` are structurally read-only. `execute_plan` and `run_restore` now require a sealed `WriteSafetyContext` whose factories acquire the canonical run lock, evaluate the apply gate or validate the restore chain, guard artifact destinations, and attest the exact run and destinations. Apply authority comes from one factory-read plan snapshot and its embedded config; retained plan/config payloads are immutable serializations reconstructed as fresh private models. Restore consumes a factory-validated chain frozen to its leaves. Library callers can no longer substitute a config, plan, chain, effective options, artifact identity, root, or destination after the ceremony. The CLI surface is unchanged.
+- **Dry-run and refusal artifacts preserve prior files:** dry-run reports publish no-clobber, and a gate-refused apply publishes its refusal report inside the run lock without replacing a pre-existing artifact.
+- **The manifest header records effective excludes:** restore licenses the `.docmend/` artifact carve-out against the patterns that governed the apply run, because per-invocation replacement flags make that set unreconstructable later.
+- New skip reasons: `external-interference` and `collision-unpreserved`. No new exit codes were added; the unreleased manifest 2.0 header gained its required `effective_excludes` field without another schema-version bump.
 
 ### Fixed
 

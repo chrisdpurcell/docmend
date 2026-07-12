@@ -82,7 +82,7 @@ A hard per-file process boundary is coupled to future worker-process support. It
 
 ### Harness
 
-The scale harness invokes the built wheel in isolated subprocesses. It does not import docmend from the checkout. Each stage writes and then rereads the real durable artifact used by the next stage. Apply uses a synthetic external preservation declaration for the cardinality lane and a separate smaller lane with tool backups; both are followed by plan-aware verification.
+The scale harness first requires a clean checkout, captures `HEAD`, and builds the wheel itself into the external qualification workspace. It then invokes that exact wheel in isolated subprocesses and records its hash, so candidate commit and installed artifact cannot drift independently. The measured stages do not import docmend from the checkout. Each stage writes and then rereads the real durable artifact used by the next stage. Apply uses a synthetic external preservation declaration for the cardinality lane and a separate smaller lane with tool backups; both are followed by plan-aware verification.
 
 The 1,000-file pull-request guard is the deliberate exception to the installed-wheel rule: it runs from the checked-out source inside the existing pytest gate so the standard-owned `scripts/check.py` and workflow remain byte-identical. Installed-wheel subprocess qualification starts at the 100,000-file tier. Packaging itself is independently exercised by sub-project 3's installed-artifact release tests.
 

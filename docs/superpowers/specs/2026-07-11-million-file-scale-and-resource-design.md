@@ -10,6 +10,8 @@ Owner decisions recorded in the design conversation:
 
 This is the design-stage artifact. The binding change-control work is a new SPEC-VHHB revision, a settled OQ-037 recording the owner decision, and a concurrency ADR superseding `adr-0007-concurrency-primitive-process-pool` before implementation begins.
 
+The safety-core prerequisite is already satisfied on current `dev`: Plan D is merged, and the executable `verify` surface includes `--plan`, repeatable manifest/report evidence, and optional `--out` verify-report publication. Sub-project 2 builds on that landed interface; it does not reimplement or fork Plan D.
+
 ## Problem
 
 The current NFR-001 contract and its evidence cannot both be true:
@@ -37,14 +39,18 @@ The qualification corpus is deterministic, generated at run time, synthetic, and
 
 ### Memory model
 
-Whole-run artifact metadata may grow linearly with file count. Per-file body content may not accumulate across records. The release contract is:
+Whole-run artifact metadata may grow linearly with file count. Per-file body content may not accumulate across records.
 
-- peak resident memory at 1,000,000 files is at most 8 GiB on the reference 16 GiB Linux/POSIX qualification environment;
-- the fitted incremental peak-memory slope from the measured 10,000, 100,000, and 1,000,000-file tiers is at most 6 KiB per file;
-- the 1,000,000-file observation may not exceed the linear prediction from the smaller tiers by more than 20%; and
+The initial design guardrails are 8 GiB peak RSS at 1,000,000 files, a 6 KiB/file incremental slope, and a 20% linearity band. These are **provisional, not yet binding specification values**: the only historical evidence is a 100,000-file traced-heap result that excludes `verify --plan`. The first implementation slice builds the subprocess harness, then runs an uninstrumented 100,000-file pilot across every stage, including plan-aware verification. A second SPEC-VHHB change-control revision freezes the release thresholds from the largest observed per-stage RSS value and fitted slope, with 25% headroom, before optimization or the one-million-file qualification begins.
+
+The resulting binding contract shall include:
+
+- an absolute peak-RSS ceiling at 1,000,000 files derived from the pilot and constrained to fit the approved reference environment;
+- a maximum fitted incremental peak-memory slope from the measured 10,000, 100,000, and 1,000,000-file tiers, derived from the pilot;
+- a linearity band requiring the 1,000,000-file observation to remain close to the prediction from the smaller tiers; and
 - each CLI stage runs in a separate process, so a prior stage's in-memory artifact model cannot inflate the next stage's measured peak.
 
-Both peak RSS and Python allocation peak are recorded. RSS is the binding operator-facing ceiling; allocation data diagnoses Python-object regressions. The measured slope and peak become a versioned, sanitized baseline artifact, not an unrecorded console anecdote.
+Binding RSS is measured externally from uninstrumented subprocesses. `PYTHONTRACEMALLOC`, `-X tracemalloc`, and equivalent in-process allocation tracing are forbidden in binding runs because tracer state consumes memory and biases the measured slope. Python allocation peaks are collected only in a separate diagnostic lane; they never share a process run with binding RSS measurement. The accepted slope and peak become a versioned, sanitized baseline artifact, not an unrecorded console anecdote. This separation follows the [Python `tracemalloc` documentation](https://docs.python.org/3/library/tracemalloc.html), which explicitly warns that stored traces add memory and CPU overhead.
 
 This contract deliberately does not claim memory independent of corpus size. Inventory, plan, report, and lifecycle records are durable per-file evidence; bounded linear growth is the honest contract for the v2 artifact architecture.
 
@@ -56,13 +62,7 @@ The default `limits.max_file_size_mib` remains 100 MiB only if the measured peak
 
 ### Execution model
 
-v2.0.0 supports sequential execution. Configuration may retain the `parallel.*` namespace as a reserved compatibility surface, but only the sequential values are valid:
-
-- `parallel.enabled = false`;
-- `parallel.model = "sequential"`; and
-- `parallel.workers = 1`.
-
-Any request for process, thread, interpreter, or multiple-worker execution is an input error with a message that parallel execution is not implemented in this release. No setting may parse successfully and then be ignored.
+v2.0.0 supports sequential execution and removes the `parallel.*` namespace from `DocmendConfig`. The default-constructed configuration and an empty TOML file therefore remain valid and preserve the G-006/NFR-006 no-config path. Any legacy `[parallel]` table—including `enabled`, `model`, `workers`, `start_method`, `chunksize`, or `maxtasksperchild` in any combination—is rejected before scanning with a migration-specific input error explaining that parallel execution never shipped and the section must be removed. No parallel field parses successfully and is then ignored; `workers = "auto"` has no sequential alias.
 
 `ProcessPoolExecutor` remains a documented future option, not a v2.0.0 feature. Reopening it requires profiling evidence that sequential execution misses the release's practicality target, a new approved design, equivalence tests, parent-only shared-artifact writes, worker-failure isolation, and a hard watchdog design. The accepted ADR 0007 is superseded because it claims a supported process mode that never shipped.
 
@@ -78,17 +78,33 @@ A hard per-file process boundary is coupled to future worker-process support. It
 
 The scale harness invokes the built wheel in isolated subprocesses. It does not import docmend from the checkout. Each stage writes and then rereads the real durable artifact used by the next stage. Apply uses a synthetic external preservation declaration for the cardinality lane and a separate smaller lane with tool backups; both are followed by plan-aware verification.
 
+The 1,000-file pull-request guard is the deliberate exception to the installed-wheel rule: it runs from the checked-out source inside the existing pytest gate so the standard-owned `scripts/check.py` and workflow remain byte-identical. Installed-wheel subprocess qualification starts at the 100,000-file tier. Packaging itself is independently exercised by sub-project 3's installed-artifact release tests.
+
 The harness captures, per stage:
 
 - exact commit, package version, artifact schema versions, Python version, and dependency lock hash;
 - file count and total corpus bytes;
 - elapsed time, files per second, and bytes per second;
-- peak RSS and Python allocation peak where available;
+- externally measured peak RSS for binding runs, or Python allocation peak for separately labelled diagnostic runs—never both in one run;
 - inventory, plan, report, manifest, verify-report, and log sizes;
 - action, skip, failure, not-attempted, and verified totals; and
 - filesystem type plus cold/warm-cache classification, without hostnames, usernames, absolute corpus paths, or document content.
 
-The output is a versioned JSON evidence document validated by a repository schema. A failed or incomplete run never overwrites the last accepted baseline.
+The output is a versioned JSON evidence document validated by a repository schema. Accepted sanitized baselines live under `docs/scale-evidence/accepted/`; the matching public-safe reference-environment description lives at `docs/scale-evidence/reference-environment.json`. Failed, incomplete, or diagnostic evidence stays outside the accepted directory and never overwrites the last accepted baseline.
+
+Before corpus materialization, the harness computes a deterministic disk and inode budget from the recipe distribution, selected file count, expected whole-run artifact growth, log allowance, largest staging file, and a 25% margin. Insufficient capacity makes the qualification incomplete before it creates the corpus.
+
+### Reference environment
+
+Binding 100,000- and 1,000,000-file runs require:
+
+- Linux with local POSIX semantics;
+- at least 16 GiB physical RAM;
+- a disk-backed local SSD filesystem—ext4, XFS, or btrfs—not tmpfs, ramfs, overlayfs, NFS, SMB, or another network filesystem;
+- enough free bytes and inodes to pass the harness preflight; and
+- no material swap activity during the measured stages.
+
+The accepted reference file records CPU model/architecture, logical CPU count, RAM, storage class, filesystem and mount options, Python version, and kernel version, but no hostname, username, absolute path, serial number, or device identifier. A release qualification must match the accepted reference class; a materially different environment produces diagnostic evidence, not a replacement binding baseline.
 
 ### Test tiers
 
@@ -101,6 +117,8 @@ The output is a versioned JSON evidence document validated by a repository schem
 
 The release workflow may publish only the candidate commit whose complete gate and one-million-file evidence both passed. Sub-project 3 (DMR-09) owns the exact workflow binding and provenance mechanism; this design owns the evidence format and qualification command.
 
+The sequential practicality target is completion of the full one-million-file workflow within 12 hours on the accepted reference environment. Exceeding that bound reopens the concurrency decision; it does not silently enable the former process-pool configuration.
+
 ### Correctness
 
 Sampling is insufficient at the release tier. The qualification reconciles every record through artifact totals and `verify --plan` exactly-once coverage. It additionally selects deterministic boundary samples from every recipe class for byte/hash/encoding checks. The invariant is not merely that the command completed: every input is accounted for as exactly one action, clean no-op, or classified skip, and every plan action has exactly one certified terminal outcome.
@@ -110,11 +128,13 @@ Sampling is insufficient at the release tier. The qualification reconciles every
 Scale runs need content-free liveness signals. Every long-running stage emits:
 
 - a start event naming the stage and input count when known;
-- a heartbeat at least every 30 seconds containing processed count, elapsed time, rate, and aggregate error/skip counts;
+- a best-effort heartbeat targeting 30-second intervals, emitted between records and whenever the interpreter can schedule the aggregate-only emitter, containing processed count, elapsed time, rate, and aggregate error/skip counts;
 - a terminal event containing final totals, elapsed time, artifact sizes, and peak RSS when supported; and
 - an explicit incomplete terminal event on handled failure.
 
 Heartbeat and terminal events never contain document bodies. Path-bearing per-file logs remain confidential runtime artifacts and receive the permission, redaction, placement, retention, and purge treatment owned by sub-project 4.
+
+The heartbeat is not a false hard-liveness guarantee: the sequential cooperative watchdog cannot guarantee scheduling during a native call that holds the interpreter. Silence longer than `limits.per_file_timeout` plus one heartbeat interval means the run may be stalled in native work and requires operator investigation; documentation must not describe silence as proof of a crashed process.
 
 Disk preflight accounts per filesystem rather than independently double counting destinations on the same mount. It includes tool backups, the largest simultaneous staging requirement, manifest/report/verify-report growth, and the configured log budget. Qualification records actual artifact growth so the preflight coefficients are evidence-based.
 
@@ -141,17 +161,20 @@ Implementation follows TDD and adds:
 - disk-preflight tests for shared and distinct filesystems; and
 - regressions proving manifest 2.0 line counts, report totals, plan coverage, and verify-report publication at scale.
 
+The existing `tests/test_scale.py` is replaced rather than retained as a competing authority. Its deterministic recipe mix and conservation assertions feed the 1,000-file default-gate test; its `DOCMEND_SCALE` and `DOCMEND_SCALE_COUNT` controls move to the dedicated qualification command and are removed from pytest once the 100,000-file successor passes. The old tracemalloc ceiling and spot-only verification are deleted.
+
 The full local Python and documentation gates remain mandatory. The scale evidence supplements them; it never substitutes for correctness, typing, coverage, dependency, specification, or documentation validation.
 
-## Change-Control Follow-Through
+## Change-Control and Evidence Follow-Through
 
-Before implementation:
+The ordered design-to-qualification sequence is:
 
-1. Add and settle OQ-037 as the canonical owner decision for the one-million-file, bounded-linear, sequential v2.0.0 contract; preserve the older resolved questions as historical inputs rather than silently rewriting their decisions.
-2. Revise SPEC-VHHB: NFR-001, G-006, §3.1, §7.3/IR-006, §8.1/§8.5, §12.1/ERR-009, §14, §17.2/§17.3, §18.2/§18.5, §19 MS-5, §20, and DEV-002, with cross-references from the superseded scale/concurrency assumptions to OQ-037.
-3. Add a new accepted ADR superseding `adr-0007` with the sequential v2.0.0 contract, reserved/rejected parallel surface, and evidence-triggered reopen criteria. Update reciprocal metadata, the ADR index, and backlog.
-4. Specify the scale-evidence artifact's identity, validation, retention, and public-safe fields in SPEC-VHHB; implement its JSON Schema as the first TDD slice after change control.
-5. Regress NFR-001 to Partial until the one-million-file qualification passes; do not carry the historical 100,000-file result forward as v2 evidence.
-6. Update `docs/TODO.md`, `docs/STATUS.md`, and handoff plan pointers so DMR-08 remains visibly release-blocking through qualification.
+1. Add and settle OQ-037 as the canonical owner decision for the one-million-file, bounded-linear, sequential v2.0.0 contract and its two-step threshold settlement; preserve the older resolved questions as historical inputs rather than silently rewriting their decisions.
+2. Revise SPEC-VHHB: NFR-001, G-006, §3.1, §7.3/IR-006, §8.1/§8.5, §12.1/ERR-009, §14, §17.2/§17.3, §18.2/§18.5, §19 MS-5, §20, and DEV-002, with cross-references from the superseded scale/concurrency assumptions to OQ-037. This first revision makes the one-million-file target, bounded-linear model, sequential-only configuration, pilot method, and provisional guardrails binding without pretending the numeric RSS thresholds are already measured.
+3. Add a new accepted ADR superseding `adr-0007` with the sequential v2.0.0 contract, removed parallel configuration surface, migration error, and evidence-triggered reopen criteria. Update reciprocal metadata, the ADR index, and backlog.
+4. Specify the scale-evidence artifact's identity, validation, retention, public-safe fields, accepted repository location, and reference-environment record in SPEC-VHHB; implement its JSON Schema and harness as the first TDD slice after change control.
+5. Run the uninstrumented 100,000-file per-stage RSS pilot, including `verify --plan`, on the accepted disk-backed reference environment. Use the recorded peak and slope plus 25% headroom to author the second SPEC-VHHB revision that freezes the numeric memory thresholds before optimization and the one-million-file qualification.
+6. Regress NFR-001 to Partial until the one-million-file qualification passes; do not carry the historical 100,000-file result forward as v2 evidence.
+7. Update `docs/TODO.md`, `docs/STATUS.md`, and handoff plan pointers so DMR-08 remains visibly release-blocking through qualification.
 
 Sub-project 2 ends only when the exact candidate implementation passes the full correctness gate, the 100,000-file scheduled tier, the one-million-file release qualification, and the file-size envelope; the accepted evidence is recorded without private paths or corpus content.

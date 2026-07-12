@@ -34,6 +34,8 @@
     - [RQ-023 — deferred-review-artifact content-exposure policy (WH-002/WH-005)](#rq-023--deferred-review-artifact-content-exposure-policy-wh-002wh-005)
     - [RQ-024 — scale-flexibility is binding: tool-first reframing (amends RQ-010)](#rq-024--scale-flexibility-is-binding-tool-first-reframing-amends-rq-010)
     - [RQ-025..033 — gap-register Batch B decisions (2026-07-06)](#rq-025033--gap-register-batch-b-decisions-2026-07-06)
+    - [RQ-034 / RQ-035 / RQ-036 — post-release owner sign-off](#rq-034--rq-035--rq-036--post-release-owner-sign-off-on-the-three-implementation-assumption-questions)
+    - [RQ-037 — million-file scale and execution contract for v2.0.0](#rq-037--million-file-scale-and-execution-contract-for-v200)
   - [How to use this document](#how-to-use-this-document)
 
 ## Resolved questions
@@ -360,6 +362,20 @@ All three proceeded through v1.0.0 on their recorded assumptions (spec Appendix 
 #### My Comments
 
 _Owner sign-off, 2026-07-07: all three confirmed as implemented (same review approved Deviations Log entries DEV-001 and DEV-002)._
+
+### RQ-037 — million-file scale and execution contract for v2.0.0
+
+**Resolved:** 2026-07-11 **Source question:** OQ-037 **Decision owner:** owner **Canonical references:** [approved design](superpowers/specs/2026-07-11-million-file-scale-and-resource-design.md); spec G-006, NFR-001, IR-006, DR-002, FR-019, §§3.1, 8.1, 8.5, 9, 14, 17.2, 17.3, 18.2, 18.5, 19, 20, and 21 OQ-037; [ADR-0022](adr/adr-0022-sequential-million-file-scale-contract.md); amended [ADR-0005](adr/adr-0005-durable-artifact-schema-contract.md).
+
+docmend v2.0.0 supports one through 1,000,000 files. Whole-run inventory, plan, report, manifest, and verification metadata may grow linearly with file count, but per-file body content may not accumulate. The complete installed `scan -> plan -> apply --write -> verify --plan` workflow must qualify at 1,000,000 files on the accepted reference environment and complete within 12 hours.
+
+v2.0.0 is sequential-only and removes `parallel.*`; any legacy table is an exit-2 migration error before scanning. Plan schema 2.0 removes the legacy parallel snapshot, and v2 rejects 1.x plans before gate evaluation or mutation with regeneration guidance while preserving supported inventory reuse. Binding numeric RSS ceilings, fitted incremental slope, and linearity thresholds are frozen only after the approved external, uninstrumented 100,000-file pilot and a second SPEC-VHHB revision. Process concurrency may return only through ADR-0022's evidence and approval gates.
+
+This decision supersedes RQ-009's performance-target deferral for v2, RQ-016's unimplemented process-pool selection, RQ-027's worker-side concurrency premise (the run lock remains binding), and RQ-028's process-level watchdog premise. Those historical entries remain unchanged; ADR-0022 is the current concurrency and scale authority.
+
+#### My Comments
+
+_Owner decision, 2026-07-11: approved the million-file, bounded-linear, sequential v2.0.0 design and its two-revision threshold settlement._
 
 ## How to use this document
 

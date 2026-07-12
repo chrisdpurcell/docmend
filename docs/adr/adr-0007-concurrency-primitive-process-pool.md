@@ -4,9 +4,9 @@ id: 'adr-0007-docmend-concurrency-primitive-process-pool'
 title: 'ADR 0007: CPU-bound concurrency primitive'
 description: 'v1 parallelizes CPU-bound work with concurrent.futures.ProcessPoolExecutor pinned to the forkserver start method — not the 3.14t free-threaded build, not asyncio — and runs sequentially by default until MS-5 profiling; free-threading is gated behind an explicit release checklist.'
 doc_type: 'adr'
-status: 'accepted'
+status: 'superseded'
 created: '2026-07-05'
-updated: '2026-07-06'
+updated: '2026-07-12'
 reviewed: null
 owner: 'chrisdpurcell'
 consumer: 'agent'
@@ -21,7 +21,7 @@ related:
   - 'docs/resolved-questions.md'
   - 'docs/adr/adr-0002-layered-pipeline-isolated-writer.md'
 supersedes: []
-superseded_by: null
+superseded_by: 'docs/adr/adr-0022-sequential-million-file-scale-contract.md'
 source: []
 confidence: 'high'
 visibility: 'public'
@@ -70,6 +70,7 @@ Confirmed by: the transform-purity suite (NFR-005) passing in both `sequential` 
 
 ## More Information
 
+- **Superseded (2026-07-12, OQ-037):** v2.0.0 removes the inert `parallel.*` surface and qualifies sequential execution through 1,000,000 files under the bounded-linear resource contract in `adr-0022-sequential-million-file-scale-contract`. Process concurrency may return only after the accepted 1M workflow exceeds 12 hours and a separately approved design satisfies ADR 0022's equivalence, shared-artifact ownership, isolation, and watchdog conditions.
 - **Amendment (2026-07-06, RQ-027 / spec OQ-027):** shared-artifact writes under parallelism are now specified — workers transform and return results over pool IPC; **only the parent process appends the shared NDJSON manifest and report** (single-writer; no cross-process file locking exists to get wrong), and a run-level lock file makes a second concurrent plan/apply against the same target refuse with exit 3 (spec §8.5, AW-005). Closes the gap that NFR-002's atomicity is per-document, not per shared artifact (gap-analysis GAP-23).
 - **Amendment (2026-07-06, RQ-028 / spec OQ-028):** the FR-019 per-file watchdog is deliberately **process-based** (join-with-timeout + terminate, scoped to discovery/detection/transform, never the writer) so it composes with this ADR's process-pool primitive and needs no new dependency; a thread-based timeout cannot safely kill a stuck CPU-bound task. Canonical detail lives in FR-019/ERR-009/R-007 and `docs/research/per-file-watchdog-timeout.md` — recorded here only because the process-vs-thread constraint is this ADR's concern.
 - Spec: NFR-001, §14, §18.2 (`parallel.*`).

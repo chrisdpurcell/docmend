@@ -14,7 +14,7 @@
 | 0004 | Apply safety gate + preservation posture | 🔴 1 | RQ-005 ⚑, RQ-007 | ✅ accepted |
 | 0005 | Durable artifact schema contract (JSON + NDJSON) | 🔴 1 | RQ-004 ⚑, DR-001–004 | ✅ accepted |
 | 0006 | Resume & recovery model | 🟡 2 | RQ-003 | ♻️ superseded by 0019 |
-| 0007 | Concurrency primitive: ProcessPool + forkserver | 🟡 2 | RQ-016 | ✅ accepted |
+| 0007 | Concurrency primitive: ProcessPool + forkserver | 🟡 2 | RQ-016 | ♻️ superseded by 0022 |
 | 0008 | Stable document identity (UUIDv7 + manifest) | 🟡 2 | RQ-002 | ✅ accepted |
 | 0009 | Encoding detection & dual skip-gate | 🟡 2 | RQ-022, D-002 | ✅ accepted |
 | 0010 | Design-for-pluggable policy seams | 🟢 3 | RQ-010, D-009 | ✅ accepted |
@@ -29,6 +29,7 @@
 | 0019 | Manifest 2.0 recovery model | 🔴 1 | 2026-07-10 comprehensive review DMR-03/04 (safety-core design; supersedes 0006) | ✅ accepted |
 | 0020 | Commit-boundary object identity | 🔴 1 | 2026-07-10 comprehensive review DMR-06/07 (safety-core design) | ✅ accepted |
 | 0021 | Artifact destination guard | 🟡 2 | 2026-07-10 comprehensive review DMR-02 (safety-core design) | ✅ accepted |
+| 0022 | Sequential million-file scale contract | 🔴 1 | RQ-037, DMR-08 | ✅ accepted; supersedes 0007 |
 
 ## Tier 1 — write now (foundational; hard to reverse)
 
@@ -36,6 +37,7 @@
 - **ADR-0003 — In-place mutation + atomic-replace output model** (RQ-013 ⚑, D-004). Rev H · Blast H · Trade H · Contract M · Revisit M. The fundamental output model; the separate-output-root alternative is explicitly rejected and later reversal is a breaking redesign. Clarifies the "in-place" terminology collision with D-004.
 - **ADR-0004 — Apply safety gate + preservation posture** (RQ-005 ⚑, RQ-007, FR-005/006). Rev M · Blast H · Trade H · Contract M · Revisit M. Risk-scaled predicate gate + verify-then-mutate + preservation-agnostic stance + `restore`.
 - **ADR-0005 — Durable artifact schema contract** (RQ-004 ⚑, DR-001–004, IR-007). Rev H · Blast H · Trade M · Contract H · Revisit M. Four checked-in versioned schemas; JSON-doc-vs-NDJSON-manifest split; MAJOR.MINOR versioning.
+- **ADR-0022 — Sequential million-file scale contract** (RQ-037, DMR-08). Rev H · Blast H · Trade H · Contract H · Revisit H. Reconciles bounded-linear whole-run metadata, sequential-only v2 execution, plan schema 2.0, installed-wheel qualification, pilot-derived RSS thresholds, and the evidence trigger for reopening concurrency. **Drafted 2026-07-11**, accepted; supersedes ADR-0007.
 
 ## Tier 2 — strong (significant, clear alternatives)
 

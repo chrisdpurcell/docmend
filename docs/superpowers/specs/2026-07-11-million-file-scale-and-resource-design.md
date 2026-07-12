@@ -96,7 +96,9 @@ The harness captures, per stage:
 - action, skip, failure, not-attempted, and verified totals; and
 - filesystem type plus cold/warm-cache classification, without hostnames, usernames, absolute corpus paths, or document content.
 
-The output is a versioned JSON evidence document validated by a repository schema. Accepted sanitized baselines live under `docs/scale-evidence/accepted/`; the matching public-safe reference-environment description lives at `docs/scale-evidence/reference-environment.json`. Failed, incomplete, or diagnostic evidence stays outside the accepted directory and never overwrites the last accepted baseline.
+The output is a versioned JSON evidence document validated by a repository schema. Accepted sanitized baselines live under `docs/scale-evidence/accepted/`; sanitized pilot inputs needed to reproduce a binding fit live under `docs/scale-evidence/supporting/` without being labelled accepted; the matching public-safe reference-environment description lives at `docs/scale-evidence/reference-environment.json`. Failed, incomplete, or other diagnostic evidence stays outside the accepted directory and never overwrites the last accepted baseline.
+
+The second specification revision publishes `docs/scale-evidence/thresholds.json`, a versioned, schema-validated threshold baseline that records both pilot point identities and hashes, the reference-environment hash, the fitting method, and the frozen ceiling, slope, and linearity values. Scheduled and release qualification must load and validate that file; prose values in the specification are not the executable threshold source.
 
 Before corpus materialization, the harness computes a deterministic disk and inode budget from the recipe distribution, selected file count, expected whole-run artifact growth, log allowance, largest staging file, and a 25% margin. Insufficient capacity makes the qualification incomplete before it creates the corpus.
 
@@ -110,7 +112,7 @@ Binding 100,000- and 1,000,000-file runs require:
 - enough free bytes and inodes to pass the harness preflight; and
 - no material swap activity during the measured stages.
 
-The accepted reference file records CPU model/architecture, logical CPU count, RAM, storage class, filesystem and mount options, Python version, and kernel version, but no hostname, username, absolute path, serial number, or device identifier. A release qualification must match the accepted reference class; a materially different environment produces diagnostic evidence, not a replacement binding baseline.
+The accepted reference file records CPU model/architecture, logical CPU count, RAM, storage class, filesystem type, an allowlisted set of relevant flag-only mount semantics, Python version, and kernel version, but no hostname, username, absolute path, serial number, or device identifier. Mount options with values, paths, user or credential data, device identifiers, or unknown keys are rejected from public evidence. A release qualification must match the accepted reference class; a materially different environment produces diagnostic evidence, not a replacement binding baseline.
 
 ### Test tiers
 

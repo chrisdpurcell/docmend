@@ -66,6 +66,12 @@ v2.0.0 supports sequential execution and removes the `parallel.*` namespace from
 
 `ProcessPoolExecutor` remains a documented future option, not a v2.0.0 feature. Reopening it requires profiling evidence that sequential execution misses the release's practicality target, a new approved design, equivalence tests, parent-only shared-artifact writes, worker-failure isolation, and a hard watchdog design. The accepted ADR 0007 is superseded because it claims a supported process mode that never shipped.
 
+### Plan artifact compatibility
+
+The durable plan embeds the complete effective config snapshot, and plan schema 1.2 requires the legacy `parallel` object. Removing that object is therefore a plan-contract change, not merely a config-model edit. Plan schema 2.0 removes `parallel` from the required snapshot and otherwise preserves the current plan shape. New v2 plans contain only supported configuration.
+
+docmend v2 rejects every 1.x plan before gate evaluation or mutation with an input error directing the operator to regenerate the plan with v2. It does not silently strip the historical snapshot field or execute an old decision artifact under changed configuration semantics. Inventory compatibility is unchanged; operators may reuse a supported inventory to generate a fresh plan. ADR 0005 and the schema README record this clean break.
+
 ### Watchdog
 
 The v2.0.0 sequential engine retains the current cooperative SIGALRM watchdog and documents its actual boundary: it interrupts Python-level discovery, detection, and transform work on the main thread but cannot guarantee termination of a stuck native call. FR-019, ERR-009, operator documentation, and DEV-002 shall use that exact language.
@@ -152,7 +158,7 @@ Implementation follows TDD and adds:
 
 - configuration tests proving every unsupported parallel shape is rejected and sequential/default shapes are accepted;
 - scale-harness unit tests for sanitized evidence, threshold evaluation, incomplete runs, and baseline non-overwrite;
-- installed-wheel end-to-end tests for the 1,000-file PR tier;
+- checked-out-source end-to-end tests for the 1,000-file PR tier;
 - multi-point slope tests using deterministic synthetic measurements so the threshold math is testable without allocating a million files in unit tests;
 - a real 100,000-file scheduled qualification;
 - a real 1,000,000-file release qualification;
@@ -170,11 +176,12 @@ The full local Python and documentation gates remain mandatory. The scale eviden
 The ordered design-to-qualification sequence is:
 
 1. Add and settle OQ-037 as the canonical owner decision for the one-million-file, bounded-linear, sequential v2.0.0 contract and its two-step threshold settlement; preserve the older resolved questions as historical inputs rather than silently rewriting their decisions.
-2. Revise SPEC-VHHB: NFR-001, G-006, §3.1, §7.3/IR-006, §8.1/§8.5, §12.1/ERR-009, §14, §17.2/§17.3, §18.2/§18.5, §19 MS-5, §20, and DEV-002, with cross-references from the superseded scale/concurrency assumptions to OQ-037. This first revision makes the one-million-file target, bounded-linear model, sequential-only configuration, pilot method, and provisional guardrails binding without pretending the numeric RSS thresholds are already measured.
+2. Revise SPEC-VHHB: NFR-001, G-006, §3.1, §7.3/IR-006, DR-002, §8.1/§8.5, §9, §12.1/ERR-006/ERR-009, §14, §17.2/§17.3, §18.2/§18.5, §19 MS-5, §20, and DEV-002, with cross-references from the superseded scale/concurrency assumptions to OQ-037. This first revision makes the one-million-file target, bounded-linear model, sequential-only configuration, plan 2.0 clean break, pilot method, and provisional guardrails binding without pretending the numeric RSS thresholds are already measured.
 3. Add a new accepted ADR superseding `adr-0007` with the sequential v2.0.0 contract, removed parallel configuration surface, migration error, and evidence-triggered reopen criteria. Update reciprocal metadata, the ADR index, and backlog.
-4. Specify the scale-evidence artifact's identity, validation, retention, public-safe fields, accepted repository location, and reference-environment record in SPEC-VHHB; implement its JSON Schema and harness as the first TDD slice after change control.
-5. Run the uninstrumented 100,000-file per-stage RSS pilot, including `verify --plan`, on the accepted disk-backed reference environment. Use the recorded peak and slope plus 25% headroom to author the second SPEC-VHHB revision that freezes the numeric memory thresholds before optimization and the one-million-file qualification.
-6. Regress NFR-001 to Partial until the one-million-file qualification passes; do not carry the historical 100,000-file result forward as v2 evidence.
-7. Update `docs/TODO.md`, `docs/STATUS.md`, and handoff plan pointers so DMR-08 remains visibly release-blocking through qualification.
+4. Amend ADR 0005 and the schema documentation for plan 2.0: remove `parallel` from the config snapshot, reject 1.x plans with a regeneration message, and preserve inventory compatibility.
+5. Specify the scale-evidence artifact's identity, validation, retention, public-safe fields, accepted repository location, and reference-environment record in SPEC-VHHB; implement its JSON Schema and harness as the first TDD slice after change control.
+6. Run the uninstrumented 100,000-file per-stage RSS pilot, including `verify --plan`, on the accepted disk-backed reference environment. Use the recorded peak and slope plus 25% headroom to author the second SPEC-VHHB revision that freezes the numeric memory thresholds before optimization and the one-million-file qualification.
+7. Regress NFR-001 to Partial until the one-million-file qualification passes; do not carry the historical 100,000-file result forward as v2 evidence.
+8. Update `docs/TODO.md`, `docs/STATUS.md`, and handoff plan pointers so DMR-08 remains visibly release-blocking through qualification.
 
 Sub-project 2 ends only when the exact candidate implementation passes the full correctness gate, the 100,000-file scheduled tier, the one-million-file release qualification, and the file-size envelope; the accepted evidence is recorded without private paths or corpus content.

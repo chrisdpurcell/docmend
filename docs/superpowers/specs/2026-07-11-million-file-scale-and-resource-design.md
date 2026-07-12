@@ -35,7 +35,7 @@ The supported scale range is one file through 1,000,000 files on one local POSIX
 scan -> plan -> apply --write -> verify --plan
 ```
 
-The qualification corpus is deterministic, generated at run time, synthetic, and never committed. It includes actions, clean no-ops, classified skips, renames, rewrites, encoding conversion, collision-free nested paths, and the current Manifest/Report 2.0 evidence path.
+The qualification corpus is deterministic, generated at run time, synthetic, and never committed. It includes actions, clean no-ops, classified skips, renames, rewrites, encoding conversion, collision-free nested paths, and the current Manifest/Report 2.0 evidence path. Because some classified skips deliberately remain below the supported encoding floor, full-root verification is expected to report their deterministic content findings. Qualification requires that exact expected finding multiset, no unexpected finding, and complete plan coverage; it does not mislabel a corpus containing intentional risky skips as globally clean.
 
 ### Memory model
 
@@ -127,7 +127,7 @@ The sequential practicality target is completion of the full one-million-file wo
 
 ### Correctness
 
-Sampling is insufficient at the release tier. The qualification reconciles every record through artifact totals and `verify --plan` exactly-once coverage. It additionally selects deterministic boundary samples from every recipe class for byte/hash/encoding checks. The invariant is not merely that the command completed: every input is accounted for as exactly one action, clean no-op, or classified skip, and every plan action has exactly one certified terminal outcome.
+Sampling is insufficient at the release tier. The qualification reconciles every record through artifact totals and `verify --plan` exactly-once coverage. It additionally selects deterministic boundary samples from every recipe class for byte/hash/encoding checks. The invariant is not merely that the command completed: every input is accounted for as exactly one action, clean no-op, or classified skip, every plan action has exactly one certified terminal outcome, and verification findings equal the recipe-derived expected multiset exactly. An expected finding for an intentionally unmodified skip does not excuse an additional or missing finding.
 
 ## Resource Observability
 
@@ -150,7 +150,7 @@ Disk preflight accounts per filesystem rather than independently double counting
 - A scale threshold miss fails the qualification and preserves its evidence; it never weakens the threshold automatically.
 - Resource measurement unavailable on a platform is explicit. The release qualification must run where binding RSS measurement is supported.
 - Corpus generation or disk-capacity failure is an incomplete qualification, not a product correctness failure; it still exits non-zero and records the environmental cause.
-- Any conservation, artifact-validation, or `verify --plan` discrepancy is a correctness failure regardless of performance results.
+- Any conservation, artifact-validation, plan-coverage, or expected-finding-set discrepancy is a correctness failure regardless of performance results.
 
 ## Testing
 

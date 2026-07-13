@@ -1,6 +1,8 @@
 """NFR-001 Linux resource-preflight contracts for scale qualification."""
 
 import os
+import stat
+import struct
 from fractions import Fraction
 from inspect import signature
 from pathlib import Path
@@ -8,6 +10,7 @@ from typing import cast, get_type_hints
 
 import pytest
 
+import docmend.scale_resources as scale_resources
 from docmend.scale_corpus import ScaleCorpusSummary, recipe_counts, summarize_scale_corpus
 from docmend.scale_evidence import FilesystemCapacityEvidence, ReferenceEnvironment
 from docmend.scale_resources import (
@@ -91,6 +94,52 @@ def _capacity_placement(path: Path, *, fragment_size: int) -> CapacityPlacement:
             fragment_size=fragment_size,
         ),
     )
+
+
+def test_default_btrfs_probe__duplicates_held_proc_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probes = scale_resources._DefaultReferenceProbes()  # pyright: ignore[reportPrivateUsage]
+    duplicated: list[int] = []
+    closed: list[int] = []
+
+    def duplicate(descriptor: int) -> int:
+        duplicated.append(descriptor)
+        return 43
+
+    def unexpected_open(*_args: object, **_kwargs: object) -> int:
+        raise AssertionError("held proc descriptors must not be reopened by pathname")
+
+    def fake_fstat(descriptor: int) -> os.stat_result:
+        if descriptor != 43:
+            pytest.fail("unexpected descriptor")
+        return os.stat_result((stat.S_IFDIR | 0o700, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+
+    def ioctl(
+        descriptor: int,
+        request: int,
+        payload: bytearray,
+        mutate: bool,
+    ) -> int:
+        assert descriptor == 43
+        assert request == 0x8400941F
+        assert mutate is True
+        struct.pack_into("=QQ", payload, 0, 2, 2)
+        payload[16:32] = bytes.fromhex("11111111222233334444555555555555")
+        return 0
+
+    monkeypatch.setattr(os, "dup", duplicate)
+    monkeypatch.setattr(os, "open", unexpected_open)
+    monkeypatch.setattr(os, "fstat", fake_fstat)
+    monkeypatch.setattr(os, "close", closed.append)
+    monkeypatch.setattr(scale_resources.fcntl, "ioctl", ioctl)
+
+    identity, count = probes.btrfs_filesystem_info(Path("/proc/self/fd/41"))
+
+    assert duplicated == [41]
+    assert closed == [43]
+    assert identity == bytes.fromhex("11111111222233334444555555555555")
+    assert count == 2
 
 
 def _reference_environment(**updates: object) -> ReferenceEnvironment:

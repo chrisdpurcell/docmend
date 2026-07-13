@@ -153,10 +153,28 @@ class _DefaultReferenceProbes:
         return os.cpu_count()
 
     def btrfs_filesystem_info(self, path: Path) -> tuple[bytes, int]:
-        fd = os.open(
-            path,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-        )
+        proc_fd_parent = Path("/proc/self/fd")
+        if (
+            path.parent == proc_fd_parent
+            and path.name.isascii()
+            and path.name.isdecimal()
+            and path.name == str(int(path.name, 10))
+        ):
+            # Reference capture supplies a descriptor-held workspace through
+            # procfs. Duplicate that descriptor: O_NOFOLLOW rejects the procfs
+            # link, while reopening its resolved pathname would discard the hold.
+            fd = os.dup(int(path.name, 10))
+            try:
+                if not stat.S_ISDIR(os.fstat(fd).st_mode):
+                    raise NotADirectoryError(path)
+            except BaseException:
+                os.close(fd)
+                raise
+        else:
+            fd = os.open(
+                path,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            )
         try:
             payload = bytearray(_BTRFS_FS_INFO_SIZE)
             fcntl.ioctl(fd, _BTRFS_IOC_FS_INFO, payload, True)

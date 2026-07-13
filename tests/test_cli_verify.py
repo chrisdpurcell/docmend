@@ -11,7 +11,7 @@ way scan does; the isolate_logging fixture mirrors tests/test_cli_scan.py.
 
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import pytest
@@ -29,6 +29,8 @@ from typer.testing import CliRunner
 from docmend import artifacts, cli, lock
 from docmend import verify as verify_module
 from docmend.cli import app
+from docmend.plan import Plan
+from docmend.verify_coverage import VerificationEvidence
 from docmend.writer import manifest as manifest_io
 
 runner = CliRunner()
@@ -713,6 +715,87 @@ def _plan_for_verify(corpus: Path, tmp_path: Path) -> Path:
     result = runner.invoke(app, ["plan", str(corpus), "--out", str(plan_path)])
     assert result.exit_code in (0, 1), result.output
     return plan_path
+
+
+def test_verify_plan_1_x__exit_2_before_lock_or_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    document_path = corpus / "doc.txt"
+    document_path.write_bytes(b"clean\n")
+    plan_path = _plan_for_verify(corpus, tmp_path)
+    plan_document = json.loads(plan_path.read_text(encoding="utf-8"))
+    plan_document["schema_version"] = "1.2"
+    plan_document["config"]["parallel"] = {
+        "enabled": False,
+        "model": "process",
+        "workers": "auto",
+        "start_method": "forkserver",
+        "chunksize": "auto",
+        "maxtasksperchild": None,
+    }
+    plan_path.write_text(json.dumps(plan_document), encoding="utf-8")
+
+    def boundary_should_not_run(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("legacy plan reached the verify lock or scan")
+
+    monkeypatch.setattr(cli, "_acquire_read_lock", boundary_should_not_run)
+    monkeypatch.setattr(cli.discovery, "scan", boundary_should_not_run)
+
+    result = runner.invoke(app, ["verify", str(corpus), "--plan", str(plan_path)])
+
+    assert result.exit_code == 2, result.output
+    assert "plan schema 1.2" in result.output
+    assert "regenerate" in result.output
+    assert document_path.read_bytes() == b"clean\n"
+
+
+def test_verify_plan_snapshot_precedes_lock__evidence_load_stays_inside_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "doc.txt").write_bytes(b"clean\n")
+    plan_path = _plan_for_verify(corpus, tmp_path)
+    events: list[str] = []
+    real_read_plan_snapshot = cli.artifacts.read_plan_snapshot
+    real_acquire_read_lock = cli._acquire_read_lock  # pyright: ignore[reportPrivateUsage]
+    real_load_verification_evidence = cli.load_verification_evidence
+
+    def read_plan_snapshot(path: Path) -> tuple[Plan, str]:
+        events.append("plan")
+        return real_read_plan_snapshot(path)
+
+    def acquire_read_lock(source_root: Path, *, run_id: str, command: str) -> lock.RunLock | None:
+        events.append("lock")
+        return real_acquire_read_lock(source_root, run_id=run_id, command=command)
+
+    def load_evidence(
+        plan_path: Path | None,
+        manifest_paths: Sequence[Path],
+        report_paths: Sequence[Path],
+        *,
+        plan_snapshot: tuple[Plan, str] | None = None,
+    ) -> VerificationEvidence:
+        events.append("evidence")
+        return real_load_verification_evidence(
+            plan_path,
+            manifest_paths,
+            report_paths,
+            plan_snapshot=plan_snapshot,
+        )
+
+    monkeypatch.setattr(cli.artifacts, "read_plan_snapshot", read_plan_snapshot)
+    monkeypatch.setattr(cli, "_acquire_read_lock", acquire_read_lock)
+    monkeypatch.setattr(cli, "load_verification_evidence", load_evidence)
+
+    result = runner.invoke(app, ["verify", str(corpus), "--plan", str(plan_path)])
+
+    assert result.exit_code == 1, result.output
+    assert events == ["plan", "lock", "evidence"]
 
 
 def test_verify_plan_without_attempt_evidence__coverage_exit_1(

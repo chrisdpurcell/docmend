@@ -1020,6 +1020,17 @@ def verify(
             config=config,
         )
 
+    plan_snapshot = None
+    if plan_path is not None:
+        # Plan 1.x must fail before a million-file scan or lock attempt, while
+        # manifest/report snapshots must remain inside the corpus lock. Reuse
+        # this exact snapshot below so plan validation has no TOCTOU reread.
+        try:
+            plan_snapshot = artifacts.read_plan_snapshot(plan_path)
+        except artifacts.ArtifactError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from exc
+
     started_at = now.isoformat()
     run_lock = _acquire_read_lock(corpus_root, run_id=run_id, command="verify")
     try:
@@ -1034,6 +1045,7 @@ def verify(
                     plan_path,
                     manifest_paths,
                     report_paths,
+                    plan_snapshot=plan_snapshot,
                 )
             except manifest.ManifestContainmentError as exc:
                 # Inspection owns containment; this is a defense-in-depth

@@ -98,6 +98,39 @@ class TestApplyDryRunDefault:
         assert document["dry_run"] is True
         assert "would-apply" in result.output
 
+    def test_apply_plan_1_x__exit_2_before_lock_report_or_mutation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        make_corpus(corpus)
+        plan_path = _make_plan(corpus)
+        document = json.loads(plan_path.read_text(encoding="utf-8"))
+        document["schema_version"] = "1.2"
+        document["config"]["parallel"] = {
+            "enabled": False,
+            "model": "process",
+            "workers": "auto",
+            "start_method": "forkserver",
+            "chunksize": "auto",
+            "maxtasksperchild": None,
+        }
+        plan_path.write_text(json.dumps(document), encoding="utf-8")
+        before = _hashes(corpus)
+
+        def lock_should_not_run(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("legacy plan reached the run lock")
+
+        monkeypatch.setattr(cli_module, "_acquire_run_lock_strict", lock_should_not_run)
+        result = runner.invoke(app, ["apply", str(plan_path)])
+
+        assert result.exit_code == 2, result.output
+        assert "plan schema 1.2" in result.output
+        assert "regenerate" in result.output
+        assert _hashes(corpus) == before
+        assert not list((tmp_path / ".docmend").glob("*-report.json"))
+        assert not list((tmp_path / ".docmend").glob("*-manifest.jsonl"))
+
     def test_apply_dry_run_overwrite_with_configured_backup_dir__no_backup_written(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -2,6 +2,7 @@
 and the at-commit lstat re-check. All fixtures are synthetic (conventions #6)."""
 
 import inspect
+import json
 import os
 import threading
 from pathlib import Path
@@ -13,6 +14,7 @@ from pydantic import ValidationError
 from tests.helpers.manifest2 import header_doc, record_doc, write_set
 from tests.test_plan_artifact import sample_plan
 
+import docmend.writer.commit as commit_module
 from docmend import artifacts, lock
 from docmend.lineage import ObjectIdentity
 from docmend.writer.atomic import WriteError
@@ -83,6 +85,47 @@ class TestWriteSafetyContext:
             leaked = safety
         with pytest.raises(RuntimeError, match="outside its factory scope"):
             leaked.confirm_report(report_path)
+
+    def test_plan_1_x__rejected_before_gate_lock_or_artifacts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        corpus, plan_path = self._plan_path(tmp_path)
+        victim = corpus / "legacy.txt"
+        victim.write_bytes(b"legacy body\r\n")
+        document = json.loads(plan_path.read_text(encoding="utf-8"))
+        document["schema_version"] = "1.2"
+        document["config"]["parallel"] = {
+            "enabled": False,
+            "model": "process",
+            "workers": "auto",
+            "start_method": "forkserver",
+            "chunksize": "auto",
+            "maxtasksperchild": None,
+        }
+        plan_path.write_text(json.dumps(document), encoding="utf-8")
+        manifest_path = tmp_path / "manifest.jsonl"
+        report_path = tmp_path / "report.json"
+
+        def boundary_should_not_run(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("legacy plan reached a mutation safety boundary")
+
+        monkeypatch.setattr(commit_module.lock, "acquire", boundary_should_not_run)
+        monkeypatch.setattr(commit_module, "evaluate_gate", boundary_should_not_run)
+        with (
+            pytest.raises(artifacts.ArtifactError, match=r"plan schema 1\.2.*regenerate.*v2"),
+            apply_write_context(
+                plan_path,
+                run_id="run_20260711T000000Z_000019",
+                manifest_path=manifest_path,
+                report_path=report_path,
+                preserved_by="external",
+            ),
+        ):
+            raise AssertionError("legacy plan produced a write capability")
+
+        assert victim.read_bytes() == b"legacy body\r\n"
+        assert not manifest_path.exists()
+        assert not report_path.exists()
 
     def test_apply_factory__in_corpus_destination_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

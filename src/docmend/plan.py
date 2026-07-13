@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler
 from docmend.inventory import DetectedEncoding, NewlineStyle, RelativePath, RunId, Sha256
 from docmend.transform.dispatch import Operation
 
-PLAN_SCHEMA_VERSION = "1.2"
+PLAN_SCHEMA_VERSION = "2.0"
 
 type ActionId = Annotated[str, Field(pattern=r"^run_\d{8}T\d{6}Z_[0-9a-f]{6}/a\d+$")]
 type DocmendId = Annotated[
@@ -98,7 +98,7 @@ class Plan(_StrictModel):
     )
 
     schema_kind: Literal["docmend/plan"] = Field(default="docmend/plan", alias="schema")
-    schema_version: Annotated[str, Field(pattern=r"^1\.\d+$")] = PLAN_SCHEMA_VERSION
+    schema_version: Annotated[str, Field(pattern=r"^2\.\d+$")] = PLAN_SCHEMA_VERSION
     run_id: RunId
     generated_at: str
     generated_by: str
@@ -111,10 +111,9 @@ class Plan(_StrictModel):
 
     @model_serializer(mode="wrap")
     def _omit_absent_source_root(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
-        # `source_root` is OPTIONAL in the schema (1.0-plan compat), not
-        # nullable — a bare `null` fails validation. None means "field
-        # absent" (a pre-1.1 plan or one built without an inventory), so it
-        # must never appear as a JSON key at all, only ever be omitted.
+        # `source_root` is optional in the artifact contract, not nullable; the
+        # execution boundary separately rejects an absent root. None therefore
+        # means "field absent" and must never serialize as a bare JSON null.
         data = handler(self)
         if data.get("source_root") is None:
             data.pop("source_root", None)

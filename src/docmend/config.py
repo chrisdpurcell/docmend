@@ -22,8 +22,6 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-type PositiveIntOrAuto = Literal["auto"] | Annotated[int, Field(ge=1)]
-
 
 class ConfigError(Exception):
     """A configuration file could not be read or failed validation (exit 2, §18.5)."""
@@ -136,30 +134,6 @@ class WriteConfig(_StrictModel):
         return Path(value) if isinstance(value, str) else value
 
 
-class ParallelConfig(_StrictModel):
-    """§18.2 `parallel.*` — OQ-016/OQ-027; v1 shipped sequential-by-default (the
-    100k scale test needed no parallelism); these switches stay reserved for a
-    profiled post-v1 pool (adr-0007)."""
-
-    enabled: bool = False
-    model: Literal["process", "sequential"] = "process"
-    workers: PositiveIntOrAuto = "auto"
-    start_method: Literal["forkserver", "spawn"] = "forkserver"
-    chunksize: PositiveIntOrAuto = "auto"
-    maxtasksperchild: Annotated[int, Field(ge=1)] | None = None
-
-    @field_validator("model", mode="before")
-    @classmethod
-    def _reject_reserved_models(cls, value: object) -> object:
-        # §18.2: "thread" (free-threaded build) and "interpreter" (PEP 734) are
-        # reserved names, distinguished from typos by this dedicated message
-        # until the OQ-016 re-open checklist fires.
-        if value in ("thread", "interpreter"):
-            msg = f"parallel.model {value!r} is reserved and not supported in this release"
-            raise ValueError(msg)
-        return value
-
-
 class LimitsConfig(_StrictModel):
     """§18.2 `limits.*` — FR-019 watchdog and plan-time size guard (OQ-028)."""
 
@@ -187,7 +161,6 @@ class DocmendConfig(_StrictModel):
     newlines: NewlinesConfig = Field(default_factory=NewlinesConfig)
     whitespace: WhitespaceConfig = Field(default_factory=WhitespaceConfig)
     write: WriteConfig = Field(default_factory=WriteConfig)
-    parallel: ParallelConfig = Field(default_factory=ParallelConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
 
@@ -225,6 +198,13 @@ def load_config(path: Path | None = None, *, cwd: Path | None = None) -> Docmend
     except tomllib.TOMLDecodeError as exc:
         msg = f"{path}: not valid TOML — {exc}"
         raise ConfigError(msg) from exc
+
+    if "parallel" in raw:
+        msg = (
+            f"{path}: invalid configuration — parallel execution never shipped; "
+            "docmend v2 is sequential, so remove the entire [parallel] section"
+        )
+        raise ConfigError(msg)
 
     try:
         return DocmendConfig.model_validate(raw)

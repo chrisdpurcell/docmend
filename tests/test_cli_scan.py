@@ -92,6 +92,25 @@ class TestScanCommand:
         inventory = read_inventory(artifact)
         assert [record.path for record in inventory.files] == ["a.txt"]
 
+    def test_legacy_parallel_config__exit_2_before_scan(
+        self, corpus: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = tmp_path / "legacy.toml"
+        config_path.write_text("[parallel]\nenabled = false\n", encoding="utf-8")
+
+        def scan_should_not_run(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("legacy configuration reached discovery.scan")
+
+        monkeypatch.setattr(cli.discovery, "scan", scan_should_not_run)
+        result = runner.invoke(
+            app,
+            ["scan", str(corpus), "--config", str(config_path)],
+        )
+
+        assert result.exit_code == 2, result.output
+        assert "parallel execution never shipped" in result.output
+        assert not list(Path(".docmend").glob("*-inventory.json"))
+
 
 class TestScanLock:
     def test_same_root_lock_contention__exit_3(self, corpus: Path) -> None:

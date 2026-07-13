@@ -36,18 +36,18 @@ class TestDefaults:
         assert cfg.write.dry_run_default is True
         assert cfg.write.backup_dir is None
         assert cfg.write.atomic is True
-        assert cfg.parallel.enabled is False
-        assert cfg.parallel.model == "process"
-        assert cfg.parallel.workers == "auto"
-        assert cfg.parallel.start_method == "forkserver"
-        assert cfg.parallel.chunksize == "auto"
-        assert cfg.parallel.maxtasksperchild is None
         assert cfg.limits.per_file_timeout == 60
         assert cfg.limits.max_file_size_mib == 100
         assert cfg.safety.shrink_ratio == 0.50
 
     def test_no_file_anywhere__yields_defaults(self, tmp_path: Path) -> None:
         assert load_config(cwd=tmp_path) == DocmendConfig()
+
+    def test_empty_toml__yields_defaults(self, tmp_path: Path) -> None:
+        path = tmp_path / "docmend.toml"
+        path.write_text("", encoding="utf-8")
+        assert load_config(path) == DocmendConfig()
+        assert "parallel" not in DocmendConfig.model_fields
 
     def test_config_schema__has_no_write_enable_key(self) -> None:
         """OQ-014/OQ-029: config alone can never enable real writes.
@@ -135,27 +135,29 @@ class TestStrictValidation:
             "[limits]\nmax_file_size_mib = 0\n",
             "[safety]\nshrink_ratio = 0.0\n",
             "[safety]\nshrink_ratio = 1.5\n",
-            "[parallel]\nworkers = 0\n",
-            "[parallel]\nchunksize = 0\n",
-            "[parallel]\nmaxtasksperchild = 0\n",
         ],
     )
     def test_out_of_range_value__rejected(self, tmp_path: Path, toml_text: str) -> None:
         with pytest.raises(ConfigError):
             self._load(tmp_path, toml_text)
 
-    @pytest.mark.parametrize("reserved", ["thread", "interpreter"])
-    def test_reserved_parallel_model__rejected_with_dedicated_message(
-        self, tmp_path: Path, reserved: str
-    ) -> None:
-        """§18.2: 'thread'/'interpreter' are reserved until OQ-016 re-opens."""
-        with pytest.raises(ConfigError, match="not supported in this release"):
-            self._load(tmp_path, f"[parallel]\nmodel = '{reserved}'\n")
-
-    def test_fork_start_method__not_offered(self, tmp_path: Path) -> None:
-        """§18.2: 'fork' is not offered (unsafe with threads present)."""
-        with pytest.raises(ConfigError, match=r"parallel\.start_method"):
-            self._load(tmp_path, "[parallel]\nstart_method = 'fork'\n")
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "[parallel]\n",
+            "[parallel]\nenabled = false\n",
+            "[parallel]\nmodel = 'process'\n",
+            "[parallel]\nworkers = 'auto'\n",
+            "[parallel]\nstart_method = 'forkserver'\n",
+            "[parallel]\nchunksize = 'auto'\n",
+            "[parallel]\nmaxtasksperchild = 100\n",
+        ],
+    )
+    def test_legacy_parallel_table__migration_error(self, tmp_path: Path, body: str) -> None:
+        with pytest.raises(
+            ConfigError, match=r"parallel execution never shipped.*remove.*parallel"
+        ):
+            self._load(tmp_path, body)
 
     def test_invalid_toml__rejected(self, tmp_path: Path) -> None:
         with pytest.raises(ConfigError, match="not valid TOML"):
@@ -165,8 +167,3 @@ class TestStrictValidation:
         """`fail_below_confidence = 1` is honest TOML for 1.0; don't punish it."""
         cfg = self._load(tmp_path, "[encoding]\nfail_below_confidence = 1\n")
         assert cfg.encoding.fail_below_confidence == 1.0
-
-    def test_explicit_workers_and_chunksize__accepted(self, tmp_path: Path) -> None:
-        cfg = self._load(tmp_path, "[parallel]\nworkers = 4\nchunksize = 16\n")
-        assert cfg.parallel.workers == 4
-        assert cfg.parallel.chunksize == 16

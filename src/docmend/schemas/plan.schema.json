@@ -19,7 +19,7 @@
 	],
 	"properties": {
 		"schema": { "const": "docmend/plan" },
-		"schema_version": { "type": "string", "pattern": "^1\\.[0-9]+$" },
+		"schema_version": { "type": "string", "pattern": "^2\\.[0-9]+$" },
 		"run_id": { "$ref": "#/$defs/run_id" },
 		"generated_at": { "type": "string", "format": "date-time" },
 		"generated_by": { "type": "string", "minLength": 1 },
@@ -28,7 +28,7 @@
 			"$ref": "#/$defs/artifact_ref"
 		},
 		"source_root": {
-			"description": "1.1: absolute source root the action paths are relative to, copied from the consumed inventory — apply resolves files from the plan alone. Optional for schema-compat with 1.0 plans, which apply refuses with ERR-006 (regenerate).",
+			"description": "Absolute source root the action paths are relative to, copied from the consumed inventory so apply resolves files from the plan alone. Optional in the artifact contract; execution refuses an absent root with ERR-006 regeneration guidance.",
 			"type": "string",
 			"minLength": 1
 		},
@@ -192,7 +192,6 @@
 				"newlines",
 				"whitespace",
 				"write",
-				"parallel",
 				"limits",
 				"safety"
 			],
@@ -264,32 +263,6 @@
 						"dry_run_default": { "type": "boolean" },
 						"backup_dir": { "type": ["string", "null"] },
 						"atomic": { "type": "boolean" }
-					}
-				},
-				"parallel": {
-					"type": "object",
-					"additionalProperties": false,
-					"required": [
-						"enabled",
-						"model",
-						"workers",
-						"start_method",
-						"chunksize",
-						"maxtasksperchild"
-					],
-					"properties": {
-						"enabled": { "type": "boolean" },
-						"model": { "enum": ["process", "sequential"] },
-						"workers": {
-							"oneOf": [{ "const": "auto" }, { "type": "integer", "minimum": 1 }]
-						},
-						"start_method": { "enum": ["forkserver", "spawn"] },
-						"chunksize": {
-							"oneOf": [{ "const": "auto" }, { "type": "integer", "minimum": 1 }]
-						},
-						"maxtasksperchild": {
-							"oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 1 }]
-						}
 					}
 				},
 				"limits": {

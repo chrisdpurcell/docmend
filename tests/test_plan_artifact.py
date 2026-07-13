@@ -1,5 +1,6 @@
 """DR-002 plan artifact: model<->schema conformance, round-trip, IDs (adr-0005, IR-007)."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -98,6 +99,25 @@ class TestPlanArtifactIO:
         target.write_text('{"schema": "docmend/plan"}')
         with pytest.raises(artifacts.ArtifactError):
             artifacts.read_plan(target)
+
+    def test_read_plan_1_x__regenerate_error(self, tmp_path: Path) -> None:
+        target = tmp_path / "old-plan.json"
+        document = sample_plan().model_dump(mode="json")
+        document["schema_version"] = "1.2"
+        config = document["config"]
+        assert isinstance(config, dict)
+        config["parallel"] = {
+            "enabled": False,
+            "model": "process",
+            "workers": "auto",
+            "start_method": "forkserver",
+            "chunksize": "auto",
+            "maxtasksperchild": None,
+        }
+        target.write_text(json.dumps(document), encoding="utf-8")
+
+        with pytest.raises(artifacts.ArtifactError, match=r"plan schema 1\.2.*regenerate.*v2"):
+            artifacts.read_plan_snapshot(target)
 
     def test_snapshot__model_and_hash_come_from_one_read(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

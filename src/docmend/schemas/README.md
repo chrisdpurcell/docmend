@@ -5,7 +5,7 @@ The hand-authored JSON Schemas here are the **durable external contract** for do
 | Schema | Artifact | Representation | Producing command | Current version |
 | --- | --- | --- | --- | --- |
 | `inventory.schema.json` | DR-001 inventory | single JSON document | `scan` (MS-1) | 1.2 (MS-5: `timeout` scan-skip reason + `skipped_by_reason.timeout` counter, FR-019; MS-3: `encoding.detect` provenance, path-containment patterns) |
-| `plan.schema.json` | DR-002 plan | single JSON document | `plan` (MS-2) | 1.2 (MS-5: `timeout` skip reason, FR-019; MS-3: optional `source_root`, path-containment patterns) |
+| `plan.schema.json` | DR-002 plan | single JSON document | `plan` (MS-2) | 2.0 (v2 removes the inert `parallel` config snapshot; plan 1.x requires regeneration, while its supported inventory may be reused; OQ-037, adr-0005) |
 | `report.schema.json` | DR-003 apply report | single JSON document | `apply` (MS-3) | 2.0 (attempt lineage, explicit `not-attempted` outcomes, and manifest binding; adr-0019) |
 | `verify-report.schema.json` | FR-014 verification report | single JSON document | `verify` (Plan D, optional `--out`) | 1.0 |
 | `manifest.schema.json` | DR-004 manifest — schema covers **one NDJSON line** | JSON Lines, append-only | `apply` / `restore` (MS-3) | 2.0 (universal write-ahead intents, durable object identities, attempt lineage, and apply/restore kind; adr-0019) |
@@ -15,7 +15,7 @@ Conventions (adr-0005):
 
 - **Draft 2020-12**, validated with `jsonschema`'s `Draft202012Validator` + `FormatChecker` (`format` is asserted, not annotation-only — OQ-018).
 - **Strict**: every object declares `additionalProperties: false`; drift is rejected, never silently accepted.
-- **Versioned**: every instance carries `schema` (artifact kind) and `schema_version` (`MAJOR.MINOR`). Compatibility policy is **backward-only**: a newer tool must read (or migrate) older artifacts. MINOR = additive (new optional fields, new enum values); MAJOR = removed/renamed fields or changed meaning. Bump the version and the instance `pattern` together, and record the change in the spec's revision history.
+- **Versioned**: every instance carries `schema` (artifact kind) and `schema_version` (`MAJOR.MINOR`). Compatibility is backward-only within a supported major unless an approved MAJOR clean break explicitly requires migration or regeneration. MINOR = additive (new optional fields, new enum values); MAJOR = removed/renamed fields or changed meaning. Bump the version and the instance `pattern` together, and record the change in the spec's revision history. Plan 2.0 is such a clean break: v2 rejects plan 1.x with regeneration guidance before schema validation, gate evaluation, or mutation.
 - **Identity fields**: `run_id` on every artifact; `action_id` (`<run_id>/a<seq>`) on plan/report/manifest records; `docmend_id` (UUIDv7, adr-0008) on plan actions and manifest records.
 - The manifest is NDJSON because a single JSON document cannot be appended crash-safely; one record is appended and fsynced per mutation, during the run, never only at the end (spec 12.3).
 

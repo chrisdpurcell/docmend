@@ -119,7 +119,7 @@ class TestEnumDriftGuard:
 def _minimal_plan() -> dict[str, object]:
     return {
         "schema": "docmend/plan",
-        "schema_version": "1.1",
+        "schema_version": "2.0",
         "run_id": RUN_ID,
         "generated_at": TIMESTAMP,
         "generated_by": "docmend 0.1.0",
@@ -238,6 +238,15 @@ class TestSchemaSatisfiability:
 
     def test_plan_schema__accepts_minimal_instance_and_default_config(self) -> None:
         validate_artifact("plan", _minimal_plan())
+
+    def test_plan_schema__excludes_legacy_parallel_snapshot(self) -> None:
+        schema = load_schema("plan")
+        defs = cast("dict[str, dict[str, object]]", schema["$defs"])
+        config = defs["config_snapshot"]
+        properties = cast("dict[str, object]", config["properties"])
+        required = cast("list[str]", config["required"])
+        assert "parallel" not in properties
+        assert "parallel" not in required
 
     def test_report_schema__accepts_minimal_instance(self) -> None:
         validate_artifact("report", _minimal_report())

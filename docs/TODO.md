@@ -25,7 +25,7 @@ Instructions for AI agents:
   - [x] Plan D — verify redesign: false-clean closure, exactly-once `verify --plan`, optional guarded verify-report, repeatable attempt lineage, and same-root scan/verify locking (DMR-05). The three-round-approved [plan](superpowers/plans/2026-07-11-safety-core-d-verify-redesign.md) landed as eight green slices (`39784b0..f906e9e`), was fast-forward merged into `dev`, and was pushed to `origin/dev`; final gate: 983 passed, one opt-in scale skip, 95% branch coverage; spec rev 0.29 synchronizes FR-014/IR-004/IR-007 evidence.
   - [ ] Sub-project 2 — scale/DMR-08: execute the owner-approved [million-file design](superpowers/specs/2026-07-11-million-file-scale-and-resource-design.md) through the reviewed [implementation plan](superpowers/plans/2026-07-11-million-file-scale-and-resource-contract.md).
     - [x] Change control: settle OQ/RQ-037, revise SPEC-VHHB to 0.30, accept ADR-0022, supersede ADR-0007, and amend ADR-0005 for plan 2.0.
-    - [ ] Config and artifact compatibility: remove `parallel.*`, reject legacy tables, adopt plan schema 2.0, and reject plan 1.x before gate evaluation or mutation.
+    - [x] Config and artifact compatibility: remove `parallel.*`, reject legacy tables, adopt plan schema 2.0, and reject plan 1.x before gate evaluation or mutation.
     - [ ] Evidence and resource harness: add strict public-safe evidence/reference/threshold contracts, external RSS stage supervision, capacity preflight, and deterministic corpus recipes.
     - [ ] Default guard: replace the stale scale test with the 1,000-file source-tree PR tier.
     - [ ] Liveness and capacity: add aggregate heartbeat/terminal events and evidence-based per-filesystem resource accounting.

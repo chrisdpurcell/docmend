@@ -253,6 +253,20 @@ def read_plan(path: Path) -> Plan:
     return read_plan_snapshot(path)[0]
 
 
+def _reject_legacy_plan(document: object, path: Path) -> None:
+    if not isinstance(document, dict):
+        return
+    typed_document = cast("dict[str, object]", document)
+    if typed_document.get("schema") != "docmend/plan":
+        return
+    version = typed_document.get("schema_version")
+    if isinstance(version, str) and version.startswith("1."):
+        raise ArtifactError(
+            f"{path}: plan schema {version} is not executable by docmend v2; "
+            "regenerate the plan with docmend v2 (the inventory may be reused)"
+        )
+
+
 def read_plan_snapshot(path: Path) -> tuple[Plan, str]:
     """Load a plan model and digest from one immutable byte snapshot."""
     try:
@@ -265,6 +279,10 @@ def read_plan_snapshot(path: Path) -> tuple[Plan, str]:
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         msg = f"{path}: not valid JSON — {exc}"
         raise ArtifactError(msg) from exc
+    # Reject the known clean-break format before the 2.x schema turns it into a
+    # generic validation error; operators need the safe regeneration path before
+    # any caller can evaluate gates, acquire locks, or mutate library content.
+    _reject_legacy_plan(document, path)
     validate_artifact("plan", document)
     digest = f"sha256:{hashlib.sha256(payload).hexdigest()}"
     return Plan.model_validate(document), digest

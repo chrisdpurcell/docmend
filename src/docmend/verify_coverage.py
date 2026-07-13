@@ -202,13 +202,22 @@ def load_verification_evidence(
     plan_path: Path | None,
     manifest_paths: Sequence[Path],
     report_paths: Sequence[Path],
+    *,
+    plan_snapshot: tuple[Plan, str] | None = None,
 ) -> VerificationEvidence:
-    """Load immutable artifact snapshots and order their unified attempt graph."""
+    """Load immutable artifact snapshots and order their unified attempt graph.
+
+    A supplied ``plan_snapshot`` must be the snapshot read from ``plan_path``;
+    it is reused without rereading so callers can reject incompatible plans
+    before locking while loading mutation evidence inside the corpus lock.
+    """
     plan: Plan | None = None
     plan_sha256: str | None = None
     plan_input: VerificationInput | None = None
     if plan_path is not None:
-        plan, plan_sha256 = artifacts.read_plan_snapshot(plan_path)
+        plan, plan_sha256 = (
+            plan_snapshot if plan_snapshot is not None else artifacts.read_plan_snapshot(plan_path)
+        )
         plan_input = VerificationInput(
             kind="plan",
             path=str(plan_path),

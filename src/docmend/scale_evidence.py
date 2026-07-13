@@ -37,7 +37,7 @@ from pydantic import (
 from docmend.artifacts import write_json_artifact
 from docmend.inventory import RunId, Sha256
 
-SCALE_EVIDENCE_SCHEMA_VERSION = "1.0"
+SCALE_EVIDENCE_SCHEMA_VERSION = "1.1"
 REFERENCE_ENVIRONMENT_SCHEMA_VERSION = "1.0"
 SCALE_THRESHOLDS_SCHEMA_VERSION = "1.0"
 BINDING_CAPACITY_MARGIN = 0.25
@@ -119,7 +119,7 @@ class StageEvidence(_StrictModel):
     bytes_per_second: Annotated[float, Field(ge=0)]
     peak_rss_bytes: Annotated[int, Field(ge=0)] | None
     python_allocation_peak_bytes: Annotated[int, Field(ge=0)] | None
-    vm_swap_peak_bytes: Annotated[int, Field(ge=0)]
+    vm_swap_peak_bytes: Annotated[int, Field(ge=0)] | None
     exit_code: int
     completed: bool
     artifact_bytes: dict[ArtifactSizeName, ArtifactSize]
@@ -245,7 +245,7 @@ class ScaleEvidence(_StrictModel):
     schema_kind: Literal["docmend/scale-evidence"] = Field(
         default="docmend/scale-evidence", alias="schema"
     )
-    schema_version: Literal["1.0"] = SCALE_EVIDENCE_SCHEMA_VERSION
+    schema_version: Literal["1.1"] = SCALE_EVIDENCE_SCHEMA_VERSION
     status: EvidenceStatus
     tier: QualificationTier
     candidate_commit: Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
@@ -313,7 +313,9 @@ class ScaleEvidence(_StrictModel):
             expected_verify_exit = 1 if self.totals.expected_findings else 0
             if self.stages[3].exit_code != expected_verify_exit:
                 raise ValueError("verify exit code does not reconcile with expected findings")
-        if any(stage.vm_swap_peak_bytes for stage in self.stages):
+        if any(stage.vm_swap_peak_bytes is None for stage in self.stages):
+            raise ValueError("passing binding evidence requires available child swap telemetry")
+        if any(stage.vm_swap_peak_bytes != 0 for stage in self.stages):
             raise ValueError("passing binding evidence requires zero child swap")
         terminal = (
             self.totals.applied

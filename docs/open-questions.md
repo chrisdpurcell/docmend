@@ -7,7 +7,7 @@
   - _open question_ (`OQ-###`) is a decision still to be made — the primary unit of this document.
   - _resolved question_ (`RQ-###`, already settled) lives in the companion file [`resolved-questions.md`](resolved-questions.md).
 - **Priority scale:** open questions carry a `P0 blocker` / `P1 near-blocker` / `P2 decision` label; the gap-analysis-sourced ones also carry a High / Medium / Low gap-analysis priority. The full ranked register with downstream-impact analysis lives in [`gap-analysis.md`](gap-analysis.md).
-- **Status:** OQ-001..037 are settled — see [`resolved-questions.md`](resolved-questions.md), RQ-001..037. **Two open questions:** OQ-038 and OQ-039 (both non-blocking; implementation proceeds on their recorded assumptions per the spec's Appendix B rules).
+- **Status:** OQ-001..037 are settled — see [`resolved-questions.md`](resolved-questions.md), RQ-001..037. **Three open questions:** OQ-038, OQ-039, and OQ-040 (all non-blocking; implementation proceeds on their recorded assumptions per the spec's Appendix B rules).
 
 ## Table of Contents
 
@@ -51,6 +51,27 @@
 - The approved design requires a deterministic 25% byte/inode margin, while the Task 4 grouping example expects the un-margined sum of 150 bytes. Making the grouping test's zero margin explicit preserves both requirements.
 - The approved reference-class prose does not say whether recorded RAM/CPU/runtime fields are exact class identity or minimum/compatible comparisons, and “no material swap activity” does not define how unavailable child telemetry behaves. The conservative assumption prevents a missing measurement from becoming a false zero.
 - Mountinfo exposes per-mount and superblock option fields separately. Keeping field 11 private avoids publishing value-bearing filesystem details or misclassifying an otherwise eligible btrfs mount solely because those private details exist.
+- Task 9 is the owner approval boundary: pilot review and specification revision two may adopt or amend this assumption before evidence becomes binding.
+
+#### My Comments
+
+(none yet — owner block, agent does not edit)
+
+### OQ-040 — streamed scale corpus and private stage-supervisor contract (`P2 decision`, non-blocking)
+
+**Raised:** 2026-07-13 (DMR-08 Task 5 implementation) **Owner:** owner **Needed by:** DMR-08 pilot **Spec:** §21 OQ-040; touches NFR-001, §14, §17.2, and OQ-037
+
+**The unresolved decision:** what exact deterministic corpus summary/materialization semantics and private request/result/process/file contract complete Task 5 without making conservation, resource budgeting, or RSS/swap evidence platform- or race-dependent?
+
+**Current assumption (implementation proceeds on this per Appendix B):** `iter_recipes(count)` accepts a strict non-boolean integer from 1 through 1,000,000 and streams unique frozen recipes in index order without retaining prior recipes. The 40-bucket mix is normative: 24 UTF-8/LF `.txt` renames, 8 UTF-8/CRLF `.txt` rewrites plus renames, 4 clean UTF-8/LF Markdown no-ops, 2 UTF-8/CRLF Markdown rewrites, 1 confidently detectable legacy conversion above the non-ASCII floor, and 1 below-floor legacy skip that yields exactly one encoding finding. Every full traversal starts a fresh fixed-seed `random.Random` and consumes one render per recipe, so the no-write summary and materialization byte counts match. Summary allocated bytes round each regular file before aggregation; directory metadata, artifacts, logs, and staging allowances remain separate. Directory/inode accounting includes the corpus root, `lib`, every used first-level shard, and every used second-level shard. Materialization requires an absent root; publishes owner-only directories from held, empty private descriptors with Linux `renameat2(RENAME_NOREPLACE)`; creates every regular file exclusively with no-follow; and reconciles the final published name of every bounded shard identity before returning. It never merges, resets, deletes, or follows stale entries.
+
+The supervisor transport is strict versioned private JSON. A request identifies one stage, a non-empty NUL-free scalar-Unicode argv, an existing absolute cwd, a validated finite environment overlay, and safe workspace-relative stdout/stderr names; the result records that stage, completion, nullable exit/RSS on spawn/reap failure, nullable child-swap peak, elapsed time, tracing-disabled state, private output names, and a finite generic error code. The request is opened no-follow; one real mode-0700 workspace identity is held across request loading, output capture, and publication; and all private outputs publish exclusively as owner-only regular files. The result is hard-linked no-clobber from its held staged descriptor and reconciled by no-follow identity, type, and mode rather than trusted through a mutable temporary name. The final child environment starts from only a fixed safe inherited allowlist plus the request overlay, never an arbitrary parent-environment copy; it rejects NULs and explicit tracing/instrumentation overrides, removes `PYTHONTRACEMALLOC`, `PYTHONPATH`, and `PYTHONHOME`, and forces `PYTHONNOUSERSITE=1`. Every spaced or combined direct-Python `-X tracemalloc[=N]` argv form is refused, and environment-launcher wrappers are refused rather than allowed to bypass that proof. One fresh supervisor creates exactly one `Popen(..., shell=False)` child, samples child `VmSwap` immediately and every 50 ms, makes one explicit `Popen.wait()` finalization call even after telemetry failure, then reads `RUSAGE_CHILDREN.ru_maxrss` once and converts Linux KiB to bytes. Elapsed time spans immediately before spawn through immediately after that wait. Any unavailable/malformed swap sample yields `null`, never a false zero; a nonzero child exit is still a completed measurement. The wrapper returns `0` whenever it exclusively publishes a trustworthy private result, including nonzero-child and incomplete spawn/reap results; invalid invocation/request contracts return `2`, failures before trustworthy publication return `1`, and no wrapper status mirrors the child exit.
+
+#### Agent notes
+
+- The historical Faker-backed bucket 38 produced only 16 non-ASCII bytes and therefore joined bucket 39 as a skip (34 actions / 4 no-ops / 2 skips per 40). Task 5 intentionally corrects the normative mix to 35 / 4 / 1 and pins it through the real detector/planner rather than preserving incidental bytes.
+- For `n = 40q + r`, bucket `b` occurs `q + int(b < r)` times. At one million files this yields 875,000 actions, 100,000 no-ops, 25,000 plan skips/findings, 2,228 directories, and 1,002,228 required inodes.
+- Private request/result/output data may contain operational paths and argv but never enters public `StageEvidence`; unavailable swap telemetry makes evidence incomplete under OQ-039.
 - Task 9 is the owner approval boundary: pilot review and specification revision two may adopt or amend this assumption before evidence becomes binding.
 
 #### My Comments

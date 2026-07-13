@@ -380,6 +380,46 @@ class TestPublicContract:
         with pytest.raises(ScaleEvidenceError, match="vm_swap_peak_bytes"):
             validate_qualification_document("scale-evidence", raw)
 
+    def test_unavailable_child_swap_is_explicit_and_never_passing(self) -> None:
+        stage_document = _stage("scan").model_dump()
+        stage_document["vm_swap_peak_bytes"] = None
+        stage = StageEvidence.model_validate(stage_document)
+        assert stage.completed is True
+        assert stage.vm_swap_peak_bytes is None
+
+        incomplete = scale_evidence(status="incomplete").model_dump()
+        incomplete_stages = cast("list[dict[str, object]]", incomplete["stages"])
+        incomplete_stages[0]["vm_swap_peak_bytes"] = None
+        assert ScaleEvidence.model_validate(incomplete).status == "incomplete"
+
+        incomplete_json = scale_evidence(status="incomplete").model_dump(mode="json")
+        incomplete_json_stages = cast("list[dict[str, object]]", incomplete_json["stages"])
+        incomplete_json_stages[0]["vm_swap_peak_bytes"] = None
+        validate_qualification_document("scale-evidence", incomplete_json)
+        assert incomplete_json["schema_version"] == "1.1"
+
+        stale_model_version = dict(incomplete)
+        stale_model_version["schema_version"] = "1.0"
+        with pytest.raises(ValidationError, match="schema_version"):
+            ScaleEvidence.model_validate(stale_model_version)
+
+        stale_version = dict(incomplete_json)
+        stale_version["schema_version"] = "1.0"
+        with pytest.raises(ScaleEvidenceError, match="schema_version"):
+            validate_qualification_document("scale-evidence", stale_version)
+
+        passing = scale_evidence().model_dump()
+        passing_stages = cast("list[dict[str, object]]", passing["stages"])
+        passing_stages[0]["vm_swap_peak_bytes"] = None
+        with pytest.raises(ValidationError, match="available child swap"):
+            ScaleEvidence.model_validate(passing)
+
+        raw = scale_evidence().model_dump(mode="json")
+        raw_stages = cast("list[dict[str, object]]", raw["stages"])
+        raw_stages[0]["vm_swap_peak_bytes"] = None
+        with pytest.raises(ScaleEvidenceError, match="vm_swap_peak_bytes"):
+            validate_qualification_document("scale-evidence", raw)
+
     def test_public_maps__accept_only_finite_artifact_names(self) -> None:
         stage = _stage("scan").model_dump()
         stage["artifact_bytes"] = {"/private/output": 1}

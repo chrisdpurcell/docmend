@@ -17,7 +17,7 @@ Scale qualification records use a separate schema registry and are deliberately 
 
 | Schema | Contract | Purpose | Current version |
 | --- | --- | --- | --- |
-| `scale-evidence.schema.json` | DMR-08 qualification evidence | Binds candidate and wheel provenance, reference-environment identity, resource preflight, per-stage measurements, conservation totals, and threshold verdicts. A required method discriminator keeps binding external RSS mutually exclusive from diagnostic Python-allocation peaks; finite-key maps admit only named artifact schemas and public artifact-size classes. | 1.0 |
+| `scale-evidence.schema.json` | DMR-08 qualification evidence | Binds candidate and wheel provenance, reference-environment identity, resource preflight, per-stage measurements, conservation totals, and threshold verdicts. A required method discriminator keeps binding external RSS mutually exclusive from diagnostic Python-allocation peaks; finite-key maps admit only named artifact schemas and public artifact-size classes. Version 1.1 makes unavailable child-swap telemetry explicit for incomplete evidence. | 1.1 |
 | `reference-environment.schema.json` | DMR-08 reference environment | Records the public-safe Linux CPU, memory, storage, filesystem, and value-free mount semantics used to classify a qualification environment. | 1.0 |
 | `scale-thresholds.schema.json` | DMR-08 executable thresholds | Binds the exact 10,000- and 100,000-file evidence hashes, shared reference environment, fitting method, and frozen peak-RSS, slope, and linearity limits. | 1.0 |
 

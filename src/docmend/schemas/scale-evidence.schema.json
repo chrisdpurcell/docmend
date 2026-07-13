@@ -32,7 +32,7 @@
 	],
 	"properties": {
 		"schema": { "const": "docmend/scale-evidence" },
-		"schema_version": { "type": "string", "const": "1.0", "pattern": "^1\\.[0-9]+$" },
+		"schema_version": { "type": "string", "const": "1.1", "pattern": "^1\\.[0-9]+$" },
 		"status": { "enum": ["passing", "failed", "incomplete", "diagnostic"] },
 		"tier": { "enum": ["pr", "pilot", "scheduled", "release", "file-size"] },
 		"candidate_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
@@ -457,7 +457,9 @@
 				"python_allocation_peak_bytes": {
 					"oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 0 }]
 				},
-				"vm_swap_peak_bytes": { "type": "integer", "minimum": 0 },
+				"vm_swap_peak_bytes": {
+					"oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 0 }]
+				},
 				"exit_code": { "type": "integer" },
 				"completed": { "type": "boolean" },
 				"artifact_bytes": { "$ref": "#/$defs/artifact_bytes" }

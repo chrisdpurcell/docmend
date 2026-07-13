@@ -72,9 +72,9 @@ Release timing starts immediately before the scan supervisor dispatch and ends a
 
 ## Thresholds and supporting points
 
-`thresholds.json` is the future revision-two executable baseline for scheduled and release evidence. It binds the reference-environment hash, immutable 10,000- and 100,000-file supporting-point hashes, stage-aligned external peak RSS data, the exact linear fitting method, and the derived peak, slope, and linearity limits. The implementation recomputes those limits before use; it never weakens a threshold after a miss.
+`thresholds.json` is the revision-two executable baseline for scheduled and release evidence. It binds the reference-environment hash, immutable 10,000- and 100,000-file supporting-point hashes, stage-aligned external peak RSS data, and the exact-per-stage-linear-projection method. Its frozen limits are 25,902,581,760 bytes absolute peak RSS, 25,804 bytes/file incremental slope, and 0.20 linearity. The implementation recomputes those limits before use; it never weakens a threshold after a miss.
 
-Store reviewed pilot inputs under `supporting/`. Store only complete, reviewed, passing binding evidence under `accepted/`. Until revision two creates those artifacts, their absence is intentional.
+The revision-two fit uses diagnostic point `supporting/14f3118e4f57c992b9d5088b9cb4f35fb3658686-pilot-10000.json` and passing point `accepted/14f3118e4f57c992b9d5088b9cb4f35fb3658686-pilot-100000.json`, both bound to `reference-environment.json`. Store future reviewed diagnostic inputs under `supporting/`; store only complete, reviewed, passing binding evidence under `accepted/`.
 
 ## Publication and accepted names
 

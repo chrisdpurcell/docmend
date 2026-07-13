@@ -1078,7 +1078,7 @@ git commit -m "feat(scale): report liveness and shared capacity"
 - Modify: `docs/specs/docmend.md` (revision two)
 - Modify: `docs/STATUS.md`, `docs/TODO.md`
 
-- [ ] **Step 1: Capture and commit a sanitized reference candidate**
+- [x] **Step 1: Capture and commit a sanitized reference candidate**
 
 ```bash
 uv run python scripts/qualify_scale.py --capture-reference \
@@ -1093,7 +1093,7 @@ git add docs/scale-evidence/reference-environment.json
 git commit -m "docs(scale): record reference environment"
 ```
 
-- [ ] **Step 2: Run the uninstrumented 10k diagnostic**
+- [x] **Step 2: Run the uninstrumented 10k diagnostic**
 
 ```bash
 uv run python scripts/qualify_scale.py --tier pilot --diagnostic --count 10000 \
@@ -1104,7 +1104,7 @@ uv run python scripts/qualify_scale.py --tier pilot --diagnostic --count 10000 \
 
 Expected: all four stages complete; binding children have no allocation tracing; evidence is diagnostic and stays outside the accepted directory.
 
-- [ ] **Step 3: Run and explicitly accept the 100k pilot**
+- [x] **Step 3: Run and explicitly accept the 100k pilot**
 
 ```bash
 mkdir -p docs/scale-evidence/accepted
@@ -1117,11 +1117,11 @@ uv run python scripts/qualify_scale.py --tier pilot \
 
 Expected: exact artifact conservation, complete `verify --plan` coverage, the exact recipe-derived finding multiset with no unexpected findings, zero child swap, reference match, and a new no-clobber accepted pilot document.
 
-- [ ] **Step 4: Derive and freeze thresholds in SPEC revision two**
+- [x] **Step 4: Derive and freeze thresholds in SPEC revision two**
 
 Validate and copy the sanitized 10k diagnostic into `docs/scale-evidence/supporting/`; it is supporting fit evidence, not an accepted baseline. Use `derive_thresholds` on the immutable per-stage context from that committed 10k point and the accepted 100k point. Write `docs/scale-evidence/thresholds.json` with both relative evidence identities and SHA-256 hashes, the shared reference-environment hash, target count 1,000,000, exact per-stage projection method, 25%-headroom projected-peak and maximum-slope limits, and linearity tolerance. Load the new baseline through the production validator and reproduce the verdict before revising SPEC. Record the same values, evidence links, and swap rule in revision two. Keep NFR-001 Partial.
 
-- [ ] **Step 5: Validate and commit evidence plus revision two**
+- [x] **Step 5: Validate and commit evidence plus revision two**
 
 ```bash
 uv run python scripts/fix_spec_toc.py

@@ -1,0 +1,24 @@
+{
+  "schema": "docmend/scale-thresholds",
+  "schema_version": "2.0",
+  "reference_environment_sha256": "sha256:458b51662c05290784130cf02be812919063121e0ecb33086f5a6373a85f1d55",
+  "measurement_points": [
+    {
+      "file_count": 10000,
+      "evidence": "supporting/14f3118e4f57c992b9d5088b9cb4f35fb3658686-pilot-10000.json",
+      "evidence_sha256": "sha256:635fee6013364eab9d47d07eab37d99fdb522a9d3ee9dcac05c7939d7648ad00"
+    },
+    {
+      "file_count": 100000,
+      "evidence": "accepted/14f3118e4f57c992b9d5088b9cb4f35fb3658686-pilot-100000.json",
+      "evidence_sha256": "sha256:32f71b4e86549997787c3a63d69f7bbede0d8066c64c3f241d813285e993f0d0"
+    }
+  ],
+  "target_file_count": 1000000,
+  "fitting_method": "exact-per-stage-linear-projection",
+  "limits": {
+    "absolute_peak_rss_bytes": 25902581760,
+    "slope_bytes_per_file": 25804,
+    "linearity_tolerance": 0.2
+  }
+}

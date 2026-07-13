@@ -1053,6 +1053,45 @@ class TestRunStage:
         assert result.vm_swap_peak_bytes is None
         assert process.wait_calls == 1
 
+    def test_run_stage__terminal_missing_swap_preserves_valid_sample_history(
+        self, tmp_path: Path
+    ) -> None:
+        workspace = _private_workspace(tmp_path)
+        request = StageRequest.from_document(_request_document(cwd=str(workspace)))
+        process = _FakeProcess([None, 0], wait_result=0)
+        statuses = iter(("VmSwap:\t3 kB\n", "State:\tZ (zombie)\n"))
+        sleeps: list[float] = []
+        clocks = iter([1.0, 1.25])
+
+        def popen(
+            argv: Sequence[str],
+            *,
+            shell: bool,
+            stdin: int,
+            close_fds: bool,
+            cwd: Path,
+            stdout: IO[bytes],
+            stderr: IO[bytes],
+            env: Mapping[str, str],
+        ) -> _FakeProcess:
+            _ = (argv, shell, stdin, close_fds, cwd, stdout, stderr, env)
+            return process
+
+        result = run_stage(
+            request,
+            workspace=workspace,
+            popen=popen,
+            clock=lambda: next(clocks),
+            sleep=sleeps.append,
+            status_reader=lambda _pid: next(statuses),
+            getrusage=lambda: 1,
+        )
+
+        assert result.completed is True
+        assert result.vm_swap_peak_bytes == 3 * 1024
+        assert sleeps == [POLL_INTERVAL_SECONDS]
+        assert process.wait_calls == 1
+
     def test_run_stage__spawn_failure_is_strict_incomplete_without_wait_or_rusage(
         self, tmp_path: Path
     ) -> None:

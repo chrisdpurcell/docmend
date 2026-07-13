@@ -885,6 +885,11 @@ def _run_stage_at(
                 try:
                     sample = _parse_vm_swap(status_reader(process.pid))
                 except OSError, UnicodeError, StageContractError:
+                    # A Linux zombie has released its memory map and omits
+                    # VmSwap. Preserve prior samples only after poll confirms
+                    # exit; any telemetry failure while live remains unknown.
+                    if swap_samples > 0 and process.poll() is not None:
+                        return
                     swap_available = False
                     return
                 swap_samples += 1

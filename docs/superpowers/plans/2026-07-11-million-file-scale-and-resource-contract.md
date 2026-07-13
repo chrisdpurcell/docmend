@@ -10,6 +10,12 @@
 
 ---
 
+## Task 6 Contract Amendment (2026-07-13)
+
+Three independent pre-implementation reviews found that the original four-file Task 6 could not satisfy its own evidence/provenance requirements: scale-evidence 1.1 rejects truthful pre-scan/partial totals, public stage exits cannot represent the private supervisor's spawn/reap result, the threshold helper derives an absolute ceiling from the largest 100k observation instead of the required 1M projection, and the build backend is range-resolved outside `uv.lock`. SPEC-VHHB revision 0.34 and OQ-041 authorize the bounded assumptions in the approved design's Task 6 amendment.
+
+Task 6 is split into 6A contract completion and 6B orchestration. Tasks 7-12 retain their approved order and scope. This amendment does not pull heartbeat integration, the pilot, workflow, file-size matrix, or accepted release evidence forward.
+
 ## File Map
 
 | File | Responsibility |
@@ -26,11 +32,14 @@
 | `src/docmend/scale_resources.py` | Mount classification, capacity/inode preflight, reference matching, swap evidence. |
 | `src/docmend/scale_stage.py` | Typed one-child external-RSS supervisor implementation. |
 | `src/docmend/scale_qualification.py` | Typed four-stage qualification orchestration and CLI parser. |
+| `src/docmend/scale_build.py` | Exact clean-HEAD archive, fixed-backend wheel build, locked venv installation, and import-origin proof. |
+| `src/docmend/scale_reconcile.py` | Complete inventory/plan/report/manifest/verify and boundary-output reconciliation. |
 | `src/docmend/schemas/scale-evidence.schema.json`, `reference-environment.schema.json`, `scale-thresholds.schema.json` | Public qualification contracts, separate from product `ArtifactKind`. |
 | `src/docmend/scale_corpus.py` | Streaming deterministic million-file recipe source, expected findings, and exact budget summary. |
+| `src/docmend/frontmatter.py` | Code-owned current frontmatter schema version for qualification provenance. |
 | `scripts/measure_scale_stage.py` | One-child supervisor for external RSS and private output capture. |
 | `scripts/qualify_scale.py` | Repo-only four-stage qualification orchestrator. |
-| `tests/test_scale*.py`, `tests/test_config.py`, `tests/test_plan_artifact.py`, `tests/test_cli_*.py`, `tests/unit/writer/test_commit.py` | TDD coverage for every new contract. |
+| `tests/test_scale*.py`, `tests/test_config.py`, `tests/test_plan_artifact.py`, `tests/test_cli_*.py`, `tests/unit/writer/test_commit.py` | TDD coverage for every new contract, including exact build and complete reconciliation. |
 | `docs/scale-evidence/README.md`, `reference-environment.json`, `thresholds.json`, `supporting/*.json`, `accepted/*.json` | Sanitized, reviewed evidence, executable thresholds, and environment identity. |
 | `.github/workflows/scale-qualification.yml` | Repo-owned scheduled/manual diagnostic 100k lane. |
 | `src/docmend/observability.py`, stage loops, `src/docmend/writer/gate.py` | Best-effort aggregate liveness and evidence-based capacity accounting. |
@@ -491,18 +500,265 @@ git add src/docmend/scale_corpus.py src/docmend/scale_stage.py \
 git commit -m "feat(scale): add streamed corpus and RSS supervisor"
 ```
 
-### Task 6: Build the four-stage qualification orchestrator
+### Task 6A: Complete the qualification contracts
 
 **Files:**
 
-- Create: `scripts/qualify_scale.py`
+- Modify: `src/docmend/scale_evidence.py`
+- Modify: `src/docmend/schemas/scale-evidence.schema.json`
+- Modify: `src/docmend/schemas/scale-thresholds.schema.json`
+- Modify: `src/docmend/schemas/README.md`
+- Modify: `src/docmend/scale_stage.py`
+- Modify: `src/docmend/scale_resources.py`
+- Modify: `src/docmend/scale_corpus.py`
+- Modify: `src/docmend/frontmatter.py`
+- Modify: `tests/test_scale_evidence.py`
+- Modify: `tests/test_schemas.py`
+- Modify: `tests/test_scale_stage_runner.py`
+- Modify: `tests/test_scale_resources.py`
+- Modify: `tests/test_scale_corpus.py`
+
+- [ ] **Step 1: Write failing scale-evidence 2.0 partial-truth tests**
+
+Add tests for preflight-null build failure, pre-scan zero totals, scan-only and plan-only prefixes, measured-but-artifact-invalid stages, spawn/reap null exits, conservation-failed evidence, exact artifact-validated stage keys, structured-log accounting, finite outcome reasons, build-version provenance, runtime reconciliation, stage order/uniqueness, and passing/diagnostic full invariants. Pin the intended public shape:
+
+```python
+def test_pre_scan_incomplete__records_only_proven_zero_phases() -> None:
+    evidence = incomplete_evidence(
+        preflight=None,
+        outcome_reason="build-failed",
+        stages=[],
+        totals=zero_totals(expected_findings=25),
+    )
+    assert evidence.status == "incomplete"
+    assert evidence.totals.scanned == 0
+
+
+def test_measured_invalid_artifact__retains_measurement_without_run_identity() -> None:
+    stage = StageEvidence(
+        stage="scan",
+        run_id=None,
+        elapsed_seconds=1.0,
+        files_per_second=0.0,
+        bytes_per_second=0.0,
+        peak_rss_bytes=1024,
+        python_allocation_peak_bytes=None,
+        vm_swap_peak_bytes=0,
+        exit_code=0,
+        completed=True,
+        artifact_validated=False,
+        artifact_bytes={"stdout-log": 0, "stderr-log": 0},
+    )
+    assert stage.completed is True
+    assert stage.artifact_validated is False
+```
+
+Add inverse-invariant tests proving `completed=false` rejects any exit/RSS/allocation value, `completed=true` requires an exit plus exactly one memory value, `artifact_validated=false` rejects a public run ID, and `artifact_validated=true` requires the exact stage key set. Add schema/model parity tests proving 1.1 is rejected and the six product versions are derived from code-owner constants rather than repeated literals.
+
+- [ ] **Step 2: Run the evidence tests and confirm RED**
+
+```bash
+uv run pytest tests/test_scale_evidence.py tests/test_schemas.py -q
+```
+
+Expected: failures for schema 1.1, mandatory preflight/exit, unconditional full-corpus conservation, absent build/runtime/artifact state, and the missing frontmatter constant.
+
+- [ ] **Step 3: Implement scale-evidence 2.0 and current schema provenance**
+
+Use these finite contracts:
+
+```python
+SCALE_EVIDENCE_SCHEMA_VERSION = "2.0"
+SCALE_THRESHOLDS_SCHEMA_VERSION = "2.0"
+
+type OutcomeReason = Literal[
+    "explicit-diagnostic",
+    "reference-mismatch",
+    "reference-observation-unavailable",
+    "provenance-changed",
+    "build-failed",
+    "install-failed",
+    "capacity-insufficient",
+    "capacity-estimate-exceeded",
+    "corpus-materialization-failed",
+    "supervisor-failed",
+    "telemetry-unavailable",
+    "stage-exit",
+    "artifact-invalid",
+    "conservation-mismatch",
+    "finding-mismatch",
+    "threshold-exceeded",
+    "runtime-limit-exceeded",
+    "harness-error",
+]
+
+class WorkflowRuntimeVerdict(_StrictModel):
+    elapsed_seconds: Annotated[float, Field(ge=0)]
+    limit_seconds: Annotated[int, Field(gt=0)]
+    passed: bool
+
+class StageEvidence(_StrictModel):
+    stage: StageName
+    run_id: RunId | None
+    elapsed_seconds: Annotated[float, Field(ge=0)]
+    files_per_second: Annotated[float, Field(ge=0)]
+    bytes_per_second: Annotated[float, Field(ge=0)]
+    peak_rss_bytes: Annotated[int, Field(ge=0)] | None
+    python_allocation_peak_bytes: Annotated[int, Field(ge=0)] | None
+    vm_swap_peak_bytes: Annotated[int, Field(ge=0)] | None
+    exit_code: int | None
+    completed: bool
+    artifact_validated: bool
+    artifact_bytes: dict[ArtifactSizeName, ArtifactSize]
+```
+
+Add `structured-log` to `ArtifactSizeName`; add `build_frontend_version` and `build_backend_version` public labels; make `preflight` nullable; add `outcome_reason` and `workflow_runtime: WorkflowRuntimeVerdict | None`. Enforce the state biconditionals: `completed=false` forces null exit/RSS/allocation; `completed=true` requires known exit and exactly one memory measurement; `artifact_validated=false` forces null run ID; `artifact_validated=true` additionally requires completed, trusted run ID, and the exact stage-specific durable/log key set. Stages are an ordered unique prefix. Passing requires all four artifact-validated stages; non-passing evidence obeys phase-zero rules but may preserve a validated artifact's discrepant totals. Passing has no outcome reason; every other status has one.
+
+Only release evidence may carry workflow runtime. A release failure before scan dispatch has null runtime; once dispatch begins it is required even when a later stage stops. Passing/otherwise-complete release evidence requires it, uses a 43,200-second limit, and reconciles `passed == (elapsed <= limit)`. For a complete release, set public elapsed to `max(observed_outer_elapsed, sum(public_stage_elapsed))` and require it to be at least that stage sum, so float serialization cannot understate the workflow.
+
+When multiple conditions coexist, choose status/reason deterministically: any trustworthy stage/conservation/finding/threshold/runtime failure outranks incomplete/diagnostic classification, with primary reason order `stage-exit`, `conservation-mismatch`, `finding-mismatch`, `threshold-exceeded`, `runtime-limit-exceeded`; otherwise use the first lifecycle blocker in execution order, then `reference-mismatch`, then `explicit-diagnostic`. Add pairwise tests for threshold+runtime, reference+threshold, stage-exit+missing-artifact, and multiple lifecycle blockers.
+
+Add `FRONTMATTER_SCHEMA_VERSION = "1.0"` and `current_artifact_schema_versions()` using only `INVENTORY_SCHEMA_VERSION`, `PLAN_SCHEMA_VERSION`, `REPORT_SCHEMA_VERSION`, `MANIFEST_SCHEMA_VERSION`, `VERIFY_REPORT_SCHEMA_VERSION`, and the new frontmatter constant. Update both JSON Schemas and the schema README in the same edit.
+
+- [ ] **Step 4: Run the evidence tests and confirm GREEN**
+
+```bash
+uv run pytest tests/test_scale_evidence.py tests/test_schemas.py -q
+```
+
+- [ ] **Step 5: Write failing immutable threshold-context and 1M-projection tests**
+
+Cover stage-order mismatch, mutation after context load, mutation before acceptance, 10k diagnostic quality, 100k passing requirement, provenance mismatch, negative stage slope, projected peak dominated by a non-maximum pilot stage, exact boundary/one-unit-over verdicts, scheduled 100k evaluation, release three-point evaluation, upward serialization, and the old 100k-ceiling regression.
+
+```python
+def test_threshold_absolute_limit__projects_each_stage_to_one_million() -> None:
+    series = (
+        StageMemorySeries("scan", rss_10k=100_000_000, rss_100k=550_000_000),
+        StageMemorySeries("plan", rss_10k=300_000_000, rss_100k=350_000_000),
+        StageMemorySeries("apply", rss_10k=200_000_000, rss_100k=300_000_000),
+        StageMemorySeries("verify", rss_10k=150_000_000, rss_100k=250_000_000),
+    )
+    limits = derive_thresholds(series)
+    assert limits.target_file_count == 1_000_000
+    assert limits.absolute_peak_rss_bytes == 6_312_500_000
+```
+
+The expected value is `ceil(1.25 * (100,000,000 + 5,000 * 990,000))`; it deliberately proves the limit is not `1.25 * 550,000,000`.
+
+- [ ] **Step 6: Implement the frozen threshold context and pure evaluator**
+
+Add:
+
+```python
+@dataclass(frozen=True, slots=True)
+class StageMemorySeries:
+    stage: StageName
+    rss_10k: int
+    rss_100k: int
+
+@dataclass(frozen=True, slots=True)
+class ThresholdContext:
+    baseline: ThresholdBaseline
+    baseline_sha256: Sha256
+    stage_memory: tuple[StageMemorySeries, ...]
+```
+
+Add exact APIs `load_threshold_context(path: Path, *, reference_environment_sha256: Sha256) -> ThresholdContext` and `evaluate_thresholds(context: ThresholdContext, *, file_count: Literal[100_000, 1_000_000], stage_peak_rss: Mapping[StageName, int]) -> ThresholdVerdict`. `ThresholdBaseline` requires `target_file_count=1_000_000` and `fitting_method="exact-per-stage-linear-projection"`. The context loader performs the only point reads and derives four stage-aligned pairs from those immutable bytes. For each pair use the OQ-041 `g[s]`/`p[s,n]` formulas with `Fraction`. Derive limits from the largest projected 1M stage and largest non-negative stage slope with 25% upward-rounded headroom. Scheduled observed slope is `max_s max(0, (current100[s] - m10[s]) / 90_000)`; release observed slope is `max_s max(0, ols_s)` over the exact per-stage least-squares slopes for 10k/100k/1M. Maximum relative deviation is rounded upward to 12 decimals only for publication. Preserve compatibility wrappers only when they delegate to the context and cannot discard/re-read point state.
+
+- [ ] **Step 7: Run threshold tests and confirm GREEN**
+
+```bash
+uv run pytest tests/test_scale_evidence.py -q
+```
+
+- [ ] **Step 8: Write failing transport, observation, budget, and corpus-summary tests**
+
+Add request-writer/result-loader tests for collision, symlink/FIFO, wrong mode, duplicate key, non-finite number, truncated JSON, recursive JSON, and request/result stage/output-name mismatch. Add injected reference-observation tests for ext4/XFS/btrfs SSD, rotational HDD, dm/LVM leaf traversal, partition parent, mixed leaves, missing sysfs, tmpfs/network, RAM/CPU parsing, and public-label sanitization. Add exact shared/distinct-filesystem budget tests at 1, 40, 100,000, and 1,000,000 files, coefficient-overrun behavior, and largest rendered recipe agreement.
+
+```python
+def test_stage_result_loader__rejects_duplicate_key(tmp_path: Path) -> None:
+    path = private_file(tmp_path, '{"schema":"docmend/scale-stage-result","schema":"x"}')
+    with pytest.raises(StageContractError, match="duplicate"):
+        load_stage_result(path)
+
+
+def test_reference_observation__unprovable_rotation_is_unknown(fake_linux: FakeLinux) -> None:
+    fake_linux.remove_rotational_file()
+    observed = observe_reference_environment(Path("/workspace"), probes=fake_linux.probes)
+    assert observed.environment.storage_class == "unknown"
+```
+
+- [ ] **Step 9: Implement strict transport and immutable reference snapshots**
+
+Add `write_stage_request(request, path)` and `load_stage_result(path)` in `scale_stage.py`. The writer requires the held real mode-0700 parent and safe basename, writes canonical strict JSON plus newline as a mode-0600 regular file, fsyncs, and publishes no-clobber without pathname cleanup. The loader takes one no-follow regular mode-0600 descriptor snapshot, rejects duplicate keys/non-finite values/invalid Unicode/recursion, and calls `StageResult.from_document`. Keep private wire schema 1.0 because its shape is unchanged.
+
+Add `read_reference_environment_snapshot(path) -> tuple[ReferenceEnvironment, Sha256]`. Add injected `observe_reference_environment(workspace: Path, *, probes: ReferenceProbes) -> ReferenceObservation`, returning the sanitized model, selected mount projection, and fragment size. Follow every sysfs `slaves` edge to leaves; eligible local filesystems are SSD only when every leaf proves rotational `0`, HDD only when every leaf proves `1`, otherwise unknown. Never expose device/sysfs/mount paths.
+
+- [ ] **Step 10: Implement provisional capacity coefficients and independent boundary oracle**
+
+Add `fragment_size` and `largest_file_bytes` to `ScaleCorpusSummary` and compute both in the existing single streaming pass. The fragment field binds its physical-allocation total to the observed corpus destination. Add constants and `qualification_requirements()` in `scale_resources.py`:
+
+```python
+QUALIFICATION_BASE_BYTES = 256 * 1024 * 1024
+INVENTORY_BYTES_PER_INPUT = 2_048
+PLAN_BYTES_PER_INPUT = 4_096
+REPORT_BYTES_PER_ACTION = 2_048
+MANIFEST_BYTES_PER_ACTION = 8_192
+VERIFY_BYTES_PER_INPUT = 1_024
+STRUCTURED_LOG_BYTES_PER_INPUT_STAGE = 4_096
+SUPERVISOR_PRIVATE_BYTES_PER_FILE = 2 * 1024 * 1024
+SUPERVISOR_PRIVATE_FILES_PER_STAGE = 4
+QUALIFICATION_NONCORPUS_INODES = 64
+```
+
+Add frozen `CapacityPlacement(path: Path, fragment_size: int)`, requiring a positive fragment size and an existing identity-held no-follow probe directory. The absent corpus root uses its held existing parent. Implement `qualification_requirements(*, workspace: CapacityPlacement, corpus: CapacityPlacement, artifact: CapacityPlacement, supervisor: CapacityPlacement, summary: ScaleCorpusSummary) -> tuple[Requirement, ...]`; reject a corpus placement whose fragment differs from `summary.fragment_size`. It emits four placement-aware requirements before grouping:
+
+- corpus: exact corpus allocation/inodes plus the largest writer staging file rounded with `corpus.fragment_size` and one staging inode;
+- artifact: inventory, plan, report, manifest, verify-report, four structured logs, and the largest atomic staging artifact, each rounded with `artifact.fragment_size`, plus ten named-file inodes;
+- supervisor: request/result/stdout/stderr as four 2 MiB files for each of four stages, each rounded with `supervisor.fragment_size`, plus sixteen inodes; and
+- workspace: the 256 MiB base rounded with `workspace.fragment_size` plus 64 additional non-corpus inodes.
+
+Group those existing probe paths by followed `st_dev`, then delegate the single 25% margin to `check_capacity`. Build/venv bytes are not estimated because setup precedes this check. Add exact same-filesystem and four-distinct-filesystem arithmetic tests with different fragment sizes, including per-file rounding when a destination fragment does not divide 2 MiB. Add `expected_boundary_output(recipe)` to the corpus source: derive target path, bytes, hash, and encoding directly from the synthetic recipe/render contract, without calling planning or transform production code.
+
+- [ ] **Step 11: Run focused and full gates**
+
+```bash
+uv run pytest tests/test_scale_evidence.py tests/test_schemas.py \
+  tests/test_scale_stage_runner.py tests/test_scale_resources.py \
+  tests/test_scale_corpus.py -q
+uv run python scripts/check.py
+git diff --check
+```
+
+- [ ] **Step 12: Commit the contract-completion slice**
+
+```bash
+git add src/docmend/scale_evidence.py src/docmend/scale_stage.py \
+  src/docmend/scale_resources.py src/docmend/scale_corpus.py \
+  src/docmend/frontmatter.py src/docmend/schemas \
+  tests/test_scale_evidence.py tests/test_schemas.py \
+  tests/test_scale_stage_runner.py tests/test_scale_resources.py \
+  tests/test_scale_corpus.py
+git commit -m "feat(scale): complete qualification contracts"
+```
+
+### Task 6B: Build the four-stage installed-wheel orchestrator
+
+**Files:**
+
+- Modify: `pyproject.toml` (`[build-system]` requirement only; no tool-table change)
+- Create: `src/docmend/scale_build.py`
+- Create: `src/docmend/scale_reconcile.py`
 - Create: `src/docmend/scale_qualification.py`
+- Create: `scripts/qualify_scale.py`
+- Create: `tests/test_scale_build.py`
+- Create: `tests/test_scale_reconcile.py`
 - Create: `tests/test_scale_qualification.py`
 - Create: `docs/scale-evidence/README.md`
 
-- [ ] **Step 1: Write failing orchestration tests**
+- [ ] **Step 1: Write failing parser, workspace, and exact-build tests**
 
-Use fake builders/executables/readers to cover fixed binding counts, dirty-tree refusal, exact-HEAD wheel build and hash capture, reference mismatch, required threshold-baseline loading for scheduled/release, four-stage command order, implicit manifest derivation from report run ID, stage-specific exit semantics, downstream stop on failure, incomplete evidence retention, explicit diagnostic output, acceptance as explicit no-clobber action, and artifact/totals reconciliation.
+Cover fixed binding counts (pilot/scheduled 100,000; release 1,000,000), diagnostic-only count override, capture-reference exclusivity, threshold requirement, acceptance refusal for diagnostics, unsafe/preexisting/in-checkout workspaces, inside-checkout ordinary evidence output, dirty/unborn/moving HEAD, wrong uv version, archive source identity, multiple/symlink wheels, wheel metadata mismatch, lock export/hash-required install, `pip check`, import-origin escape, and cleanliness rechecks.
 
 ```python
 def test_binding_count__cannot_be_overridden() -> None:
@@ -510,37 +766,112 @@ def test_binding_count__cannot_be_overridden() -> None:
         parse_args(["--tier", "release", "--count", "999"])
 
 
-def test_stage_failure__stops_pipeline(fake_runner: FakeRunner) -> None:
-    fake_runner.fail_on("plan")
-    evidence = qualify(fake_request(), runner=fake_runner)
-    assert [stage.stage for stage in evidence.stages] == ["scan", "plan"]
-    assert evidence.status == "incomplete"
+def test_prepare_candidate__builds_archived_head_not_worktree(
+    fake_commands: FakeCommands, request: BuildRequest, source: SourceProvenance
+) -> None:
+    candidate = prepare_candidate(request, source=source, commands=fake_commands)
+    assert candidate.commit == "a" * 40
+    assert fake_commands.build_source == candidate.source_snapshot
+    assert candidate.source_snapshot != request.repository
 ```
 
-- [ ] **Step 2: Run tests and confirm RED**
+- [ ] **Step 2: Run build/parser tests and confirm RED**
 
 ```bash
-uv run pytest tests/test_scale_qualification.py -q
+uv run pytest tests/test_scale_build.py tests/test_scale_qualification.py -q
 ```
 
-- [ ] **Step 3: Implement exact CLI and stage commands**
+- [ ] **Step 3: Implement absent workspace and exact fixed-backend candidate build**
 
-Implement orchestration and argument parsing in `src/docmend/scale_qualification.py`; keep `scripts/qualify_scale.py` as the same three-line `main` wrapper pattern used by the stage supervisor. Support:
+Change only:
+
+```toml
+[build-system]
+requires = ["uv_build==0.11.6"]
+build-backend = "uv_build"
+```
+
+In `scale_build.py` define `QUALIFICATION_UV_VERSION = "0.11.6"`, frozen `SourceProvenance`/`BuildRequest`/`CandidateBuild` models, `inspect_candidate_source()`, and `prepare_candidate()`. `inspect_candidate_source()` is read-only: require the exact uv version, capture `HEAD^{commit}` plus porcelain-v2 tracked/untracked cleanliness, read committed `pyproject.toml`/`uv.lock` through Git object access, and return commit, package/backend versions, and exact hashes. This is the pre-run provenance boundary. `prepare_candidate()` then requires an absent workspace outside the repository, creates it mode 0700 with retained/reconciled identity, archives exactly the inspected commit, safely extracts with the stdlib data filter, and verifies archived `pyproject.toml`/`uv.lock` against the inspected Git-object bytes. Run, without shell or discovered config:
 
 ```text
---tier pilot|scheduled|release
---diagnostic
---count N                 # diagnostic only
---workspace PATH          # must be disk-backed and preflighted
---reference-environment PATH
---thresholds PATH         # required for scheduled/release
---evidence-out PATH       # required no-clobber result for every qualification run
---accept-to PATH          # passing binding evidence only, explicit no-clobber
---capture-reference       # write a sanitized candidate environment and exit
---output PATH             # required with --capture-reference
+uv --no-config build --wheel --no-sources --force-pep517 --out-dir WHEEL_DIR SOURCE
+uv --no-config venv --no-project --python EXACT_PYTHON --no-python-downloads VENV
+uv --no-config export --project SOURCE --locked --no-dev --no-emit-project --no-sources --format requirements.txt --output-file RUNTIME
+uv --no-config pip install --python VENV_PYTHON --require-hashes --no-deps --only-binary :all: -r RUNTIME
+uv --no-config pip install --python VENV_PYTHON --no-index --no-deps WHEEL
+uv --no-config pip check --python VENV_PYTHON
 ```
 
-Require a clean worktree, capture `HEAD`, build the wheel into a new workspace subdirectory, require exactly one wheel, hash it, and install it into an isolated workspace venv. Never accept an externally supplied wheel whose provenance cannot be tied to the captured commit. Execute:
+Require one regular non-symlink wheel in a new directory; hash exact bytes; validate wheel `METADATA` name/version; and run `VENV_PYTHON -I` from outside the repo/snapshot to prove `docmend` and all scale modules resolve beneath the venv. Record exact frontend/backend versions. Recheck commit and cleanliness after archive, build, install, qualification, and before acceptance. Preserve workspace residue; never clear or reuse it.
+
+- [ ] **Step 4: Run build/parser tests and confirm GREEN**
+
+```bash
+uv run pytest tests/test_scale_build.py tests/test_scale_qualification.py -q
+```
+
+- [ ] **Step 5: Write failing complete-reconciliation tests**
+
+Create strict valid artifacts from a small synthetic corpus, then mutate one invariant at a time: inventory count/path/size/hash/encoding/newline, plan inventory hash and disposition partition, duplicate path/action ID, report plan binding/outcome set/totals, manifest header/run/plan/report binding and exact `1 + 2 * actions` intent→applied lifecycle, verify checked count/coverage/finding multiset, and every boundary recipe's final target/bytes/hash/encoding. Prove findings use `Counter[(path, check)]`, not a set.
+
+```python
+def test_verify_findings__duplicate_is_not_collapsed(valid_pipeline: PipelinePaths) -> None:
+    add_duplicate_expected_finding(valid_pipeline.verify_report)
+    with pytest.raises(QualificationFailure, match="finding multiset"):
+        reconcile_pipeline(valid_pipeline, count=40)
+```
+
+- [ ] **Step 6: Implement `scale_reconcile.py`**
+
+Use the existing strict readers and lifecycle/coverage reducers: `read_inventory`, `read_plan_snapshot`, `read_report_snapshot`, `read_verify_report`, `read_manifest_chain`, `reduce_lifecycle`, `load_verification_evidence`, and `check_plan_coverage`. Derive the manifest only after strict report loading as `PIPELINE/.docmend/docmend-{validated_run_id}-manifest.jsonl`; derive each stage's structured log only from that stage's trusted artifact run ID as `PIPELINE/.docmend/docmend-{validated_run_id}.jsonl`; never glob or parse stdout. Reconcile every recipe/artifact record and the independent boundary oracle. Return one frozen `PipelineReconciliation` containing phase totals, per-stage trusted run IDs, exact artifact sizes, expected/observed finding Counters, and the manifest path. Distinguish an unreadable/missing artifact (`QualificationIncomplete`) from a valid artifact whose facts disagree (`QualificationFailure`).
+
+- [ ] **Step 7: Run reconciliation tests and confirm GREEN**
+
+```bash
+uv run pytest tests/test_scale_reconcile.py -q
+```
+
+- [ ] **Step 8: Write failing fresh-supervisor orchestration/status tests**
+
+Cover four exact commands, one fresh supervisor process per stage, absolute candidate executable, isolated candidate Python wrapper, private environment roots, strict request/result round-trip, wrapper/result mismatch, stage-specific expected exits, immediate downstream stop, partial evidence at build/materialization/supervisor/artifact failures, reference mismatch continuation, unavailable/nonzero swap, coefficient overrun, threshold/runtime failures, and exact status precedence.
+
+```python
+def test_stage_failure__stops_pipeline(fake_services: FakeServices) -> None:
+    fake_services.fail_artifact_on("plan")
+    outcome = qualify(fake_request(), services=fake_services)
+    assert [stage.stage for stage in outcome.evidence.stages] == ["scan", "plan"]
+    assert outcome.evidence.status == "incomplete"
+    assert outcome.evidence.outcome_reason == "artifact-invalid"
+
+
+def test_reference_mismatch_binding_request__diagnostic_but_nonzero(
+    fake_services: FakeServices,
+) -> None:
+    fake_services.reference_matches = False
+    outcome = qualify(fake_request(diagnostic=False), services=fake_services)
+    assert outcome.evidence.status == "diagnostic"
+    assert outcome.exit_code == 1
+```
+
+- [ ] **Step 9: Implement the four-stage orchestrator**
+
+Keep `scripts/qualify_scale.py` as:
+
+```python
+from docmend.scale_qualification import main
+
+raise SystemExit(main())
+```
+
+Support the approved flags exactly. `--workspace` names one absent external root. `--thresholds` is required for scheduled/release. `--count` is legal only with `--diagnostic`. `--evidence-out` is required, no-clobber, and outside the checkout for qualification. `--accept-to` is an existing directory and is illegal for diagnostics. `--capture-reference` requires `--workspace` and `--output` and is exclusive of qualification arguments.
+
+First perform every no-evidence refusal: parse/validate flags and destinations, require an outside-checkout absent workspace/evidence path, call `inspect_candidate_source()`, load the immutable reference and applicable threshold context, and precheck the deterministic acceptance target. Once commit/package/build/lock/reference provenance is fixed, start the evidence lifecycle and call `prepare_candidate()`; archive/build/install failures from this point publish incomplete evidence with a null wheel hash where necessary. After candidate setup, run capacity preflight before materialization and require materialization to equal its summary. Classify the newly written corpus `warm`. For each stage, write a strict request and launch a new process:
+
+```text
+VENV_PYTHON -I SOURCE/scripts/measure_scale_stage.py REQUEST RESULT
+```
+
+The request uses `cwd=PIPELINE`, absolute venv `docmend`, private `HOME`/`XDG_STATE_HOME`/`XDG_CONFIG_HOME`/`TMPDIR`, `LANG=C.UTF-8`, `LC_ALL=C.UTF-8`, `TZ=UTC`, and the Task 5 fixed environment. Commands are exactly:
 
 ```text
 docmend scan CORPUS --report INVENTORY
@@ -549,29 +880,65 @@ docmend apply PLAN --write --preserved-by external --report REPORT
 docmend verify CORPUS --plan PLAN --manifest MANIFEST --report REPORT --out VERIFY_REPORT
 ```
 
-Derive `MANIFEST` from the validated report run ID under the stage working directory's `.docmend/`. Bind clean worktree, `HEAD`, wheel hash/version, lock hash, schema versions, and reference class. The PR tier is not routed through this installed-wheel path. `--evidence-out` is required and no-clobber for every run so passing, diagnostic, failed, and incomplete evidence has a deterministic operator/workflow path; `--accept-to` additionally publishes a passing binding document under the accepted naming contract.
+Require wrapper exit 0 before trusting the strict result; reconcile result stage/stdout/stderr to its request. Scan/plan/apply require child exit 0. Verify requires 0 when no expected findings and 1 only when the exact nonempty expected multiset is published. For release only, start monotonic workflow timing immediately before scan supervisor dispatch and stop after the last validated attempted result; publish `max(observed_outer_elapsed, sum(public_stage_elapsed))`. Scheduled/release load one immutable threshold context; release adds the exact 43,200-second verdict. Stop downstream immediately at the first failed boundary and construct the phase-truthful evidence prefix using the fixed status/reason precedence from Task 6A.
 
-- [ ] **Step 4: Reconcile all artifacts, not samples**
+- [ ] **Step 10: Write failing publication, acceptance, and CLI-exit tests**
 
-Require inventory conservation, plan action/skip/no-op conservation, report coverage, manifest line count/lifecycle validity, exact recipe-derived verification findings with no unexpected findings, complete plan coverage, exact candidate identity, and all thresholds appropriate to the tier. Scan, plan, and apply require exit 0. Verify exit 0 is accepted only with no expected findings; verify exit 1 is a completed passing stage only after its published finding multiset equals the recipe-derived expectation exactly. Any other exit or finding mismatch is failed/incomplete as appropriate. Keep private stage output/logs under workspace only.
+Test every pre-run exit-2 refusal with no evidence, post-provenance incomplete/failed exit 1 with evidence, passing/explicit diagnostic exit 0, reference-mismatched binding exit 1 diagnostic, evidence destination collision, acceptance directory/file confusion, deterministic full-commit name for every tier, accepted byte identity, prior acceptance preservation, publication race, and capture-reference no-clobber output.
 
-- [ ] **Step 5: Document evidence acceptance and validate**
+- [ ] **Step 11: Implement evidence-first no-clobber publication**
 
-Document `docs/scale-evidence/accepted/`, diagnostic storage, sanitization, non-overwrite, review, and validation. Run:
+Publish canonical validated bytes to `--evidence-out` first. Only `passing` binding evidence may then publish identical bytes to:
 
-```bash
-uv run pytest tests/test_scale_qualification.py -q
-uv run python scripts/check.py
-python /home/chris/.agents/skills/technical-writer/scripts/docctl.py validate docs/scale-evidence/README.md
+```text
+{candidate_commit}-pilot-100000.json
+{candidate_commit}-scheduled-100000.json
+{candidate_commit}-release-1000000.json
+{candidate_commit}-file-size.json
 ```
 
-- [ ] **Step 6: Commit**
+Never overwrite either path. A race at acceptance preserves ordinary evidence and returns 1. Input/provenance/output refusal before candidate/reference/lock identity returns 2 without evidence. Passing, reference capture, and an otherwise-correct explicit diagnostic return 0. Failed/incomplete evidence returns 1; an otherwise-correct reference-mismatched binding request is diagnostic evidence but returns 1.
+
+- [ ] **Step 12: Document the evidence boundary and run focused validation**
+
+Document workspace privacy/retention, evidence statuses/reasons, thresholds, reference capture, diagnostic vs binding behavior, exact accepted directories/names, sanitization, review, no-overwrite, and validation in `docs/scale-evidence/README.md`. Run:
 
 ```bash
-git add src/docmend/scale_qualification.py scripts/qualify_scale.py \
+uv run pytest tests/test_scale_build.py tests/test_scale_reconcile.py \
+  tests/test_scale_qualification.py -q
+python /home/chris/.agents/skills/technical-writer/scripts/docctl.py validate \
+  docs/scale-evidence/README.md
+npx --yes prettier@3.6.2 --check docs/scale-evidence/README.md
+npx --yes markdownlint-cli2@0.18.1 docs/scale-evidence/README.md
+```
+
+- [ ] **Step 13: Run the full gate and commit the orchestrator**
+
+```bash
+uv run python scripts/check.py
+git diff --check
+git add pyproject.toml src/docmend/scale_build.py src/docmend/scale_reconcile.py \
+  src/docmend/scale_qualification.py scripts/qualify_scale.py \
+  tests/test_scale_build.py tests/test_scale_reconcile.py \
   tests/test_scale_qualification.py docs/scale-evidence/README.md
 git commit -m "feat(scale): orchestrate installed-wheel qualification"
 ```
+
+- [ ] **Step 14: Run a real clean-HEAD installed-wheel diagnostic**
+
+After the commit makes the tree clean, use one temporary parent and two absent workspace children:
+
+```bash
+tmp="$(mktemp -d)"
+uv run python scripts/qualify_scale.py --capture-reference \
+  --workspace "$tmp/reference-workspace" --output "$tmp/reference.json"
+uv run python scripts/qualify_scale.py --tier pilot --diagnostic --count 40 \
+  --workspace "$tmp/qualification-workspace" \
+  --reference-environment "$tmp/reference.json" \
+  --evidence-out "$tmp/diagnostic.json"
+```
+
+Expected: both commands exit 0; the second builds/installs the committed wheel, runs four fresh supervisors, publishes status `diagnostic`, and passes exact correctness without accepting evidence. If this exposes a defect, add the smallest failing regression first, fix it, rerun the focused/full gates and diagnostic, and commit the follow-up before Task 7.
 
 ### Task 7: Replace the old scale test with the 1,000-file PR guard
 
@@ -732,6 +1099,7 @@ Expected: all four stages complete; binding children have no allocation tracing;
 - [ ] **Step 3: Run and explicitly accept the 100k pilot**
 
 ```bash
+mkdir -p docs/scale-evidence/accepted
 uv run python scripts/qualify_scale.py --tier pilot \
   --workspace /var/tmp/docmend-scale-100k \
   --reference-environment docs/scale-evidence/reference-environment.json \
@@ -743,7 +1111,7 @@ Expected: exact artifact conservation, complete `verify --plan` coverage, the ex
 
 - [ ] **Step 4: Derive and freeze thresholds in SPEC revision two**
 
-Validate and copy the sanitized 10k diagnostic into `docs/scale-evidence/supporting/`; it is supporting fit evidence, not an accepted baseline. Use `derive_thresholds` on that committed 10k point and the accepted 100k point. Write `docs/scale-evidence/thresholds.json` with both relative evidence identities and SHA-256 hashes, the shared reference-environment hash, exact fitting method, largest peak plus 25% headroom, fitted slope threshold, and linearity tolerance. Load the new baseline through the production validator and reproduce the verdict before revising SPEC. Record the same values, evidence links, and swap rule in revision two. Keep NFR-001 Partial.
+Validate and copy the sanitized 10k diagnostic into `docs/scale-evidence/supporting/`; it is supporting fit evidence, not an accepted baseline. Use `derive_thresholds` on the immutable per-stage context from that committed 10k point and the accepted 100k point. Write `docs/scale-evidence/thresholds.json` with both relative evidence identities and SHA-256 hashes, the shared reference-environment hash, target count 1,000,000, exact per-stage projection method, 25%-headroom projected-peak and maximum-slope limits, and linearity tolerance. Load the new baseline through the production validator and reproduce the verdict before revising SPEC. Record the same values, evidence links, and swap rule in revision two. Keep NFR-001 Partial.
 
 - [ ] **Step 5: Validate and commit evidence plus revision two**
 
@@ -787,20 +1155,20 @@ concurrency:
   cancel-in-progress: false
 ```
 
-Reuse the repository's current checkout/setup-uv conventions, pin uv to the check workflow's reviewed version, validate `docs/scale-evidence/thresholds.json`, run the self-building 100k scheduled tier in `$RUNNER_TEMP` with explicit threshold and evidence paths, and upload that diagnostic evidence plus private logs with limited retention. Accepted evidence remains a reviewed commit.
+Reuse the repository's current checkout/setup-uv conventions, pin uv to the check workflow's reviewed version, validate `docs/scale-evidence/thresholds.json`, run the self-building scheduled tier explicitly as `--diagnostic --count 100000` in `$RUNNER_TEMP` with threshold and evidence paths, and upload that diagnostic evidence plus private logs with limited retention. Accepted evidence remains a reviewed commit.
 
 - [ ] **Step 2: Validate workflow and run locally equivalent command**
 
 ```bash
 npx --yes prettier@3.6.2 --check .github/workflows/scale-qualification.yml
-uv run python scripts/qualify_scale.py --tier scheduled \
+uv run python scripts/qualify_scale.py --tier scheduled --diagnostic --count 100000 \
   --workspace /var/tmp/docmend-scale-scheduled \
   --reference-environment docs/scale-evidence/reference-environment.json \
   --thresholds docs/scale-evidence/thresholds.json \
   --evidence-out /var/tmp/docmend-scale-scheduled-evidence.json
 ```
 
-Expected: local command passes; hosted mismatches remain diagnostic rather than replacing binding evidence.
+Expected: the local and hosted commands complete as status `diagnostic`, evaluate the threshold context, and never replace binding evidence.
 
 - [ ] **Step 3: Commit**
 

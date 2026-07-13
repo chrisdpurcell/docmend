@@ -101,6 +101,7 @@ _REFERENCE_FIELDS: tuple[ReferenceField, ...] = (
 type StatPath = Callable[[Path], os.stat_result]
 type StatVfs = Callable[[Path], os.statvfs_result]
 type FstatVfs = Callable[[int], os.statvfs_result]
+type FilesystemTypeProbe = Callable[[Path], str]
 
 
 class ReferenceProbes(Protocol):
@@ -567,6 +568,7 @@ def check_capacity(
     *,
     stat_path: StatPath = _default_stat,
     statvfs: StatVfs = _default_statvfs,
+    filesystem_type: FilesystemTypeProbe | None = None,
     margin: int | float | Fraction = BINDING_CAPACITY_MARGIN,
 ) -> CapacityCheck:
     """Group requirements by followed ``st_dev`` and check each filesystem once."""
@@ -577,6 +579,22 @@ def check_capacity(
 
     multiplier = 1 + margin_value
     public_results: list[FilesystemCapacityEvidence] = []
+    mount_snapshot: tuple[MountInfo, ...] | None = None
+
+    def classify_filesystem(path: Path) -> str:
+        nonlocal mount_snapshot
+        if filesystem_type is not None:
+            return filesystem_type(path)
+        if mount_snapshot is None:
+            try:
+                text = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+            except OSError as exc:
+                raise ResourcePreflightError(
+                    "inode capacity telemetry could not be classified"
+                ) from exc
+            mount_snapshot = parse_mountinfo(text)
+        return select_mount(path, mount_snapshot).filesystem
+
     for group in groups:
         try:
             if group.placement is not None and statvfs is _default_statvfs:
@@ -590,13 +608,28 @@ def check_capacity(
             ) from exc
         required_bytes = _ceil_fraction(Fraction(group.required_bytes) * multiplier)
         required_inodes = _ceil_fraction(Fraction(group.required_inodes) * multiplier)
-        passed = required_bytes <= available_bytes and required_inodes <= available_inodes
+        inode_triplet_unknown = stats.f_files == stats.f_ffree == stats.f_favail == 0
+        if inode_triplet_unknown:
+            if classify_filesystem(group.probe) != "btrfs":
+                raise ResourcePreflightError(
+                    "inode capacity telemetry is unavailable for a non-btrfs filesystem"
+                )
+            # Btrfs allocates inodes from metadata dynamically; null records that
+            # no fixed statvfs inode pool exists, while bytes remain binding.
+            inode_capacity_mode = "dynamic-metadata"
+            public_available_inodes = None
+            passed = required_bytes <= available_bytes
+        else:
+            inode_capacity_mode = "finite-statvfs"
+            public_available_inodes = available_inodes
+            passed = required_bytes <= available_bytes and required_inodes <= available_inodes
         public_results.append(
             FilesystemCapacityEvidence(
                 required_bytes=required_bytes,
                 available_bytes=available_bytes,
                 required_inodes=required_inodes,
-                available_inodes=available_inodes,
+                inode_capacity_mode=inode_capacity_mode,
+                available_inodes=public_available_inodes,
                 margin_fraction=float(margin_value),
                 passed=passed,
             )
@@ -609,7 +642,8 @@ def check_capacity(
             item.required_bytes,
             item.required_inodes,
             item.available_bytes,
-            item.available_inodes,
+            item.available_inodes is None,
+            item.available_inodes if item.available_inodes is not None else 0,
         )
     )
     filesystems = tuple(public_results)

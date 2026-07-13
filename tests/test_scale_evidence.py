@@ -77,6 +77,7 @@ def _capacity(*, passed: bool = True) -> FilesystemCapacityEvidence:
         required_bytes=1_250,
         available_bytes=2_000 if passed else 1_000,
         required_inodes=1_250,
+        inode_capacity_mode="finite-statvfs",
         available_inodes=2_000 if passed else 1_000,
         margin_fraction=0.25,
         passed=passed,
@@ -210,7 +211,7 @@ def scale_evidence(
 
 
 class TestPublicContract:
-    def test_scale_evidence_v2__retains_measured_stage_without_valid_artifact(self) -> None:
+    def test_scale_evidence_v3__retains_measured_stage_without_valid_artifact(self) -> None:
         stage = StageEvidence.model_validate(
             {
                 "stage": "scan",
@@ -228,7 +229,7 @@ class TestPublicContract:
             }
         )
 
-        assert ScaleEvidence.model_fields["schema_version"].default == "2.0"
+        assert ScaleEvidence.model_fields["schema_version"].default == "3.0"
         assert stage.completed is True
         assert stage.artifact_validated is False
         assert stage.run_id is None
@@ -380,13 +381,66 @@ class TestPublicContract:
             "scale-thresholds",
         }.isdisjoint(ARTIFACT_KINDS)
 
-    def test_scale_evidence_schema__accepts_only_major_version_two(self) -> None:
+    def test_scale_evidence_schema__accepts_only_major_version_three(self) -> None:
         document = scale_evidence().model_dump(mode="json")
         validate_qualification_document("scale-evidence", document)
-        assert document["schema_version"] == "2.0"
+        assert document["schema_version"] == "3.0"
 
-        document["schema_version"] = "1.1"
+        document["schema_version"] = "2.0"
         with pytest.raises(ScaleEvidenceError, match="schema_version"):
+            validate_qualification_document("scale-evidence", document)
+
+    @pytest.mark.parametrize(
+        ("mode", "available_inodes", "passed"),
+        [
+            ("finite-statvfs", 10, True),
+            ("dynamic-metadata", None, True),
+            ("dynamic-metadata", None, False),
+        ],
+    )
+    def test_capacity_evidence__reconciles_inode_capacity_modes(
+        self, mode: str, available_inodes: int | None, passed: bool
+    ) -> None:
+        required_bytes = 1 if passed else 2
+        capacity = FilesystemCapacityEvidence.model_validate(
+            {
+                "required_bytes": required_bytes,
+                "available_bytes": 1,
+                "required_inodes": 10,
+                "inode_capacity_mode": mode,
+                "available_inodes": available_inodes,
+                "margin_fraction": 0.25,
+                "passed": passed,
+            }
+        )
+        assert capacity.passed is passed
+
+    @pytest.mark.parametrize(
+        ("mode", "available_inodes"),
+        [("finite-statvfs", None), ("dynamic-metadata", 10)],
+    )
+    def test_capacity_evidence__rejects_mode_and_availability_mismatch(
+        self, mode: str, available_inodes: int | None
+    ) -> None:
+        with pytest.raises(ValidationError, match="available_inodes"):
+            FilesystemCapacityEvidence.model_validate(
+                {
+                    "required_bytes": 1,
+                    "available_bytes": 1,
+                    "required_inodes": 10,
+                    "inode_capacity_mode": mode,
+                    "available_inodes": available_inodes,
+                    "margin_fraction": 0.25,
+                    "passed": True,
+                }
+            )
+
+        document = scale_evidence().model_dump(mode="json")
+        preflight = cast("dict[str, object]", document["preflight"])
+        filesystems = cast("list[dict[str, object]]", preflight["filesystems"])
+        filesystems[0]["inode_capacity_mode"] = mode
+        filesystems[0]["available_inodes"] = available_inodes
+        with pytest.raises(ScaleEvidenceError, match="available_inodes"):
             validate_qualification_document("scale-evidence", document)
 
     def test_artifact_schema_versions__come_from_code_owner_constants(self) -> None:
@@ -1082,15 +1136,15 @@ class TestPublicContract:
         incomplete_json_stages = cast("list[dict[str, object]]", incomplete_json["stages"])
         incomplete_json_stages[0]["vm_swap_peak_bytes"] = None
         validate_qualification_document("scale-evidence", incomplete_json)
-        assert incomplete_json["schema_version"] == "2.0"
+        assert incomplete_json["schema_version"] == "3.0"
 
         stale_model_version = dict(incomplete)
-        stale_model_version["schema_version"] = "1.1"
+        stale_model_version["schema_version"] = "2.0"
         with pytest.raises(ValidationError, match="schema_version"):
             ScaleEvidence.model_validate(stale_model_version)
 
         stale_version = dict(incomplete_json)
-        stale_version["schema_version"] = "1.1"
+        stale_version["schema_version"] = "2.0"
         with pytest.raises(ScaleEvidenceError, match="schema_version"):
             validate_qualification_document("scale-evidence", stale_version)
 

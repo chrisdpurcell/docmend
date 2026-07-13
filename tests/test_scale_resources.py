@@ -63,6 +63,7 @@ def _statvfs_result(
     fragment_size: int = 1,
     bytes_free: int | None = None,
     inodes_free: int | None = None,
+    inodes_total: int = 10_000,
 ) -> os.statvfs_result:
     if bytes_available % fragment_size:
         raise ValueError("test capacity must be divisible by fragment size")
@@ -74,7 +75,7 @@ def _statvfs_result(
             10_000,
             blocks_available if bytes_free is None else bytes_free // fragment_size,
             blocks_available,
-            10_000,
+            inodes_total,
             inodes_available if inodes_free is None else inodes_free,
             inodes_available,
             0,
@@ -733,6 +734,8 @@ class TestCapacity:
         assert result.ok is True
         assert result.filesystems[0].required_bytes == 2
         assert result.filesystems[0].required_inodes == 2
+        assert result.filesystems[0].inode_capacity_mode == "finite-statvfs"
+        assert result.filesystems[0].available_inodes == 2
         assert result.filesystems[0].margin_fraction == 0.25
 
     def test_capacity__rounded_public_margin_cannot_mask_an_under_reserve(self) -> None:
@@ -790,6 +793,193 @@ class TestCapacity:
         )
         assert result.ok is passed
         assert result.filesystems[0].passed is passed
+
+    def test_capacity__btrfs_zero_inode_triplet_uses_dynamic_metadata_capacity(self) -> None:
+        result = check_capacity(
+            requirements=[Requirement(path=Path("/corpus"), bytes=100, inodes=10)],
+            stat_path=lambda _path: _stat_result(7),
+            statvfs=lambda _path: _statvfs_result(
+                bytes_available=125,
+                inodes_available=0,
+                inodes_free=0,
+                inodes_total=0,
+            ),
+            filesystem_type=lambda _path: "btrfs",
+        )
+
+        assert result.ok is True
+        assert result.filesystems[0].inode_capacity_mode == "dynamic-metadata"
+        assert result.filesystems[0].available_inodes is None
+        assert result.filesystems[0].passed is True
+
+    def test_capacity__dynamic_btrfs_still_enforces_byte_capacity(self) -> None:
+        result = check_capacity(
+            requirements=[Requirement(path=Path("/corpus"), bytes=100, inodes=10)],
+            stat_path=lambda _path: _stat_result(7),
+            statvfs=lambda _path: _statvfs_result(
+                bytes_available=124,
+                inodes_available=0,
+                inodes_free=0,
+                inodes_total=0,
+            ),
+            filesystem_type=lambda _path: "btrfs",
+        )
+
+        assert result.ok is False
+        assert result.filesystems[0].passed is False
+
+    @pytest.mark.parametrize("filesystem", ["ext4", "xfs", "unknown"])
+    def test_capacity__zero_inode_triplet_fails_closed_outside_btrfs(self, filesystem: str) -> None:
+        with pytest.raises(ResourcePreflightError, match="inode capacity telemetry"):
+            check_capacity(
+                requirements=[Requirement(path=Path("/corpus"), bytes=100, inodes=10)],
+                stat_path=lambda _path: _stat_result(7),
+                statvfs=lambda _path: _statvfs_result(
+                    bytes_available=125,
+                    inodes_available=0,
+                    inodes_free=0,
+                    inodes_total=0,
+                ),
+                filesystem_type=lambda _path: filesystem,
+            )
+
+    def test_capacity__zero_inode_triplet_fails_closed_when_classification_fails(self) -> None:
+        def unavailable(_path: Path) -> str:
+            raise ResourcePreflightError("mountinfo unavailable")
+
+        with pytest.raises(ResourcePreflightError, match="mountinfo unavailable"):
+            check_capacity(
+                requirements=[Requirement(path=Path("/corpus"), bytes=100, inodes=10)],
+                stat_path=lambda _path: _stat_result(7),
+                statvfs=lambda _path: _statvfs_result(
+                    bytes_available=125,
+                    inodes_available=0,
+                    inodes_free=0,
+                    inodes_total=0,
+                ),
+                filesystem_type=unavailable,
+            )
+
+    def test_capacity__dynamic_groups_share_one_mountinfo_snapshot(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reads: list[Path] = []
+
+        def read_text(path: Path, *, encoding: str | None = None, errors: str | None = None) -> str:
+            del encoding, errors
+            reads.append(path)
+            return _mount_line(
+                mount_id=1,
+                parent_id=1,
+                mount_point="/",
+                filesystem="btrfs",
+            )
+
+        monkeypatch.setattr(Path, "read_text", read_text)
+        zero_inodes = _statvfs_result(
+            bytes_available=125,
+            inodes_available=0,
+            inodes_free=0,
+            inodes_total=0,
+        )
+        result = check_capacity(
+            requirements=[
+                Requirement(path=Path("/first"), bytes=10, inodes=1),
+                Requirement(path=Path("/second"), bytes=20, inodes=2),
+            ],
+            stat_path=lambda path: _stat_result(1 if path.name == "first" else 2),
+            statvfs=lambda _path: zero_inodes,
+            margin=0,
+        )
+
+        assert result.ok is True
+        assert reads == [Path("/proc/self/mountinfo")]
+        assert all(item.inode_capacity_mode == "dynamic-metadata" for item in result.filesystems)
+
+    def test_capacity__mixed_finite_and_dynamic_groups_stay_independent_and_private(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        original_read_text = Path.read_text
+        reads: list[Path] = []
+
+        def read_text(path: Path, *, encoding: str | None = None, errors: str | None = None) -> str:
+            if path != Path("/proc/self/mountinfo"):
+                return original_read_text(path, encoding=encoding, errors=errors)
+            reads.append(path)
+            return "\n".join(
+                [
+                    _mount_line(
+                        mount_id=1,
+                        parent_id=1,
+                        mount_point="/",
+                        filesystem="ext4",
+                    ),
+                    _mount_line(
+                        mount_id=2,
+                        parent_id=1,
+                        mount_point="/dynamic",
+                        filesystem="btrfs",
+                    ),
+                ]
+            )
+
+        monkeypatch.setattr(Path, "read_text", read_text)
+
+        def statvfs(path: Path) -> os.statvfs_result:
+            if path.is_relative_to(Path("/dynamic")):
+                return _statvfs_result(
+                    bytes_available=1_000,
+                    inodes_available=0,
+                    inodes_free=0,
+                    inodes_total=0,
+                )
+            return _statvfs_result(bytes_available=1_000, inodes_available=1_000)
+
+        result = check_capacity(
+            requirements=[
+                Requirement(path=Path("/finite/file"), bytes=100, inodes=10),
+                Requirement(path=Path("/dynamic/file"), bytes=10, inodes=1),
+            ],
+            stat_path=lambda path: _stat_result(1 if path.parts[1] == "finite" else 2),
+            statvfs=statvfs,
+            margin=0,
+        )
+
+        assert reads == [Path("/proc/self/mountinfo")]
+        assert [item.inode_capacity_mode for item in result.filesystems] == [
+            "dynamic-metadata",
+            "finite-statvfs",
+        ]
+        assert [item.available_inodes for item in result.filesystems] == [None, 1_000]
+        public_json = "".join(item.model_dump_json() for item in result.filesystems)
+        assert "/finite" not in public_json
+        assert "/dynamic" not in public_json
+
+    def test_capacity__default_classifier_failure_does_not_disclose_probe_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        private_probe = Path("/private/operator/corpus")
+
+        def malformed_mountinfo(
+            _path: Path, *, encoding: str | None = None, errors: str | None = None
+        ) -> str:
+            del encoding, errors
+            return "malformed /private/operator/mountinfo"
+
+        monkeypatch.setattr(Path, "read_text", malformed_mountinfo)
+
+        with pytest.raises(ResourcePreflightError, match="mountinfo") as caught:
+            check_capacity(
+                requirements=[Requirement(path=private_probe, bytes=100, inodes=10)],
+                stat_path=lambda _path: _stat_result(7),
+                statvfs=lambda _path: _statvfs_result(
+                    bytes_available=125,
+                    inodes_available=0,
+                    inodes_free=0,
+                    inodes_total=0,
+                ),
+            )
+        assert "/private" not in str(caught.value)
 
     def test_capacity__rejects_empty_or_invalid_probes_without_path_disclosure(self) -> None:
         with pytest.raises(ResourcePreflightError, match="at least one"):
@@ -1400,6 +1590,7 @@ class TestReferenceEnvironment:
             "required_bytes",
             "available_bytes",
             "required_inodes",
+            "inode_capacity_mode",
             "available_inodes",
             "margin_fraction",
             "passed",

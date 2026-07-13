@@ -2,7 +2,7 @@
 	"$schema": "https://json-schema.org/draft/2020-12/schema",
 	"$id": "https://raw.githubusercontent.com/chrisdpurcell/docmend/main/src/docmend/schemas/scale-evidence.schema.json",
 	"title": "docmend scale qualification evidence",
-	"description": "Sanitized aggregate evidence for the DMR-08 scale tiers. Version 2.0 binds candidate and installed-wheel/build provenance, truthful partial-stage measurement and artifact state, phase observations, finite outcomes, thresholds, and release runtime without publishing host identities, paths, command lines, logs, document content, or other private corpus data (OQ-038, OQ-041, adr-0022).",
+	"description": "Sanitized aggregate evidence for the DMR-08 scale tiers. Version 3.0 binds candidate and installed-wheel/build provenance, truthful partial-stage measurement and artifact state, phase observations, finite or dynamic-metadata inode capacity, finite outcomes, thresholds, and release runtime without publishing host identities, paths, command lines, logs, document content, or other private corpus data (OQ-038, OQ-041, adr-0022).",
 	"type": "object",
 	"additionalProperties": false,
 	"required": [
@@ -36,7 +36,7 @@
 	],
 	"properties": {
 		"schema": { "const": "docmend/scale-evidence" },
-		"schema_version": { "type": "string", "const": "2.0", "pattern": "^2\\.[0-9]+$" },
+		"schema_version": { "type": "string", "const": "3.0", "pattern": "^3\\.[0-9]+$" },
 		"status": { "enum": ["passing", "failed", "incomplete", "diagnostic"] },
 		"tier": { "enum": ["pr", "pilot", "scheduled", "release", "file-size"] },
 		"candidate_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
@@ -1052,6 +1052,7 @@
 				"required_bytes",
 				"available_bytes",
 				"required_inodes",
+				"inode_capacity_mode",
 				"available_inodes",
 				"margin_fraction",
 				"passed"
@@ -1060,10 +1061,29 @@
 				"required_bytes": { "type": "integer", "minimum": 0 },
 				"available_bytes": { "type": "integer", "minimum": 0 },
 				"required_inodes": { "type": "integer", "minimum": 0 },
-				"available_inodes": { "type": "integer", "minimum": 0 },
+				"inode_capacity_mode": { "enum": ["finite-statvfs", "dynamic-metadata"] },
+				"available_inodes": {
+					"oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
+				},
 				"margin_fraction": { "type": "number", "minimum": 0 },
 				"passed": { "type": "boolean" }
-			}
+			},
+			"allOf": [
+				{
+					"if": {
+						"properties": { "inode_capacity_mode": { "const": "finite-statvfs" } },
+						"required": ["inode_capacity_mode"]
+					},
+					"then": { "properties": { "available_inodes": { "type": "integer" } } }
+				},
+				{
+					"if": {
+						"properties": { "inode_capacity_mode": { "const": "dynamic-metadata" } },
+						"required": ["inode_capacity_mode"]
+					},
+					"then": { "properties": { "available_inodes": { "type": "null" } } }
+				}
+			]
 		},
 		"preflight_evidence": {
 			"type": "object",

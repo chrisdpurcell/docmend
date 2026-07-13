@@ -42,7 +42,7 @@ from docmend.report import REPORT_SCHEMA_VERSION
 from docmend.verify_report import VERIFY_REPORT_SCHEMA_VERSION
 from docmend.writer.manifest import MANIFEST_SCHEMA_VERSION
 
-SCALE_EVIDENCE_SCHEMA_VERSION = "2.0"
+SCALE_EVIDENCE_SCHEMA_VERSION = "3.0"
 REFERENCE_ENVIRONMENT_SCHEMA_VERSION = "1.0"
 SCALE_THRESHOLDS_SCHEMA_VERSION = "2.0"
 BINDING_CAPACITY_MARGIN = 0.25
@@ -57,6 +57,7 @@ QUALIFICATION_SCHEMA_KINDS: tuple[QualificationSchemaKind, ...] = (
 )
 
 type EvidenceStatus = Literal["passing", "failed", "incomplete", "diagnostic"]
+type InodeCapacityMode = Literal["finite-statvfs", "dynamic-metadata"]
 type OutcomeReason = Literal[
     "explicit-diagnostic",
     "reference-mismatch",
@@ -246,16 +247,22 @@ class FilesystemCapacityEvidence(_StrictModel):
     required_bytes: Annotated[int, Field(ge=0)]
     available_bytes: Annotated[int, Field(ge=0)]
     required_inodes: Annotated[int, Field(ge=0)]
-    available_inodes: Annotated[int, Field(ge=0)]
+    inode_capacity_mode: InodeCapacityMode
+    available_inodes: Annotated[int, Field(ge=0)] | None
     margin_fraction: Annotated[float, Field(ge=0)]
     passed: bool
 
     @model_validator(mode="after")
     def _reconcile_verdict(self) -> Self:
-        expected = (
-            self.required_bytes <= self.available_bytes
-            and self.required_inodes <= self.available_inodes
-        )
+        if self.inode_capacity_mode == "finite-statvfs":
+            if self.available_inodes is None:
+                raise ValueError("finite-statvfs requires available_inodes")
+            inode_capacity_met = self.required_inodes <= self.available_inodes
+        else:
+            if self.available_inodes is not None:
+                raise ValueError("dynamic-metadata requires null available_inodes")
+            inode_capacity_met = True
+        expected = self.required_bytes <= self.available_bytes and inode_capacity_met
         if self.passed != expected:
             raise ValueError("capacity verdict does not reconcile with byte/inode availability")
         return self
@@ -388,7 +395,7 @@ class ScaleEvidence(_StrictModel):
     schema_kind: Literal["docmend/scale-evidence"] = Field(
         default="docmend/scale-evidence", alias="schema"
     )
-    schema_version: Literal["2.0"] = SCALE_EVIDENCE_SCHEMA_VERSION
+    schema_version: Literal["3.0"] = SCALE_EVIDENCE_SCHEMA_VERSION
     status: EvidenceStatus
     tier: QualificationTier
     candidate_commit: Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]

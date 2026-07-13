@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from allpairspy import AllPairs  # pyright: ignore[reportMissingTypeStubs]
 
+import docmend.scale_resources as scale_resources
 from docmend.config import DocmendConfig, RenameConfig
 from docmend.plan import (
     ActionProvenance,
@@ -315,6 +316,39 @@ class TestWritabilityProbes:
 
 
 class TestDiskPreflight:
+    def test_gate__dynamic_btrfs_inode_telemetry_does_not_refuse_capacity(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source_root = tmp_path / "root"
+        source_root.mkdir()
+        original_read_text = Path.read_text
+
+        def read_text(path: Path, *, encoding: str | None = None, errors: str | None = None) -> str:
+            if path == Path("/proc/self/mountinfo"):
+                return "1 1 0:1 / / rw - btrfs /dev/synthetic rw"
+            return original_read_text(path, encoding=encoding, errors=errors)
+
+        monkeypatch.setattr(Path, "read_text", read_text)
+
+        def statvfs(_path: Path) -> os.statvfs_result:
+            return os.statvfs_result((4_096, 4_096, 10**9, 10**9, 10**9, 0, 0, 0, 0, 255))
+
+        monkeypatch.setattr(
+            scale_resources.os,
+            "statvfs",
+            statvfs,
+        )
+
+        refusals = evaluate_gate(
+            rename_only_plan(),
+            DocmendConfig(),
+            source_root=source_root,
+            options=no_op_options(),
+            manifest_dir=tmp_path / "manifest",
+        )
+
+        assert not any(refusal.predicate == "disk-preflight" for refusal in refusals)
+
     def test_grouping__sums_shared_mount_once_and_keeps_distinct_mounts_separate(self) -> None:
         requirements = (
             Requirement(path=Path("/source"), bytes=300, inodes=1),

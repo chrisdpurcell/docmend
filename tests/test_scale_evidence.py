@@ -72,6 +72,7 @@ def _capacity(*, passed: bool = True) -> FilesystemCapacityEvidence:
 def _preflight(*, passed: bool = True) -> PreflightEvidence:
     return PreflightEvidence(
         filesystems=(_capacity(passed=passed),),
+        capacity_margin_met=True,
         reference_environment_match=passed,
         binding_filesystem=passed,
         ram_requirement_met=passed,
@@ -278,6 +279,51 @@ class TestPublicContract:
         with pytest.raises(ValidationError, match="completed_at"):
             ScaleEvidence.model_validate(document)
 
+    def test_preflight__reconciles_the_binding_capacity_margin(self) -> None:
+        preflight = PreflightEvidence(
+            filesystems=(_capacity(),),
+            capacity_margin_met=True,
+            reference_environment_match=True,
+            binding_filesystem=True,
+            ram_requirement_met=True,
+            passed=True,
+        )
+        assert preflight.capacity_margin_met is True
+
+        document = preflight.model_dump()
+        document["capacity_margin_met"] = False
+        with pytest.raises(ValidationError, match="capacity margin"):
+            PreflightEvidence.model_validate(document)
+
+        document = preflight.model_dump()
+        filesystems = cast("list[dict[str, object]]", document["filesystems"])
+        filesystems[0]["margin_fraction"] = 0.0
+        with pytest.raises(ValidationError, match="capacity margin"):
+            PreflightEvidence.model_validate(document)
+
+        raw = scale_evidence().model_dump(mode="json")
+        raw_preflight = cast("dict[str, object]", raw["preflight"])
+        raw_filesystems = cast("list[dict[str, object]]", raw_preflight["filesystems"])
+        raw_filesystems[0]["margin_fraction"] = 0.0
+        with pytest.raises(ScaleEvidenceError, match="margin_fraction"):
+            validate_qualification_document("scale-evidence", raw)
+
+    @pytest.mark.parametrize(
+        ("margin_fraction", "capacity_margin_met"),
+        [(0.25, False), (0.0, True)],
+    )
+    def test_preflight_schema__reconciles_margin_verdict_when_not_passing(
+        self, margin_fraction: float, capacity_margin_met: bool
+    ) -> None:
+        raw = scale_evidence(status="incomplete").model_dump(mode="json")
+        preflight = cast("dict[str, object]", raw["preflight"])
+        filesystems = cast("list[dict[str, object]]", preflight["filesystems"])
+        filesystems[0]["margin_fraction"] = margin_fraction
+        preflight["capacity_margin_met"] = capacity_margin_met
+        preflight["passed"] = False
+        with pytest.raises(ScaleEvidenceError):
+            validate_qualification_document("scale-evidence", raw)
+
     def test_passing_installed_evidence__requires_exact_wheel_and_completed_pipeline(self) -> None:
         document = scale_evidence().model_dump()
         document["wheel_sha256"] = None
@@ -320,6 +366,19 @@ class TestPublicContract:
         stages[-1]["exit_code"] = 1
         with pytest.raises(ValidationError, match="verify exit code"):
             ScaleEvidence.model_validate(document)
+
+    def test_passing_evidence__requires_zero_child_swap(self) -> None:
+        document = scale_evidence().model_dump()
+        stages = cast("list[dict[str, object]]", document["stages"])
+        stages[1]["vm_swap_peak_bytes"] = 1_024
+        with pytest.raises(ValidationError, match="zero child swap"):
+            ScaleEvidence.model_validate(document)
+
+        raw = scale_evidence().model_dump(mode="json")
+        raw_stages = cast("list[dict[str, object]]", raw["stages"])
+        raw_stages[1]["vm_swap_peak_bytes"] = 1_024
+        with pytest.raises(ScaleEvidenceError, match="vm_swap_peak_bytes"):
+            validate_qualification_document("scale-evidence", raw)
 
     def test_public_maps__accept_only_finite_artifact_names(self) -> None:
         stage = _stage("scan").model_dump()

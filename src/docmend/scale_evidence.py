@@ -40,6 +40,7 @@ from docmend.inventory import RunId, Sha256
 SCALE_EVIDENCE_SCHEMA_VERSION = "1.0"
 REFERENCE_ENVIRONMENT_SCHEMA_VERSION = "1.0"
 SCALE_THRESHOLDS_SCHEMA_VERSION = "1.0"
+BINDING_CAPACITY_MARGIN = 0.25
 
 type QualificationSchemaKind = Literal[
     "scale-evidence", "reference-environment", "scale-thresholds"
@@ -160,6 +161,7 @@ class FilesystemCapacityEvidence(_StrictModel):
 
 class PreflightEvidence(_StrictModel):
     filesystems: tuple[FilesystemCapacityEvidence, ...]
+    capacity_margin_met: bool
     reference_environment_match: bool
     binding_filesystem: bool
     ram_requirement_met: bool
@@ -167,9 +169,15 @@ class PreflightEvidence(_StrictModel):
 
     @model_validator(mode="after")
     def _reconcile_verdict(self) -> Self:
+        margin_met = bool(self.filesystems) and all(
+            item.margin_fraction == BINDING_CAPACITY_MARGIN for item in self.filesystems
+        )
+        if self.capacity_margin_met != margin_met:
+            raise ValueError("capacity margin verdict does not reconcile with filesystem evidence")
         expected = (
             bool(self.filesystems)
             and all(item.passed for item in self.filesystems)
+            and self.capacity_margin_met
             and self.reference_environment_match
             and self.binding_filesystem
             and self.ram_requirement_met

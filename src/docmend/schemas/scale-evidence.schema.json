@@ -351,6 +351,7 @@
 			"additionalProperties": false,
 			"required": [
 				"filesystems",
+				"capacity_margin_met",
 				"reference_environment_match",
 				"binding_filesystem",
 				"ram_requirement_met",
@@ -361,11 +362,72 @@
 					"type": "array",
 					"items": { "$ref": "#/$defs/filesystem_capacity_evidence" }
 				},
+				"capacity_margin_met": { "type": "boolean" },
 				"reference_environment_match": { "type": "boolean" },
 				"binding_filesystem": { "type": "boolean" },
 				"ram_requirement_met": { "type": "boolean" },
 				"passed": { "type": "boolean" }
-			}
+			},
+			"allOf": [
+				{
+					"if": {
+						"properties": { "passed": { "const": true } },
+						"required": ["passed"]
+					},
+					"then": {
+						"properties": {
+							"filesystems": {
+								"minItems": 1,
+								"items": {
+									"allOf": [
+										{ "$ref": "#/$defs/filesystem_capacity_evidence" },
+										{
+											"properties": {
+												"margin_fraction": { "const": 0.25 },
+												"passed": { "const": true }
+											},
+											"required": ["margin_fraction", "passed"]
+										}
+									]
+								}
+							},
+							"capacity_margin_met": { "const": true },
+							"reference_environment_match": { "const": true },
+							"binding_filesystem": { "const": true },
+							"ram_requirement_met": { "const": true }
+						},
+						"required": [
+							"filesystems",
+							"capacity_margin_met",
+							"reference_environment_match",
+							"binding_filesystem",
+							"ram_requirement_met"
+						]
+					}
+				},
+				{
+					"if": {
+						"properties": {
+							"filesystems": {
+								"minItems": 1,
+								"items": {
+									"properties": { "margin_fraction": { "const": 0.25 } },
+									"required": ["margin_fraction"]
+								}
+							}
+						},
+						"required": ["filesystems"]
+					},
+					"then": {
+						"properties": { "capacity_margin_met": { "const": true } },
+						"required": ["capacity_margin_met"]
+					},
+					"else": {
+						"properties": { "capacity_margin_met": { "const": false } },
+						"required": ["capacity_margin_met"]
+					}
+				}
+			]
 		},
 		"stage_evidence": {
 			"type": "object",

@@ -7,7 +7,7 @@
   - _open question_ (`OQ-###`) is a decision still to be made — the primary unit of this document.
   - _resolved question_ (`RQ-###`, already settled) lives in the companion file [`resolved-questions.md`](resolved-questions.md).
 - **Priority scale:** open questions carry a `P0 blocker` / `P1 near-blocker` / `P2 decision` label; the gap-analysis-sourced ones also carry a High / Medium / Low gap-analysis priority. The full ranked register with downstream-impact analysis lives in [`gap-analysis.md`](gap-analysis.md).
-- **Status:** OQ-001..037 are settled — see [`resolved-questions.md`](resolved-questions.md), RQ-001..037. **One open question:** OQ-038 (non-blocking; implementation proceeds on its recorded assumption per the spec's Appendix B rules).
+- **Status:** OQ-001..037 are settled — see [`resolved-questions.md`](resolved-questions.md), RQ-001..037. **Two open questions:** OQ-038 and OQ-039 (both non-blocking; implementation proceeds on their recorded assumptions per the spec's Appendix B rules).
 
 ## Table of Contents
 
@@ -33,6 +33,25 @@
 
 - The approved design and implementation plan name `PreflightEvidence`, `QualificationTotals`, `ThresholdVerdict`, `ThresholdPointIdentity`, and `ThresholdSet` but do not define their fields. The plan also proposes unconstrained string-keyed maps even though the public-repository privacy contract and strict-schema convention require closed public vocabularies.
 - Task 9 is the approval boundary: its reviewed pilot evidence and specification revision two may adopt or amend this assumption before any numeric threshold becomes binding.
+
+#### My Comments
+
+(none yet — owner block, agent does not edit)
+
+### OQ-039 — qualification resource-preflight semantics (`P2 decision`, non-blocking)
+
+**Raised:** 2026-07-13 (DMR-08 Task 4 implementation) **Owner:** owner **Needed by:** DMR-08 pilot **Spec:** §21 OQ-039; touches NFR-001, §14, §17.2, and OQ-037
+
+**The unresolved decision:** what exact capacity-margin arithmetic, reference-class equivalence, mount-option projection, and unavailable swap behavior govern binding DMR-08 resource preflight?
+
+**Current assumption (implementation proceeds on this per Appendix B):** requirement byte values are pre-margin physical-allocation estimates whose per-file logical sizes have already been rounded to the filesystem fragment size. Requirements are grouped by followed `st_dev`; then one exact 25% margin, rounded upward, is applied per filesystem to both aggregate bytes and aggregate inodes. Tests of grouping alone pass an explicit zero margin. Reference matching is exact across all public fields except that mount-flag order is immaterial; binding eligibility additionally requires Linux, at least 16 GiB RAM, `local-ssd`, ext4/XFS/btrfs, passing capacity, and zero child swap. Only the existing finite value-free allowlist from mountinfo field 6 (per-mount options) enters public records; an unknown or value-bearing field-6 option remains private and makes the observed mount non-binding rather than being published. Mountinfo field 11 (superblock options) always remains private and does not affect the public reference class. A missing, duplicate, malformed, unreadable, or unknown-unit child `VmSwap` sample makes binding qualification incomplete; global `pswpin`/`pswpout` deltas are diagnostic-only and never override the child-zero rule.
+
+#### Agent notes
+
+- The approved design requires a deterministic 25% byte/inode margin, while the Task 4 grouping example expects the un-margined sum of 150 bytes. Making the grouping test's zero margin explicit preserves both requirements.
+- The approved reference-class prose does not say whether recorded RAM/CPU/runtime fields are exact class identity or minimum/compatible comparisons, and “no material swap activity” does not define how unavailable child telemetry behaves. The conservative assumption prevents a missing measurement from becoming a false zero.
+- Mountinfo exposes per-mount and superblock option fields separately. Keeping field 11 private avoids publishing value-bearing filesystem details or misclassifying an otherwise eligible btrfs mount solely because those private details exist.
+- Task 9 is the owner approval boundary: pilot review and specification revision two may adopt or amend this assumption before evidence becomes binding.
 
 #### My Comments
 

@@ -1,0 +1,500 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://raw.githubusercontent.com/chrisdpurcell/docmend/main/src/docmend/schemas/scale-evidence.schema.json",
+	"title": "docmend scale qualification evidence",
+	"description": "Sanitized aggregate evidence for the DMR-08 scale tiers. It binds candidate and installed-wheel provenance, resource preflight, per-stage measurements, conservation totals, and threshold verdicts without publishing host identities, paths, command lines, logs, document content, or other private corpus data (OQ-038, adr-0022).",
+	"type": "object",
+	"additionalProperties": false,
+	"required": [
+		"schema",
+		"schema_version",
+		"status",
+		"tier",
+		"candidate_commit",
+		"package_version",
+		"wheel_sha256",
+		"lock_sha256",
+		"reference_environment_sha256",
+		"threshold_baseline_sha256",
+		"artifact_schema_versions",
+		"python_version",
+		"kernel_version",
+		"memory_measurement",
+		"cache_classification",
+		"started_at",
+		"completed_at",
+		"preflight",
+		"file_count",
+		"corpus_bytes",
+		"stages",
+		"totals",
+		"thresholds"
+	],
+	"properties": {
+		"schema": { "const": "docmend/scale-evidence" },
+		"schema_version": { "type": "string", "const": "1.0", "pattern": "^1\\.[0-9]+$" },
+		"status": { "enum": ["passing", "failed", "incomplete", "diagnostic"] },
+		"tier": { "enum": ["pr", "pilot", "scheduled", "release", "file-size"] },
+		"candidate_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+		"package_version": { "$ref": "#/$defs/public_label" },
+		"wheel_sha256": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }] },
+		"lock_sha256": { "$ref": "#/$defs/sha256" },
+		"reference_environment_sha256": { "$ref": "#/$defs/sha256" },
+		"threshold_baseline_sha256": {
+			"oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
+		},
+		"artifact_schema_versions": {
+			"type": "object",
+			"minProperties": 6,
+			"maxProperties": 6,
+			"propertyNames": {
+				"enum": [
+					"inventory",
+					"plan",
+					"report",
+					"verify-report",
+					"manifest",
+					"frontmatter"
+				]
+			},
+			"additionalProperties": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" }
+		},
+		"python_version": { "$ref": "#/$defs/public_label" },
+		"kernel_version": { "$ref": "#/$defs/public_label" },
+		"memory_measurement": { "enum": ["external-rss", "python-allocation"] },
+		"cache_classification": { "enum": ["cold", "warm", "mixed"] },
+		"started_at": { "type": "string", "format": "date-time" },
+		"completed_at": { "type": "string", "format": "date-time" },
+		"preflight": { "$ref": "#/$defs/preflight_evidence" },
+		"file_count": { "type": "integer", "minimum": 1 },
+		"corpus_bytes": { "type": "integer", "minimum": 0 },
+		"stages": { "type": "array", "items": { "$ref": "#/$defs/stage_evidence" } },
+		"totals": { "$ref": "#/$defs/qualification_totals" },
+		"thresholds": {
+			"oneOf": [{ "type": "null" }, { "$ref": "#/$defs/threshold_verdict" }]
+		}
+	},
+	"allOf": [
+		{
+			"if": {
+				"properties": { "status": { "const": "passing" } },
+				"required": ["status"]
+			},
+			"then": {
+				"properties": {
+					"memory_measurement": { "const": "external-rss" },
+					"preflight": {
+						"allOf": [
+							{ "$ref": "#/$defs/preflight_evidence" },
+							{ "properties": { "passed": { "const": true } }, "required": ["passed"] }
+						]
+					},
+					"stages": {
+						"type": "array",
+						"items": {
+							"allOf": [
+								{ "$ref": "#/$defs/stage_evidence" },
+								{
+									"properties": { "vm_swap_peak_bytes": { "const": 0 } },
+									"required": ["vm_swap_peak_bytes"]
+								}
+							]
+						}
+					}
+				}
+			}
+		},
+		{
+			"if": {
+				"properties": { "memory_measurement": { "const": "external-rss" } },
+				"required": ["memory_measurement"]
+			},
+			"then": {
+				"properties": {
+					"stages": {
+						"items": {
+							"properties": { "python_allocation_peak_bytes": { "type": "null" } },
+							"required": ["python_allocation_peak_bytes"]
+						}
+					}
+				}
+			}
+		},
+		{
+			"if": {
+				"properties": { "memory_measurement": { "const": "python-allocation" } },
+				"required": ["memory_measurement"]
+			},
+			"then": {
+				"properties": {
+					"status": { "const": "diagnostic" },
+					"thresholds": { "type": "null" },
+					"stages": {
+						"items": {
+							"properties": { "peak_rss_bytes": { "type": "null" } },
+							"required": ["peak_rss_bytes"]
+						}
+					}
+				}
+			}
+		},
+		{
+			"if": {
+				"properties": {
+					"status": { "const": "passing" },
+					"tier": { "enum": ["pilot", "scheduled", "release", "file-size"] }
+				},
+				"required": ["status", "tier"]
+			},
+			"then": { "properties": { "wheel_sha256": { "$ref": "#/$defs/sha256" } } }
+		},
+		{
+			"if": {
+				"properties": {
+					"status": { "const": "passing" },
+					"tier": { "enum": ["pilot", "scheduled", "release"] }
+				},
+				"required": ["status", "tier"]
+			},
+			"then": {
+				"properties": {
+					"stages": {
+						"type": "array",
+						"minItems": 4,
+						"maxItems": 4,
+						"prefixItems": [
+							{
+								"allOf": [
+									{ "$ref": "#/$defs/stage_evidence" },
+									{
+										"properties": {
+											"stage": { "const": "scan" },
+											"completed": { "const": true },
+											"exit_code": { "const": 0 },
+											"run_id": { "$ref": "#/$defs/run_id" }
+										},
+										"required": ["stage", "completed", "exit_code", "run_id"]
+									}
+								]
+							},
+							{
+								"allOf": [
+									{ "$ref": "#/$defs/stage_evidence" },
+									{
+										"properties": {
+											"stage": { "const": "plan" },
+											"completed": { "const": true },
+											"exit_code": { "const": 0 },
+											"run_id": { "$ref": "#/$defs/run_id" }
+										},
+										"required": ["stage", "completed", "exit_code", "run_id"]
+									}
+								]
+							},
+							{
+								"allOf": [
+									{ "$ref": "#/$defs/stage_evidence" },
+									{
+										"properties": {
+											"stage": { "const": "apply" },
+											"completed": { "const": true },
+											"exit_code": { "const": 0 },
+											"run_id": { "$ref": "#/$defs/run_id" }
+										},
+										"required": ["stage", "completed", "exit_code", "run_id"]
+									}
+								]
+							},
+							{
+								"allOf": [
+									{ "$ref": "#/$defs/stage_evidence" },
+									{
+										"properties": {
+											"stage": { "const": "verify" },
+											"completed": { "const": true },
+											"exit_code": { "enum": [0, 1] },
+											"run_id": { "$ref": "#/$defs/run_id" }
+										},
+										"required": ["stage", "completed", "exit_code", "run_id"]
+									}
+								]
+							}
+						],
+						"items": false
+					}
+				}
+			}
+		},
+		{
+			"if": {
+				"properties": {
+					"status": { "const": "passing" },
+					"tier": { "enum": ["scheduled", "release"] }
+				},
+				"required": ["status", "tier"]
+			},
+			"then": {
+				"properties": {
+					"threshold_baseline_sha256": { "$ref": "#/$defs/sha256" },
+					"thresholds": {
+						"allOf": [
+							{ "$ref": "#/$defs/threshold_verdict" },
+							{ "properties": { "passed": { "const": true } }, "required": ["passed"] }
+						]
+					}
+				}
+			}
+		},
+		{
+			"if": {
+				"properties": {
+					"status": { "const": "passing" },
+					"tier": { "enum": ["pilot", "scheduled", "release"] },
+					"totals": {
+						"properties": { "expected_findings": { "const": 0 } },
+						"required": ["expected_findings"]
+					}
+				},
+				"required": ["status", "tier", "totals"]
+			},
+			"then": {
+				"properties": {
+					"stages": {
+						"prefixItems": [
+							{},
+							{},
+							{},
+							{
+								"properties": { "exit_code": { "const": 0 } },
+								"required": ["exit_code"]
+							}
+						]
+					}
+				}
+			}
+		},
+		{
+			"if": {
+				"properties": {
+					"status": { "const": "passing" },
+					"tier": { "enum": ["pilot", "scheduled", "release"] },
+					"totals": {
+						"properties": { "expected_findings": { "minimum": 1 } },
+						"required": ["expected_findings"]
+					}
+				},
+				"required": ["status", "tier", "totals"]
+			},
+			"then": {
+				"properties": {
+					"stages": {
+						"prefixItems": [
+							{},
+							{},
+							{},
+							{
+								"properties": { "exit_code": { "const": 1 } },
+								"required": ["exit_code"]
+							}
+						]
+					}
+				}
+			}
+		}
+	],
+	"$defs": {
+		"sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+		"public_label": {
+			"type": "string",
+			"minLength": 1,
+			"maxLength": 256,
+			"pattern": "^[^/\\\\=\\u0000-\\u001F]+$"
+		},
+		"run_id": { "type": "string", "pattern": "^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{6}$" },
+		"artifact_bytes": {
+			"type": "object",
+			"propertyNames": {
+				"enum": [
+					"inventory",
+					"plan",
+					"report",
+					"manifest",
+					"verify-report",
+					"stdout-log",
+					"stderr-log"
+				]
+			},
+			"additionalProperties": { "type": "integer", "minimum": 0 }
+		},
+		"filesystem_capacity_evidence": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": [
+				"required_bytes",
+				"available_bytes",
+				"required_inodes",
+				"available_inodes",
+				"margin_fraction",
+				"passed"
+			],
+			"properties": {
+				"required_bytes": { "type": "integer", "minimum": 0 },
+				"available_bytes": { "type": "integer", "minimum": 0 },
+				"required_inodes": { "type": "integer", "minimum": 0 },
+				"available_inodes": { "type": "integer", "minimum": 0 },
+				"margin_fraction": { "type": "number", "minimum": 0 },
+				"passed": { "type": "boolean" }
+			}
+		},
+		"preflight_evidence": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": [
+				"filesystems",
+				"reference_environment_match",
+				"binding_filesystem",
+				"ram_requirement_met",
+				"passed"
+			],
+			"properties": {
+				"filesystems": {
+					"type": "array",
+					"items": { "$ref": "#/$defs/filesystem_capacity_evidence" }
+				},
+				"reference_environment_match": { "type": "boolean" },
+				"binding_filesystem": { "type": "boolean" },
+				"ram_requirement_met": { "type": "boolean" },
+				"passed": { "type": "boolean" }
+			}
+		},
+		"stage_evidence": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": [
+				"stage",
+				"run_id",
+				"elapsed_seconds",
+				"files_per_second",
+				"bytes_per_second",
+				"peak_rss_bytes",
+				"python_allocation_peak_bytes",
+				"vm_swap_peak_bytes",
+				"exit_code",
+				"completed",
+				"artifact_bytes"
+			],
+			"properties": {
+				"stage": { "enum": ["scan", "plan", "apply", "verify"] },
+				"run_id": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/run_id" }] },
+				"elapsed_seconds": { "type": "number", "minimum": 0 },
+				"files_per_second": { "type": "number", "minimum": 0 },
+				"bytes_per_second": { "type": "number", "minimum": 0 },
+				"peak_rss_bytes": {
+					"oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 0 }]
+				},
+				"python_allocation_peak_bytes": {
+					"oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 0 }]
+				},
+				"vm_swap_peak_bytes": { "type": "integer", "minimum": 0 },
+				"exit_code": { "type": "integer" },
+				"completed": { "type": "boolean" },
+				"artifact_bytes": { "$ref": "#/$defs/artifact_bytes" }
+			},
+			"allOf": [
+				{
+					"if": {
+						"properties": { "completed": { "const": true } },
+						"required": ["completed"]
+					},
+					"then": {
+						"properties": { "run_id": { "$ref": "#/$defs/run_id" } },
+						"oneOf": [
+							{
+								"properties": {
+									"peak_rss_bytes": { "type": "integer", "minimum": 0 },
+									"python_allocation_peak_bytes": { "type": "null" }
+								},
+								"required": ["peak_rss_bytes", "python_allocation_peak_bytes"]
+							},
+							{
+								"properties": {
+									"peak_rss_bytes": { "type": "null" },
+									"python_allocation_peak_bytes": { "type": "integer", "minimum": 0 }
+								},
+								"required": ["peak_rss_bytes", "python_allocation_peak_bytes"]
+							}
+						]
+					}
+				}
+			]
+		},
+		"qualification_totals": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": [
+				"scanned",
+				"actions",
+				"clean_noops",
+				"plan_skips",
+				"applied",
+				"apply_skips",
+				"failures",
+				"not_attempted",
+				"verified",
+				"expected_findings",
+				"observed_findings"
+			],
+			"properties": {
+				"scanned": { "type": "integer", "minimum": 0 },
+				"actions": { "type": "integer", "minimum": 0 },
+				"clean_noops": { "type": "integer", "minimum": 0 },
+				"plan_skips": { "type": "integer", "minimum": 0 },
+				"applied": { "type": "integer", "minimum": 0 },
+				"apply_skips": { "type": "integer", "minimum": 0 },
+				"failures": { "type": "integer", "minimum": 0 },
+				"not_attempted": { "type": "integer", "minimum": 0 },
+				"verified": { "type": "integer", "minimum": 0 },
+				"expected_findings": { "type": "integer", "minimum": 0 },
+				"observed_findings": { "type": "integer", "minimum": 0 }
+			}
+		},
+		"threshold_set": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": [
+				"absolute_peak_rss_bytes",
+				"slope_bytes_per_file",
+				"linearity_tolerance"
+			],
+			"properties": {
+				"absolute_peak_rss_bytes": { "type": "integer", "minimum": 1 },
+				"slope_bytes_per_file": { "type": "integer", "minimum": 0 },
+				"linearity_tolerance": { "type": "number", "minimum": 0, "maximum": 1 }
+			}
+		},
+		"threshold_verdict": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": [
+				"limits",
+				"observed_peak_rss_bytes",
+				"observed_slope_bytes_per_file",
+				"observed_linearity_ratio",
+				"peak_passed",
+				"slope_passed",
+				"linearity_passed",
+				"passed"
+			],
+			"properties": {
+				"limits": { "$ref": "#/$defs/threshold_set" },
+				"observed_peak_rss_bytes": { "type": "integer", "minimum": 0 },
+				"observed_slope_bytes_per_file": { "type": "number", "minimum": 0 },
+				"observed_linearity_ratio": { "type": "number", "minimum": 0 },
+				"peak_passed": { "type": "boolean" },
+				"slope_passed": { "type": "boolean" },
+				"linearity_passed": { "type": "boolean" },
+				"passed": { "type": "boolean" }
+			}
+		}
+	}
+}

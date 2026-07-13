@@ -1,0 +1,74 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://raw.githubusercontent.com/chrisdpurcell/docmend/main/src/docmend/schemas/scale-thresholds.schema.json",
+	"title": "docmend executable scale thresholds",
+	"description": "The DMR-08 revision-two threshold baseline. It binds the exact 10,000- and 100,000-file pilot evidence bytes, their shared reference environment, the fitting method, and the executable RSS limits used by scheduled and release qualification (OQ-038, adr-0022).",
+	"type": "object",
+	"additionalProperties": false,
+	"required": [
+		"schema",
+		"schema_version",
+		"reference_environment_sha256",
+		"measurement_points",
+		"fitting_method",
+		"limits"
+	],
+	"properties": {
+		"schema": { "const": "docmend/scale-thresholds" },
+		"schema_version": { "type": "string", "const": "1.0", "pattern": "^1\\.[0-9]+$" },
+		"reference_environment_sha256": { "$ref": "#/$defs/sha256" },
+		"measurement_points": {
+			"type": "array",
+			"minItems": 2,
+			"maxItems": 2,
+			"prefixItems": [
+				{
+					"$ref": "#/$defs/threshold_point_identity",
+					"properties": { "file_count": { "const": 10000 } },
+					"required": ["file_count"]
+				},
+				{
+					"$ref": "#/$defs/threshold_point_identity",
+					"properties": { "file_count": { "const": 100000 } },
+					"required": ["file_count"]
+				}
+			],
+			"items": false
+		},
+		"fitting_method": { "const": "exact-linear-least-squares" },
+		"limits": { "$ref": "#/$defs/threshold_set" }
+	},
+	"$defs": {
+		"sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+		"safe_relative_evidence": {
+			"description": "A POSIX-relative file name below the threshold document's directory. Absolute paths, backslashes, and parent traversal segments are forbidden.",
+			"type": "string",
+			"minLength": 1,
+			"pattern": "^(?!\\.?$)(?!\\./)(?![/\\\\])(?!.*//)(?!.*(?:^|/)\\.(?:/|$))(?!\\.\\.(?:/|$))(?!.*\\/\\.\\.(?:/|$))(?!.*[\\u0000-\\u001F])[^\\\\]+(?<!/)$"
+		},
+		"threshold_point_identity": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["file_count", "evidence", "evidence_sha256"],
+			"properties": {
+				"file_count": { "enum": [10000, 100000] },
+				"evidence": { "$ref": "#/$defs/safe_relative_evidence" },
+				"evidence_sha256": { "$ref": "#/$defs/sha256" }
+			}
+		},
+		"threshold_set": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": [
+				"absolute_peak_rss_bytes",
+				"slope_bytes_per_file",
+				"linearity_tolerance"
+			],
+			"properties": {
+				"absolute_peak_rss_bytes": { "type": "integer", "minimum": 1 },
+				"slope_bytes_per_file": { "type": "integer", "minimum": 0 },
+				"linearity_tolerance": { "type": "number", "minimum": 0, "maximum": 1 }
+			}
+		}
+	}
+}

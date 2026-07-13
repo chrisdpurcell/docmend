@@ -20,6 +20,7 @@ from typing import Any, cast
 
 import pytest
 from jsonschema import Draft202012Validator
+from pydantic import BaseModel
 
 from docmend.artifacts import (
     ARTIFACT_KINDS,
@@ -32,6 +33,14 @@ from docmend.config import DocmendConfig
 from docmend.inventory import Inventory
 from docmend.plan import Plan, PlanSkipReason
 from docmend.report import Report
+from docmend.scale_evidence import (
+    QUALIFICATION_SCHEMA_KINDS,
+    QualificationSchemaKind,
+    ReferenceEnvironment,
+    ScaleEvidence,
+    ThresholdBaseline,
+    load_qualification_schema,
+)
 from docmend.transform.dispatch import Operation
 from docmend.verify_report import VerifyReport
 from docmend.writer.manifest import ManifestRecord
@@ -92,6 +101,46 @@ class TestSchemaFiles:
         docmend_ns = properties["docmend"]
         assert "pattern" in docmend_ns["properties"]["schema_version"]
         assert {"id", "schema_version"} <= set(docmend_ns["required"])
+
+
+class TestQualificationSchemaFiles:
+    @pytest.mark.parametrize("kind", QUALIFICATION_SCHEMA_KINDS)
+    def test_schema__is_valid_draft_2020_12(self, kind: QualificationSchemaKind) -> None:
+        _check_schema(load_qualification_schema(kind))
+
+    @pytest.mark.parametrize("kind", QUALIFICATION_SCHEMA_KINDS)
+    def test_schema__records_are_strict_and_maps_have_finite_keys(
+        self, kind: QualificationSchemaKind
+    ) -> None:
+        offenders: list[str] = []
+
+        def walk(node: object, path: str) -> None:
+            if isinstance(node, dict):
+                typed = cast("dict[str, object]", node)
+                if typed.get("type") == "object":
+                    properties = typed.get("properties")
+                    if isinstance(properties, dict):
+                        if typed.get("additionalProperties") is not False:
+                            offenders.append(path or "(root)")
+                    else:
+                        property_names = typed.get("propertyNames")
+                        value_schema = typed.get("additionalProperties")
+                        finite = isinstance(property_names, dict) and isinstance(
+                            cast("dict[str, object]", property_names).get("enum"), list
+                        )
+                        constrained_values = isinstance(value_schema, dict) and bool(
+                            cast("dict[str, object]", value_schema)
+                        )
+                        if not finite or not constrained_values:
+                            offenders.append(path or "(root map)")
+                for key, value in typed.items():
+                    walk(value, f"{path}/{key}")
+            elif isinstance(node, list):
+                for index, value in enumerate(cast("list[object]", node)):
+                    walk(value, f"{path}[{index}]")
+
+        walk(load_qualification_schema(kind), "")
+        assert not offenders, f"loose qualification objects in {kind}: {offenders}"
 
 
 class TestEnumDriftGuard:
@@ -298,6 +347,10 @@ def _object_shapes(
         items = branch.get("items")
         if isinstance(items, dict):
             _object_shapes(cast("dict[str, object]", items), root, f"{path}[]", out)
+        prefix_items = branch.get("prefixItems")
+        if isinstance(prefix_items, list):
+            for item in cast("list[dict[str, object]]", prefix_items):
+                _object_shapes(item, root, f"{path}[]", out)
 
 
 class TestPydanticCrossCheck:
@@ -377,6 +430,31 @@ class TestPydanticCrossCheck:
         _object_shapes(load_schema("verify-report"), load_schema("verify-report"), "", hand)
 
         emitted = cast("dict[str, object]", VerifyReport.model_json_schema(by_alias=True))
+        model: dict[str, tuple[set[str], set[str]]] = {}
+        _object_shapes(emitted, emitted, "", model)
+
+        assert set(hand) == set(model), "object paths differ between schema and model"
+        for path, (hand_props, hand_required) in hand.items():
+            model_props, model_required = model[path]
+            assert hand_props == model_props, f"property names differ at {path!r}"
+            assert model_required <= hand_required, f"model over-requires at {path!r}"
+
+    @pytest.mark.parametrize(
+        ("kind", "model_class"),
+        [
+            ("scale-evidence", ScaleEvidence),
+            ("reference-environment", ReferenceEnvironment),
+            ("scale-thresholds", ThresholdBaseline),
+        ],
+    )
+    def test_qualification_model__matches_hand_authored_schema(
+        self, kind: QualificationSchemaKind, model_class: type[BaseModel]
+    ) -> None:
+        hand_schema = load_qualification_schema(kind)
+        hand: dict[str, tuple[set[str], set[str]]] = {}
+        _object_shapes(hand_schema, hand_schema, "", hand)
+
+        emitted = cast("dict[str, object]", model_class.model_json_schema(by_alias=True))
         model: dict[str, tuple[set[str], set[str]]] = {}
         _object_shapes(emitted, emitted, "", model)
 

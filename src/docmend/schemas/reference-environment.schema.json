@@ -1,0 +1,62 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://raw.githubusercontent.com/chrisdpurcell/docmend/main/src/docmend/schemas/reference-environment.schema.json",
+	"title": "docmend scale qualification reference environment",
+	"description": "Public-safe machine and storage characteristics used to bind DMR-08 scale evidence. The record intentionally excludes host, user, path, device, serial, credential, and content identifiers; eligibility for binding qualification is evaluated separately from this descriptive contract (OQ-038, adr-0022).",
+	"type": "object",
+	"additionalProperties": false,
+	"required": [
+		"schema",
+		"schema_version",
+		"operating_system",
+		"cpu_architecture",
+		"cpu_model",
+		"logical_cpu_count",
+		"ram_bytes",
+		"storage_class",
+		"filesystem",
+		"mount_flags",
+		"python_version",
+		"kernel_version"
+	],
+	"properties": {
+		"schema": { "const": "docmend/reference-environment" },
+		"schema_version": { "type": "string", "const": "1.0", "pattern": "^1\\.[0-9]+$" },
+		"operating_system": { "const": "linux" },
+		"cpu_architecture": { "$ref": "#/$defs/public_label" },
+		"cpu_model": { "$ref": "#/$defs/public_label" },
+		"logical_cpu_count": { "type": "integer", "minimum": 1 },
+		"ram_bytes": { "type": "integer", "minimum": 1 },
+		"storage_class": {
+			"enum": ["local-ssd", "local-hdd", "memory", "network", "unknown"]
+		},
+		"filesystem": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._+-]*$" },
+		"mount_flags": {
+			"description": "Only public, value-free mount semantics are legal. Options carrying values or unknown names are rejected rather than risk publishing paths, identities, or credentials.",
+			"type": "array",
+			"uniqueItems": true,
+			"items": {
+				"enum": [
+					"ro",
+					"rw",
+					"relatime",
+					"noatime",
+					"nodiratime",
+					"lazytime",
+					"sync",
+					"dirsync"
+				]
+			}
+		},
+		"python_version": { "$ref": "#/$defs/public_label" },
+		"kernel_version": { "$ref": "#/$defs/public_label" }
+	},
+	"$defs": {
+		"public_label": {
+			"type": "string",
+			"minLength": 1,
+			"maxLength": 256,
+			"pattern": "^[^/\\\\=\\u0000-\\u001F]+$"
+		}
+	}
+}

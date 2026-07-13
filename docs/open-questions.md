@@ -7,7 +7,7 @@
   - _open question_ (`OQ-###`) is a decision still to be made — the primary unit of this document.
   - _resolved question_ (`RQ-###`, already settled) lives in the companion file [`resolved-questions.md`](resolved-questions.md).
 - **Priority scale:** open questions carry a `P0 blocker` / `P1 near-blocker` / `P2 decision` label; the gap-analysis-sourced ones also carry a High / Medium / Low gap-analysis priority. The full ranked register with downstream-impact analysis lives in [`gap-analysis.md`](gap-analysis.md).
-- **Status:** **No open questions.** OQ-001..037 are all settled — see [`resolved-questions.md`](resolved-questions.md), RQ-001..037 (OQ-037 received owner approval with the million-file design on 2026-07-11). New decisions get added here as OQ-### per the rules below.
+- **Status:** OQ-001..037 are settled — see [`resolved-questions.md`](resolved-questions.md), RQ-001..037. **One open question:** OQ-038 (non-blocking; implementation proceeds on its recorded assumption per the spec's Appendix B rules).
 
 ## Table of Contents
 
@@ -20,6 +20,23 @@
 ## Open questions
 
 <!-- OQ-001..037 are settled — see resolved-questions.md (RQ-001..037). New decisions get added here as OQ-### per the rules below. -->
+
+### OQ-038 — qualification evidence nested contract (`P2 decision`, non-blocking)
+
+**Raised:** 2026-07-13 (DMR-08 Task 3 implementation) **Owner:** owner **Needed by:** DMR-08 pilot and threshold revision **Spec:** §21 OQ-038; touches NFR-001, §9, §14, and OQ-037
+
+**The unresolved decision:** what exact public nested records, finite artifact-key vocabularies, evidence-reference hashing rule, and threshold rounding semantics complete the approved scale-evidence outline without allowing private labels or freezing ambiguous math into the durable schemas?
+
+**Current assumption (implementation proceeds on this per Appendix B):** public records remain strict, frozen, aggregate-only, and use finite artifact-name vocabularies. Preflight records only identifier-free per-filesystem byte/inode budgets and aggregate environment verdicts; totals record conservation and finding counts; threshold verdicts record the loaded limits, observed values, and individual/aggregate pass results. A required memory-method discriminator and mutually exclusive nullable stage fields distinguish external RSS from diagnostic Python-allocation peaks; allocation evidence is diagnostic-only and cannot carry binding thresholds. Threshold point identities are safe POSIX-relative evidence names beneath the threshold file's directory and bind the referenced file's exact bytes with SHA-256. Peak-RSS fitting uses exact rational least squares with an intercept over distinct positive counts; the 25% headroom applies to both the largest peak and non-negative fitted slope with upward integer rounding, while the provisional 20% linearity tolerance remains an explicit generated limit until pilot revision two freezes the executable baseline. Passing installed-wheel pilot/scheduled/release evidence requires an exact wheel hash and completed scan, plan, apply, and verify stages; incomplete evidence may contain the completed stage prefix once build provenance exists. The reference model may represent non-binding diagnostic environments, while a separate comparison determines binding eligibility.
+
+#### Agent notes
+
+- The approved design and implementation plan name `PreflightEvidence`, `QualificationTotals`, `ThresholdVerdict`, `ThresholdPointIdentity`, and `ThresholdSet` but do not define their fields. The plan also proposes unconstrained string-keyed maps even though the public-repository privacy contract and strict-schema convention require closed public vocabularies.
+- Task 9 is the approval boundary: its reviewed pilot evidence and specification revision two may adopt or amend this assumption before any numeric threshold becomes binding.
+
+#### My Comments
+
+(none yet — owner block, agent does not edit)
 
 ## How to maintain this document
 

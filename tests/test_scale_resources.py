@@ -2,17 +2,32 @@
 
 import os
 from fractions import Fraction
+from inspect import signature
 from pathlib import Path
-from typing import cast
+from typing import cast, get_type_hints
 
 import pytest
 
+from docmend.scale_corpus import ScaleCorpusSummary, recipe_counts, summarize_scale_corpus
 from docmend.scale_evidence import FilesystemCapacityEvidence, ReferenceEnvironment
 from docmend.scale_resources import (
     ALLOWED_BINDING_FILESYSTEMS,
+    INVENTORY_BYTES_PER_INPUT,
+    MANIFEST_BYTES_PER_ACTION,
+    PLAN_BYTES_PER_INPUT,
+    QUALIFICATION_BASE_BYTES,
+    QUALIFICATION_NONCORPUS_INODES,
     REJECTED_NETWORK_FILESYSTEMS,
+    REPORT_BYTES_PER_ACTION,
+    STRUCTURED_LOG_BYTES_PER_INPUT_STAGE,
+    SUPERVISOR_PRIVATE_BYTES_PER_FILE,
+    SUPERVISOR_PRIVATE_FILES_PER_STAGE,
+    VERIFY_BYTES_PER_INPUT,
+    CapacityPlacement,
     MountFlagProjection,
     MountInfo,
+    ReferenceObservation,
+    ReferenceProbes,
     Requirement,
     ResourcePreflightError,
     SwapCounters,
@@ -23,10 +38,12 @@ from docmend.scale_resources import (
     compare_reference_environment,
     is_binding_filesystem,
     max_child_vm_swap,
+    observe_reference_environment,
     parse_mountinfo,
     parse_vm_swap,
     parse_vmstat_swap,
     project_mount_flags,
+    qualification_requirements,
     select_mount,
     swap_counter_delta,
 )
@@ -63,6 +80,19 @@ def _statvfs_result(
     )
 
 
+def _capacity_placement(path: Path, *, fragment_size: int) -> CapacityPlacement:
+    """Build a real identity hold with synthetic capacity geometry for arithmetic tests."""
+    return CapacityPlacement(
+        path=path,
+        fragment_size=fragment_size,
+        _fstatvfs=lambda _fd: _statvfs_result(
+            bytes_available=fragment_size,
+            inodes_available=1,
+            fragment_size=fragment_size,
+        ),
+    )
+
+
 def _reference_environment(**updates: object) -> ReferenceEnvironment:
     values: dict[str, object] = {
         "operating_system": "linux",
@@ -84,16 +114,20 @@ def _mount_line(
     *,
     mount_id: int = 36,
     parent_id: int = 25,
+    device_major: int = 8,
+    device_minor: int = 1,
     mount_point: str = "/data",
     mount_options: str = "rw,relatime",
     filesystem: str = "ext4",
+    mount_source: str = "/dev/synthetic",
     optional: str = "shared:1",
     super_options: str = "rw",
 ) -> str:
     optional_field = f" {optional}" if optional else ""
     return (
-        f"{mount_id} {parent_id} 8:1 / {mount_point} {mount_options}"
-        f"{optional_field} - {filesystem} /dev/synthetic {super_options}"
+        f"{mount_id} {parent_id} {device_major}:{device_minor} / "
+        f"{mount_point} {mount_options}{optional_field} - {filesystem} "
+        f"{mount_source} {super_options}"
     )
 
 
@@ -124,7 +158,455 @@ def _binding_projection(*, options: str = "rw,relatime") -> MountFlagProjection:
     return project_mount_flags(_mount(mount_options=options))
 
 
+class _FakeReferenceProbes:
+    def __init__(self, workspace: Path, *, filesystem: str = "ext4") -> None:
+        self.machine_value = "x86_64"
+        self.python_version_value = "3.14.6"
+        self.kernel_version_value = "7.0.0-test"
+        self.logical_cpu_count_value: int | None = 8
+        self.device = Path("/sys/dev/block/8:1")
+        self.resolved_device = Path("/sys/devices/pci/block/sda")
+        self.text: dict[Path, str] = {
+            Path("/proc/self/mountinfo"): "\n".join(
+                (
+                    _mount_line(mount_id=1, parent_id=1, mount_point="/"),
+                    _mount_line(
+                        mount_id=2,
+                        parent_id=1,
+                        mount_point=workspace.as_posix(),
+                        filesystem=filesystem,
+                    ),
+                )
+            ),
+            Path("/proc/cpuinfo"): "processor: 0\nmodel name: Synthetic CPU 9000\n",
+            Path("/proc/meminfo"): "MemTotal:       33554432 kB\n",
+            self.resolved_device / "queue" / "rotational": "0\n",
+        }
+        self.text_sequences: dict[Path, list[str]] = {}
+        self.directories: dict[Path, tuple[str, ...]] = {self.device / "slaves": ()}
+        self.directory_sequences: dict[Path, list[tuple[str, ...]]] = {}
+        self.resolved: dict[Path, Path] = {self.device: self.resolved_device}
+        self.btrfs_fsid = bytes.fromhex("11111111222233334444555555555555")
+        self.btrfs_num_devices = 1
+        self.btrfs_error: OSError | None = None
+        self.btrfs_info_sequence: list[tuple[bytes, int]] = []
+        if filesystem == "btrfs":
+            devices = Path("/sys/fs/btrfs/11111111-2222-3333-4444-555555555555/devices")
+            member = devices / "synthetic"
+            self.directories[devices] = ("synthetic",)
+            self.directories[member / "slaves"] = ()
+            self.resolved[member] = self.resolved_device
+
+    def read_text(self, path: Path) -> str:
+        if sequence := self.text_sequences.get(path):
+            return sequence.pop(0)
+        try:
+            return self.text[path]
+        except KeyError as exc:
+            raise OSError("synthetic missing telemetry") from exc
+
+    def list_directory(self, path: Path) -> tuple[str, ...]:
+        if sequence := self.directory_sequences.get(path):
+            return sequence.pop(0)
+        try:
+            return self.directories[path]
+        except KeyError as exc:
+            raise FileNotFoundError("synthetic missing directory") from exc
+
+    def resolve(self, path: Path) -> Path:
+        return self.resolved.get(path, path)
+
+    def statvfs(self, _path: Path) -> os.statvfs_result:
+        return _statvfs_result(
+            bytes_available=10**12,
+            inodes_available=10**9,
+            fragment_size=4_096,
+        )
+
+    def machine(self) -> str:
+        return self.machine_value
+
+    def python_version(self) -> str:
+        return self.python_version_value
+
+    def kernel_version(self) -> str:
+        return self.kernel_version_value
+
+    def logical_cpu_count(self) -> int | None:
+        return self.logical_cpu_count_value
+
+    def btrfs_filesystem_info(self, _path: Path) -> tuple[bytes, int]:
+        if self.btrfs_error is not None:
+            raise self.btrfs_error
+        if self.btrfs_info_sequence:
+            return self.btrfs_info_sequence.pop(0)
+        return self.btrfs_fsid, self.btrfs_num_devices
+
+
+def _anonymous_btrfs_probes(
+    workspace: Path,
+    rotational: tuple[str, str] = ("0", "0"),
+) -> tuple[_FakeReferenceProbes, Path]:
+    probes = _FakeReferenceProbes(workspace, filesystem="btrfs")
+    probes.text[Path("/proc/self/mountinfo")] = "\n".join(
+        (
+            _mount_line(mount_id=1, parent_id=1, mount_point="/"),
+            _mount_line(
+                mount_id=2,
+                parent_id=1,
+                device_major=0,
+                device_minor=36,
+                mount_point=workspace.as_posix(),
+                filesystem="btrfs",
+                mount_source="none",
+            ),
+        )
+    )
+    probes.directories.clear()
+    probes.resolved.clear()
+    probes.btrfs_num_devices = 2
+
+    fsid = "11111111-2222-3333-4444-555555555555"
+    devices = Path("/sys/fs/btrfs") / fsid / "devices"
+    probes.directories[devices] = ("dm-0", "dm-1")
+    for index, (device_name, rotational_value) in enumerate(
+        zip(("dm-0", "dm-1"), rotational, strict=True)
+    ):
+        device = devices / device_name
+        leaf_name = f"nvme{index}n1"
+        leaf = device / "slaves" / leaf_name
+        resolved_leaf = Path(f"/sys/devices/pci/block/{leaf_name}")
+        probes.resolved[device] = Path(f"/sys/devices/virtual/block/{device_name}")
+        probes.directories[device / "slaves"] = (leaf_name,)
+        probes.resolved[leaf] = resolved_leaf
+        probes.directories[leaf / "slaves"] = ()
+        probes.text[resolved_leaf / "queue" / "rotational"] = f"{rotational_value}\n"
+    return probes, devices
+
+
+def _qualification_summary(count: int, *, fragment_size: int) -> ScaleCorpusSummary:
+    return ScaleCorpusSummary(
+        count=count,
+        file_bytes=123,
+        allocated_bytes=fragment_size * count,
+        fragment_size=fragment_size,
+        largest_file_bytes=123,
+        file_inodes=count,
+        directory_inodes=3,
+        recipe_counts=recipe_counts(count),
+    )
+
+
 class TestCapacity:
+    def test_capacity_placement__has_runtime_resolvable_annotations(self) -> None:
+        assert "fragment_size" in signature(CapacityPlacement).parameters
+        assert get_type_hints(CapacityPlacement)["fragment_size"] is int
+
+    def test_capacity_placement__closes_descriptor_when_probe_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        opened: list[int] = []
+        closed: list[int] = []
+        real_open = os.open
+        real_close = os.close
+
+        def tracking_open(*args: object, **kwargs: object) -> int:
+            fd = real_open(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+            opened.append(fd)
+            return fd
+
+        def tracking_close(fd: int) -> None:
+            closed.append(fd)
+            real_close(fd)
+
+        monkeypatch.setattr(os, "open", tracking_open)
+        monkeypatch.setattr(os, "close", tracking_close)
+
+        def fail_probe(_fd: int) -> os.statvfs_result:
+            raise RuntimeError("synthetic probe failure")
+
+        with pytest.raises(ResourcePreflightError, match="validation failed"):
+            CapacityPlacement(
+                path=tmp_path,
+                fragment_size=os.statvfs(tmp_path).f_frsize,
+                _fstatvfs=fail_probe,
+            )
+
+        assert opened
+        assert opened[-1] in closed
+
+        def interrupt_probe(_fd: int) -> os.statvfs_result:
+            raise KeyboardInterrupt
+
+        closed.clear()
+        with pytest.raises(KeyboardInterrupt):
+            CapacityPlacement(
+                path=tmp_path,
+                fragment_size=os.statvfs(tmp_path).f_frsize,
+                _fstatvfs=interrupt_probe,
+            )
+
+        assert opened[-1] in closed
+
+    def test_capacity_placement__rejects_forged_fragment_size(self, tmp_path: Path) -> None:
+        observed = os.statvfs(tmp_path).f_frsize
+        forged = observed + 1
+
+        with pytest.raises(ResourcePreflightError, match="fragment size"):
+            CapacityPlacement(path=tmp_path, fragment_size=forged)
+
+    def test_capacity_placement__rejects_path_replacement_after_identity_hold(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "placement"
+        path.mkdir()
+        fragment_size = os.statvfs(path).f_frsize
+        placement = CapacityPlacement(path=path, fragment_size=fragment_size)
+        summary = _qualification_summary(1, fragment_size=fragment_size)
+        moved = tmp_path / "moved"
+        path.rename(moved)
+        path.mkdir()
+
+        with pytest.raises(ResourcePreflightError, match="identity changed"):
+            qualification_requirements(
+                workspace=placement,
+                corpus=placement,
+                artifact=placement,
+                supervisor=placement,
+                summary=summary,
+            )
+
+    def test_capacity_check__rejects_path_replacement_after_requirements(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "placement"
+        path.mkdir()
+        fragment_size = os.statvfs(path).f_frsize
+        placement = CapacityPlacement(path=path, fragment_size=fragment_size)
+        requirements = qualification_requirements(
+            workspace=placement,
+            corpus=placement,
+            artifact=placement,
+            supervisor=placement,
+            summary=_qualification_summary(1, fragment_size=fragment_size),
+        )
+        path.rename(tmp_path / "moved")
+        path.mkdir()
+
+        with pytest.raises(ResourcePreflightError, match="identity changed"):
+            check_capacity(requirements)
+
+    def test_capacity_placement__context_closes_the_held_identity(self, tmp_path: Path) -> None:
+        fragment_size = os.statvfs(tmp_path).f_frsize
+
+        with CapacityPlacement(path=tmp_path, fragment_size=fragment_size) as placement:
+            assert placement.path == tmp_path
+
+        with pytest.raises(ResourcePreflightError, match="closed"):
+            placement.require_current_identity()
+
+    @pytest.mark.parametrize("fragment_size", [0, -1, True, cast("int", 1.5)])
+    def test_capacity_placement__rejects_invalid_fragment_size(
+        self, tmp_path: Path, fragment_size: int
+    ) -> None:
+        with pytest.raises(ValueError, match="fragment_size must be a positive integer"):
+            CapacityPlacement(path=tmp_path, fragment_size=fragment_size)
+
+    def test_capacity_placement__requires_existing_absolute_real_directory(
+        self, tmp_path: Path
+    ) -> None:
+        destination = tmp_path / "destination"
+        destination.mkdir()
+        alias = tmp_path / "alias"
+        alias.symlink_to(destination, target_is_directory=True)
+
+        for path in (Path("relative"), tmp_path / "missing", alias):
+            with pytest.raises(ResourcePreflightError, match="real directory"):
+                CapacityPlacement(path=path, fragment_size=4_096)
+
+    def test_qualification_requirements__rejects_corpus_fragment_mismatch(
+        self, tmp_path: Path
+    ) -> None:
+        paths = tuple(tmp_path / name for name in ("workspace", "corpus", "artifact", "supervisor"))
+        for path in paths:
+            path.mkdir()
+        placements = tuple(
+            CapacityPlacement(path=path, fragment_size=os.statvfs(path).f_frsize) for path in paths
+        )
+        summary = summarize_scale_corpus(1, fragment_size=placements[1].fragment_size + 1)
+
+        with pytest.raises(ValueError, match="fragment size must match"):
+            qualification_requirements(
+                workspace=placements[0],
+                corpus=placements[1],
+                artifact=placements[2],
+                supervisor=placements[3],
+                summary=summary,
+            )
+
+    def test_qualification_requirements__uses_exact_independently_rounded_budget(
+        self, tmp_path: Path
+    ) -> None:
+        paths = tuple(tmp_path / name for name in ("workspace", "corpus", "artifact", "supervisor"))
+        for path in paths:
+            path.mkdir()
+        workspace, corpus, artifact, supervisor = (
+            _capacity_placement(path, fragment_size=fragment)
+            for path, fragment in zip(paths, (4_096, 8_192, 6_000, 7_000), strict=True)
+        )
+        summary = summarize_scale_corpus(40, fragment_size=corpus.fragment_size)
+
+        requirements = qualification_requirements(
+            workspace=workspace,
+            corpus=corpus,
+            artifact=artifact,
+            supervisor=supervisor,
+            summary=summary,
+        )
+
+        by_path = {requirement.path: requirement for requirement in requirements}
+        assert len(by_path) == 4
+        assert by_path[corpus.path].bytes == summary.allocated_bytes + allocated_bytes(
+            summary.largest_file_bytes, corpus.fragment_size
+        )
+        assert by_path[corpus.path].inodes == summary.required_inodes + 1
+
+        action_count = summary.recipe_counts.actions
+        artifact_sizes = (
+            INVENTORY_BYTES_PER_INPUT * summary.count,
+            PLAN_BYTES_PER_INPUT * summary.count,
+            REPORT_BYTES_PER_ACTION * action_count,
+            MANIFEST_BYTES_PER_ACTION * action_count,
+            VERIFY_BYTES_PER_INPUT * summary.count,
+            *(STRUCTURED_LOG_BYTES_PER_INPUT_STAGE * summary.count for _ in range(4)),
+        )
+        atomic_staging = max(
+            artifact_sizes[0], artifact_sizes[1], artifact_sizes[2], artifact_sizes[4]
+        )
+        assert by_path[artifact.path].bytes == sum(
+            allocated_bytes(size, artifact.fragment_size)
+            for size in (*artifact_sizes, atomic_staging)
+        )
+        assert by_path[artifact.path].inodes == 10
+        assert by_path[supervisor.path].bytes == (
+            4
+            * SUPERVISOR_PRIVATE_FILES_PER_STAGE
+            * allocated_bytes(SUPERVISOR_PRIVATE_BYTES_PER_FILE, supervisor.fragment_size)
+        )
+        assert by_path[supervisor.path].inodes == 16
+        assert by_path[workspace.path].bytes == allocated_bytes(
+            QUALIFICATION_BASE_BYTES, workspace.fragment_size
+        )
+        assert by_path[workspace.path].inodes == QUALIFICATION_NONCORPUS_INODES
+
+    @pytest.mark.parametrize("count", [1, 40, 100_000, 1_000_000])
+    def test_qualification_requirements__derives_variable_counts_from_summary(
+        self, tmp_path: Path, count: int
+    ) -> None:
+        paths = tuple(tmp_path / name for name in ("workspace", "corpus", "artifact", "supervisor"))
+        for path in paths:
+            path.mkdir()
+        fragment_size = os.statvfs(paths[0]).f_frsize
+        placements = tuple(
+            CapacityPlacement(path=path, fragment_size=fragment_size) for path in paths
+        )
+        summary = _qualification_summary(count, fragment_size=fragment_size)
+
+        artifact = qualification_requirements(
+            workspace=placements[0],
+            corpus=placements[1],
+            artifact=placements[2],
+            supervisor=placements[3],
+            summary=summary,
+        )[1]
+
+        action_count = recipe_counts(count).actions
+        raw_sizes = (
+            INVENTORY_BYTES_PER_INPUT * count,
+            PLAN_BYTES_PER_INPUT * count,
+            REPORT_BYTES_PER_ACTION * action_count,
+            MANIFEST_BYTES_PER_ACTION * action_count,
+            VERIFY_BYTES_PER_INPUT * count,
+        )
+        expected = sum(allocated_bytes(size, fragment_size) for size in raw_sizes)
+        expected += 4 * allocated_bytes(STRUCTURED_LOG_BYTES_PER_INPUT_STAGE * count, fragment_size)
+        expected += allocated_bytes(
+            max(raw_sizes[0], raw_sizes[1], raw_sizes[2], raw_sizes[4]), fragment_size
+        )
+        assert artifact.bytes == expected
+
+    def test_qualification_requirements__shared_filesystem_gets_one_exact_margin(
+        self, tmp_path: Path
+    ) -> None:
+        paths = tuple(tmp_path / name for name in ("workspace", "corpus", "artifact", "supervisor"))
+        for path in paths:
+            path.mkdir()
+        placements = tuple(
+            CapacityPlacement(path=path, fragment_size=os.statvfs(path).f_frsize) for path in paths
+        )
+        requirements = qualification_requirements(
+            workspace=placements[0],
+            corpus=placements[1],
+            artifact=placements[2],
+            supervisor=placements[3],
+            summary=_qualification_summary(40, fragment_size=placements[1].fragment_size),
+        )
+        statvfs_calls: list[Path] = []
+
+        def statvfs(path: Path) -> os.statvfs_result:
+            statvfs_calls.append(path)
+            return _statvfs_result(bytes_available=10**12, inodes_available=10**9)
+
+        result = check_capacity(
+            requirements,
+            stat_path=lambda _path: _stat_result(7),
+            statvfs=statvfs,
+        )
+
+        assert len(statvfs_calls) == 1
+        assert len(result.filesystems) == 1
+        assert (
+            result.filesystems[0].required_bytes
+            == (sum(item.bytes for item in requirements) * 5 + 3) // 4
+        )
+        assert (
+            result.filesystems[0].required_inodes
+            == (sum(item.inodes for item in requirements) * 5 + 3) // 4
+        )
+
+    def test_qualification_requirements__distinct_filesystems_margin_each_aggregate(
+        self, tmp_path: Path
+    ) -> None:
+        paths = tuple(tmp_path / name for name in ("workspace", "corpus", "artifact", "supervisor"))
+        for path in paths:
+            path.mkdir()
+        placements = tuple(
+            _capacity_placement(path, fragment_size=fragment)
+            for path, fragment in zip(paths, (4_096, 8_192, 6_000, 7_000), strict=True)
+        )
+        requirements = qualification_requirements(
+            workspace=placements[0],
+            corpus=placements[1],
+            artifact=placements[2],
+            supervisor=placements[3],
+            summary=_qualification_summary(40, fragment_size=8_192),
+        )
+        devices = {path: index for index, path in enumerate(paths, start=1)}
+
+        result = check_capacity(
+            requirements,
+            stat_path=lambda path: _stat_result(devices[path]),
+            statvfs=lambda _path: _statvfs_result(bytes_available=10**12, inodes_available=10**9),
+        )
+
+        assert len(result.filesystems) == 4
+        assert sorted(item.required_bytes for item in result.filesystems) == sorted(
+            (requirement.bytes * 5 + 3) // 4 for requirement in requirements
+        )
+        assert sorted(item.required_inodes for item in result.filesystems) == sorted(
+            (requirement.inodes * 5 + 3) // 4 for requirement in requirements
+        )
+
     @pytest.mark.parametrize(
         ("size", "fragment_size", "expected"),
         [(0, 4_096, 0), (1, 4_096, 4_096), (4_096, 4_096, 4_096), (4_097, 4_096, 8_192)],
@@ -447,6 +929,257 @@ class TestMountInfo:
 
 
 class TestReferenceEnvironment:
+    @pytest.mark.parametrize("filesystem", sorted(ALLOWED_BINDING_FILESYSTEMS))
+    def test_reference_observation__derives_public_local_ssd_environment(
+        self, tmp_path: Path, filesystem: str
+    ) -> None:
+        probes = _FakeReferenceProbes(tmp_path, filesystem=filesystem)
+
+        observed = observe_reference_environment(tmp_path, probes=cast("ReferenceProbes", probes))
+
+        assert isinstance(observed, ReferenceObservation)
+        assert observed.fragment_size == 4_096
+        assert observed.mount_projection == MountFlagProjection(
+            flags=("rw", "relatime"), complete=True
+        )
+        assert observed.environment == _reference_environment(
+            cpu_model="Synthetic CPU 9000", filesystem=filesystem
+        )
+        assert {"path", "device", "mount_source", "sysfs"}.isdisjoint(
+            observed.environment.model_dump()
+        )
+
+    @pytest.mark.parametrize(
+        ("rotational", "expected"),
+        [(("0", "0"), "local-ssd"), (("1", "1"), "local-hdd"), (("0", "1"), "unknown")],
+    )
+    def test_reference_observation__traverses_all_dm_slave_leaves(
+        self, tmp_path: Path, rotational: tuple[str, str], expected: str
+    ) -> None:
+        probes = _FakeReferenceProbes(tmp_path)
+        probes.resolved[probes.device] = Path("/sys/devices/virtual/block/dm-0")
+        probes.directories[probes.device / "slaves"] = ("sda", "sdb")
+        probes.text.pop(probes.resolved_device / "queue" / "rotational")
+        for name, value in zip(("sda", "sdb"), rotational, strict=True):
+            slave = probes.device / "slaves" / name
+            resolved = Path(f"/sys/devices/pci/block/{name}")
+            probes.directories[slave / "slaves"] = ()
+            probes.resolved[slave] = resolved
+            probes.text[resolved / "queue" / "rotational"] = f"{value}\n"
+
+        observed = observe_reference_environment(tmp_path, probes=cast("ReferenceProbes", probes))
+
+        assert observed.environment.storage_class == expected
+
+    @pytest.mark.parametrize(
+        ("rotational", "expected"),
+        [
+            (("0", "0"), "local-ssd"),
+            (("1", "1"), "local-hdd"),
+            (("0", "1"), "unknown"),
+        ],
+    )
+    def test_reference_observation__resolves_anonymous_multidevice_btrfs_leaves(
+        self,
+        tmp_path: Path,
+        rotational: tuple[str, str],
+        expected: str,
+    ) -> None:
+        probes, _devices = _anonymous_btrfs_probes(tmp_path, rotational)
+
+        observed = observe_reference_environment(tmp_path, probes=cast("ReferenceProbes", probes))
+
+        assert observed.environment.storage_class == expected
+
+    def test_reference_observation__incomplete_btrfs_device_set_is_unknown(
+        self, tmp_path: Path
+    ) -> None:
+        probes, devices = _anonymous_btrfs_probes(tmp_path)
+        probes.directories[devices] = ("dm-0",)
+
+        observed = observe_reference_environment(tmp_path, probes=cast("ReferenceProbes", probes))
+
+        assert observed.environment.storage_class == "unknown"
+
+    def test_reference_observation__nil_btrfs_fsid_is_unknown(self, tmp_path: Path) -> None:
+        probes = _FakeReferenceProbes(tmp_path, filesystem="btrfs")
+        probes.btrfs_fsid = bytes(16)
+        nil_devices = Path("/sys/fs/btrfs/00000000-0000-0000-0000-000000000000/devices")
+        member = nil_devices / "synthetic"
+        probes.directories[nil_devices] = ("synthetic",)
+        probes.directories[member / "slaves"] = ()
+        probes.resolved[member] = probes.resolved_device
+
+        observed = observe_reference_environment(tmp_path, probes=cast("ReferenceProbes", probes))
+
+        assert observed.environment.storage_class == "unknown"
+
+    def test_reference_observation__duplicate_btrfs_member_targets_are_unknown(
+        self, tmp_path: Path
+    ) -> None:
+        probes, devices = _anonymous_btrfs_probes(tmp_path)
+        probes.resolved[devices / "dm-1"] = probes.resolved[devices / "dm-0"]
+
+        observed = observe_reference_environment(tmp_path, probes=cast("ReferenceProbes", probes))
+
+        assert observed.environment.storage_class == "unknown"
+
+    def test_reference_observation__btrfs_topology_churn_is_unknown(self, tmp_path: Path) -> None:
+        probes, _devices = _anonymous_btrfs_probes(tmp_path)
+        probes.btrfs_info_sequence = [
+            (probes.btrfs_fsid, probes.btrfs_num_devices),
+            (bytes.fromhex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 2),
+        ]
+
+        observed = observe_reference_environment(tmp_path, probes=cast("ReferenceProbes", probes))
+
+        assert observed.environment.storage_class == "unknown"
+
+    def test_reference_observation__btrfs_member_churn_is_unknown(self, tmp_path: Path) -> None:
+        probes, devices = _anonymous_btrfs_probes(tmp_path)
+        probes.directory_sequences[devices] = [
+            ("dm-0", "dm-1"),
+            ("dm-1", "dm-0"),
+        ]
+
+        observed = observe_reference_environment(tmp_path, probes=cast("ReferenceProbes", probes))
+
+        assert observed.environment.storage_class == "unknown"
+
+    def test_reference_observation__btrfs_leaf_churn_is_unknown(self, tmp_path: Path) -> None:
+        probes, _devices = _anonymous_btrfs_probes(tmp_path)
+        rotational = Path("/sys/devices/pci/block/nvme1n1/queue/rotational")
+        probes.text_sequences[rotational] = ["0\n", "1\n"]
+
+        observed = observe_reference_environment(tmp_path, probes=cast("ReferenceProbes", probes))
+
+        assert observed.environment.storage_class == "unknown"
+
+    @pytest.mark.parametrize(
+        "failure",
+        ["missing-directory", "broken-member", "missing-rotation", "unsafe-name"],
+    )
+    def test_reference_observation__incomplete_btrfs_telemetry_is_unknown(
+        self, tmp_path: Path, failure: str
+    ) -> None:
+        probes, devices = _anonymous_btrfs_probes(tmp_path)
+        if failure == "missing-directory":
+            probes.directories.pop(devices)
+        elif failure == "broken-member":
+            probes.resolved.pop(devices / "dm-1")
+        elif failure == "missing-rotation":
+            probes.text.pop(Path("/sys/devices/pci/block/nvme1n1/queue/rotational"))
+        else:
+            probes.directories[devices] = ("dm-0", "../escape")
+
+        observed = observe_reference_environment(tmp_path, probes=cast("ReferenceProbes", probes))
+
+        assert observed.environment.storage_class == "unknown"
+
+    @pytest.mark.parametrize("failure", ["identity", "count", "ioctl"])
+    def test_reference_observation__unprovable_btrfs_identity_is_unknown(
+        self, tmp_path: Path, failure: str
+    ) -> None:
+        probes, _devices = _anonymous_btrfs_probes(tmp_path)
+        if failure == "identity":
+            probes.btrfs_fsid = b"short"
+        elif failure == "count":
+            probes.btrfs_num_devices = 0
+        else:
+            probes.btrfs_error = OSError("synthetic ioctl failure")
+
+        observed = observe_reference_environment(tmp_path, probes=cast("ReferenceProbes", probes))
+
+        assert observed.environment.storage_class == "unknown"
+
+    def test_reference_observation__uses_partition_parent_rotational_state(
+        self, tmp_path: Path
+    ) -> None:
+        probes = _FakeReferenceProbes(tmp_path)
+        partition = Path("/sys/devices/pci/block/sda/sda1")
+        probes.directories.pop(probes.device / "slaves")
+        probes.resolved[probes.device] = partition
+        probes.text.pop(probes.resolved_device / "queue" / "rotational")
+        probes.text[partition / "partition"] = "1\n"
+        probes.text[partition.parent / "queue" / "rotational"] = "1\n"
+
+        observed = observe_reference_environment(tmp_path, probes=cast("ReferenceProbes", probes))
+
+        assert observed.environment.storage_class == "local-hdd"
+
+    @pytest.mark.parametrize(
+        ("filesystem", "storage_class"),
+        [
+            ("tmpfs", "memory"),
+            ("ramfs", "memory"),
+            *((filesystem, "network") for filesystem in sorted(REJECTED_NETWORK_FILESYSTEMS)),
+            ("fuse.sshfs", "network"),
+            ("ceph", "network"),
+            ("glusterfs", "network"),
+            ("9p", "network"),
+        ],
+    )
+    def test_reference_observation__classifies_memory_and_network_without_sysfs(
+        self, tmp_path: Path, filesystem: str, storage_class: str
+    ) -> None:
+        probes = _FakeReferenceProbes(tmp_path, filesystem=filesystem)
+        probes.directories.clear()
+        probes.resolved.clear()
+        probes.text = {
+            path: value
+            for path, value in probes.text.items()
+            if not path.is_relative_to(Path("/sys"))
+        }
+
+        observed = observe_reference_environment(tmp_path, probes=cast("ReferenceProbes", probes))
+
+        assert observed.environment.filesystem == filesystem
+        assert observed.environment.storage_class == storage_class
+
+    def test_reference_observation__supports_linux_arm_cpu_model_fields(
+        self, tmp_path: Path
+    ) -> None:
+        probes = _FakeReferenceProbes(tmp_path)
+        probes.text[Path("/proc/cpuinfo")] = "processor: 0\nHardware: Synthetic ARM CPU\n"
+
+        observed = observe_reference_environment(tmp_path, probes=cast("ReferenceProbes", probes))
+
+        assert observed.environment.cpu_model == "Synthetic ARM CPU"
+
+    def test_reference_observation__unavailable_or_cyclic_rotation_is_unknown(
+        self, tmp_path: Path
+    ) -> None:
+        probes = _FakeReferenceProbes(tmp_path)
+        probes.directories.clear()
+        probes.text.pop(probes.resolved_device / "queue" / "rotational")
+        missing = observe_reference_environment(tmp_path, probes=cast("ReferenceProbes", probes))
+        assert missing.environment.storage_class == "unknown"
+
+        probes = _FakeReferenceProbes(tmp_path)
+        probes.directories[probes.device / "slaves"] = ("loop",)
+        slave = probes.device / "slaves" / "loop"
+        probes.resolved[slave] = probes.device
+        probes.directories[slave / "slaves"] = ("loop",)
+        cyclic = observe_reference_environment(tmp_path, probes=cast("ReferenceProbes", probes))
+        assert cyclic.environment.storage_class == "unknown"
+
+    def test_reference_observation__forbidden_probe_labels_degrade_to_unknown(
+        self, tmp_path: Path
+    ) -> None:
+        probes = _FakeReferenceProbes(tmp_path)
+        probes.text[Path("/proc/cpuinfo")] = "model name: /private/cpu\n"
+        probes.machine_value = "private\\architecture"
+        probes.python_version_value = "secret=version"
+        probes.kernel_version_value = "/private/kernel"
+
+        observed = observe_reference_environment(tmp_path, probes=cast("ReferenceProbes", probes))
+
+        assert observed.environment.cpu_architecture == "unknown"
+        assert observed.environment.cpu_model == "unknown"
+        assert observed.environment.python_version == "unknown"
+        assert observed.environment.kernel_version == "unknown"
+        assert "private" not in repr(observed.environment)
+
     def test_reference_comparison__is_exact_with_order_independent_mount_flags(self) -> None:
         accepted = _reference_environment()
         observed = _reference_environment(mount_flags=("relatime", "rw"))

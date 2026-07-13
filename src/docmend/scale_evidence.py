@@ -11,7 +11,7 @@ import hashlib
 import json
 import os
 import stat
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
 from fractions import Fraction
@@ -35,11 +35,16 @@ from pydantic import (
 )
 
 from docmend.artifacts import write_json_artifact
-from docmend.inventory import RunId, Sha256
+from docmend.frontmatter import FRONTMATTER_SCHEMA_VERSION
+from docmend.inventory import INVENTORY_SCHEMA_VERSION, RunId, Sha256
+from docmend.plan import PLAN_SCHEMA_VERSION
+from docmend.report import REPORT_SCHEMA_VERSION
+from docmend.verify_report import VERIFY_REPORT_SCHEMA_VERSION
+from docmend.writer.manifest import MANIFEST_SCHEMA_VERSION
 
-SCALE_EVIDENCE_SCHEMA_VERSION = "1.1"
+SCALE_EVIDENCE_SCHEMA_VERSION = "2.0"
 REFERENCE_ENVIRONMENT_SCHEMA_VERSION = "1.0"
-SCALE_THRESHOLDS_SCHEMA_VERSION = "1.0"
+SCALE_THRESHOLDS_SCHEMA_VERSION = "2.0"
 BINDING_CAPACITY_MARGIN = 0.25
 
 type QualificationSchemaKind = Literal[
@@ -52,6 +57,26 @@ QUALIFICATION_SCHEMA_KINDS: tuple[QualificationSchemaKind, ...] = (
 )
 
 type EvidenceStatus = Literal["passing", "failed", "incomplete", "diagnostic"]
+type OutcomeReason = Literal[
+    "explicit-diagnostic",
+    "reference-mismatch",
+    "reference-observation-unavailable",
+    "provenance-changed",
+    "build-failed",
+    "install-failed",
+    "capacity-insufficient",
+    "capacity-estimate-exceeded",
+    "corpus-materialization-failed",
+    "supervisor-failed",
+    "telemetry-unavailable",
+    "stage-exit",
+    "artifact-invalid",
+    "conservation-mismatch",
+    "finding-mismatch",
+    "threshold-exceeded",
+    "runtime-limit-exceeded",
+    "harness-error",
+]
 type QualificationTier = Literal["pr", "pilot", "scheduled", "release", "file-size"]
 type StageName = Literal["scan", "plan", "apply", "verify"]
 type CacheClassification = Literal["cold", "warm", "mixed"]
@@ -61,7 +86,14 @@ type MountFlag = Literal[
 ]
 type StorageClass = Literal["local-ssd", "local-hdd", "memory", "network", "unknown"]
 type ArtifactSizeName = Literal[
-    "inventory", "plan", "report", "manifest", "verify-report", "stdout-log", "stderr-log"
+    "inventory",
+    "plan",
+    "report",
+    "manifest",
+    "verify-report",
+    "structured-log",
+    "stdout-log",
+    "stderr-log",
 ]
 type ArtifactSchemaName = Literal[
     "inventory", "plan", "report", "manifest", "verify-report", "frontmatter"
@@ -76,6 +108,53 @@ _ARTIFACT_SCHEMA_NAMES: tuple[ArtifactSchemaName, ...] = (
     "manifest",
     "verify-report",
     "frontmatter",
+)
+
+
+def current_artifact_schema_versions() -> dict[ArtifactSchemaName, ArtifactSchemaVersion]:
+    """Return the candidate's product artifact versions from their code owners."""
+    return {
+        "inventory": INVENTORY_SCHEMA_VERSION,
+        "plan": PLAN_SCHEMA_VERSION,
+        "report": REPORT_SCHEMA_VERSION,
+        "manifest": MANIFEST_SCHEMA_VERSION,
+        "verify-report": VERIFY_REPORT_SCHEMA_VERSION,
+        "frontmatter": FRONTMATTER_SCHEMA_VERSION,
+    }
+
+
+_STAGE_ARTIFACT_KEYS: dict[StageName, frozenset[ArtifactSizeName]] = {
+    "scan": frozenset(("inventory", "structured-log", "stdout-log", "stderr-log")),
+    "plan": frozenset(("plan", "structured-log", "stdout-log", "stderr-log")),
+    "apply": frozenset(("report", "manifest", "structured-log", "stdout-log", "stderr-log")),
+    "verify": frozenset(("verify-report", "structured-log", "stdout-log", "stderr-log")),
+}
+_STAGE_ORDER: tuple[StageName, ...] = ("scan", "plan", "apply", "verify")
+_FAILURE_REASON_PRIORITY: tuple[OutcomeReason, ...] = (
+    "stage-exit",
+    "conservation-mismatch",
+    "finding-mismatch",
+    "threshold-exceeded",
+    "runtime-limit-exceeded",
+)
+_FAILURE_REASONS: frozenset[OutcomeReason] = frozenset(_FAILURE_REASON_PRIORITY)
+_DIAGNOSTIC_REASONS: frozenset[OutcomeReason] = frozenset(
+    ("reference-mismatch", "explicit-diagnostic")
+)
+_INCOMPLETE_REASONS: frozenset[OutcomeReason] = frozenset(
+    (
+        "reference-observation-unavailable",
+        "provenance-changed",
+        "build-failed",
+        "install-failed",
+        "capacity-insufficient",
+        "capacity-estimate-exceeded",
+        "corpus-materialization-failed",
+        "supervisor-failed",
+        "telemetry-unavailable",
+        "artifact-invalid",
+        "harness-error",
+    )
 )
 
 
@@ -120,21 +199,44 @@ class StageEvidence(_StrictModel):
     peak_rss_bytes: Annotated[int, Field(ge=0)] | None
     python_allocation_peak_bytes: Annotated[int, Field(ge=0)] | None
     vm_swap_peak_bytes: Annotated[int, Field(ge=0)] | None
-    exit_code: int
+    exit_code: int | None
     completed: bool
+    artifact_validated: bool
     artifact_bytes: dict[ArtifactSizeName, ArtifactSize]
 
     @model_validator(mode="after")
-    def _require_run_id_for_completed_stage(self) -> Self:
-        if self.completed and self.run_id is None:
-            raise ValueError("run_id is required when a stage is completed")
+    def _reconcile_measurement_and_artifact_state(self) -> Self:
         measurements = sum(
             value is not None for value in (self.peak_rss_bytes, self.python_allocation_peak_bytes)
         )
-        if measurements > 1:
-            raise ValueError("a stage must never mix RSS and Python allocation measurements")
-        if self.completed and measurements == 0:
-            raise ValueError("a completed stage requires one memory measurement")
+        if self.completed:
+            if self.exit_code is None or measurements != 1:
+                raise ValueError(
+                    "a completed stage requires an exit code and exactly one memory measurement"
+                )
+        elif self.exit_code is not None or measurements != 0 or self.vm_swap_peak_bytes is not None:
+            raise ValueError(
+                "an incomplete stage requires null exit, RSS, allocation, and swap measurements"
+            )
+
+        expected_artifacts = _STAGE_ARTIFACT_KEYS[self.stage]
+        actual_artifacts = set(self.artifact_bytes)
+        if self.artifact_validated:
+            if not self.completed or self.run_id is None:
+                raise ValueError(
+                    "artifact validation requires a completed stage and trusted run_id"
+                )
+            if frozenset(actual_artifacts) != expected_artifacts:
+                raise ValueError(
+                    "an artifact-validated stage requires its exact stage artifact keys"
+                )
+        else:
+            if self.run_id is not None:
+                raise ValueError("run_id must be null until stage artifacts are validated")
+            if not actual_artifacts <= expected_artifacts:
+                raise ValueError(
+                    "an unvalidated stage may contain only stage-specific artifact keys"
+                )
         return self
 
 
@@ -204,13 +306,13 @@ class QualificationTotals(_StrictModel):
 class ThresholdSet(_StrictModel):
     absolute_peak_rss_bytes: Annotated[int, Field(gt=0)]
     slope_bytes_per_file: Annotated[int, Field(ge=0)]
-    linearity_tolerance: Annotated[float, Field(ge=0, le=1)]
+    linearity_tolerance: Annotated[float, Field(ge=0.2, le=0.2)] = 0.2
 
 
 class ThresholdVerdict(_StrictModel):
     limits: ThresholdSet
     observed_peak_rss_bytes: Annotated[int, Field(ge=0)]
-    observed_slope_bytes_per_file: Annotated[float, Field(ge=0)]
+    observed_slope_bytes_per_file: Annotated[int, Field(ge=0)]
     observed_linearity_ratio: Annotated[float, Field(ge=0)]
     peak_passed: bool
     slope_passed: bool
@@ -233,6 +335,47 @@ class ThresholdVerdict(_StrictModel):
         return self
 
 
+class WorkflowRuntimeVerdict(_StrictModel):
+    elapsed_seconds: Annotated[float, Field(ge=0)]
+    limit_seconds: Literal[43_200]
+    passed: bool
+
+    @model_validator(mode="after")
+    def _reconcile_verdict(self) -> Self:
+        if self.passed != (self.elapsed_seconds <= self.limit_seconds):
+            raise ValueError("workflow runtime verdict does not reconcile")
+        return self
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceOutcome:
+    status: EvidenceStatus
+    reason: OutcomeReason | None
+
+
+def select_evidence_outcome(reasons: Iterable[OutcomeReason]) -> EvidenceOutcome:
+    """Select the public status and primary reason from observed qualification outcomes.
+
+    The input order is the lifecycle execution order. Trustworthy failures use
+    their fixed semantic priority regardless of discovery order.
+    """
+    observed = tuple(dict.fromkeys(reasons))
+    known_reasons = _FAILURE_REASONS | _INCOMPLETE_REASONS | _DIAGNOSTIC_REASONS
+    if unknown := set(observed) - known_reasons:
+        raise ValueError(f"unknown outcome reasons: {sorted(unknown)}")
+    for reason in _FAILURE_REASON_PRIORITY:
+        if reason in observed:
+            return EvidenceOutcome(status="failed", reason=reason)
+    for reason in observed:
+        if reason in _INCOMPLETE_REASONS:
+            return EvidenceOutcome(status="incomplete", reason=reason)
+    if "reference-mismatch" in observed:
+        return EvidenceOutcome(status="diagnostic", reason="reference-mismatch")
+    if "explicit-diagnostic" in observed:
+        return EvidenceOutcome(status="diagnostic", reason="explicit-diagnostic")
+    return EvidenceOutcome(status="passing", reason=None)
+
+
 class ScaleEvidence(_StrictModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -245,11 +388,13 @@ class ScaleEvidence(_StrictModel):
     schema_kind: Literal["docmend/scale-evidence"] = Field(
         default="docmend/scale-evidence", alias="schema"
     )
-    schema_version: Literal["1.1"] = SCALE_EVIDENCE_SCHEMA_VERSION
+    schema_version: Literal["2.0"] = SCALE_EVIDENCE_SCHEMA_VERSION
     status: EvidenceStatus
     tier: QualificationTier
     candidate_commit: Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
     package_version: PublicLabel
+    build_frontend_version: PublicLabel
+    build_backend_version: PublicLabel
     wheel_sha256: Sha256 | None
     lock_sha256: Sha256
     reference_environment_sha256: Sha256
@@ -261,12 +406,14 @@ class ScaleEvidence(_StrictModel):
     cache_classification: CacheClassification
     started_at: AwareDatetime
     completed_at: AwareDatetime
-    preflight: PreflightEvidence
+    preflight: PreflightEvidence | None
+    outcome_reason: OutcomeReason | None
     file_count: Annotated[int, Field(gt=0)]
     corpus_bytes: Annotated[int, Field(ge=0)]
     stages: list[StageEvidence]
     totals: QualificationTotals
     thresholds: ThresholdVerdict | None
+    workflow_runtime: WorkflowRuntimeVerdict | None
 
     @model_validator(mode="after")
     def _reconcile_public_evidence(self) -> Self:
@@ -276,13 +423,114 @@ class ScaleEvidence(_StrictModel):
             raise ValueError(
                 "artifact_schema_versions must contain the complete finite artifact set"
             )
-        if self.totals.scanned != self.file_count:
-            raise ValueError("totals.scanned must equal file_count")
+
+        expected_reason_set: frozenset[OutcomeReason]
+        if self.status == "passing":
+            if self.outcome_reason is not None:
+                raise ValueError("passing evidence must not carry an outcome reason")
+        else:
+            expected_reason_set = {
+                "failed": _FAILURE_REASONS,
+                "incomplete": _INCOMPLETE_REASONS,
+                "diagnostic": _DIAGNOSTIC_REASONS,
+            }[self.status]
+            if self.outcome_reason not in expected_reason_set:
+                raise ValueError("outcome reason does not match evidence status")
+
+        stage_names = tuple(stage.stage for stage in self.stages)
+        if stage_names != _STAGE_ORDER[: len(stage_names)]:
+            raise ValueError("stages must be an ordered unique attempted prefix")
+        if any(not stage.artifact_validated for stage in self.stages[:-1]):
+            raise ValueError("an unvalidated stage must be the terminal attempted stage")
+
+        validated_stages = {stage.stage for stage in self.stages if stage.artifact_validated}
+        phase_totals = {
+            "scan": (self.totals.scanned,),
+            "plan": (self.totals.actions, self.totals.clean_noops, self.totals.plan_skips),
+            "apply": (
+                self.totals.applied,
+                self.totals.apply_skips,
+                self.totals.failures,
+                self.totals.not_attempted,
+            ),
+            "verify": (self.totals.verified, self.totals.observed_findings),
+        }
+        for stage, totals in phase_totals.items():
+            if stage not in validated_stages and any(totals):
+                raise ValueError(f"{stage} totals must remain zero until its artifact is validated")
+
+        trustworthy_failures: list[OutcomeReason] = []
+        for stage in self.stages:
+            expected_exit = 1 if stage.stage == "verify" and self.totals.expected_findings else 0
+            if stage.completed and stage.exit_code != expected_exit:
+                trustworthy_failures.append("stage-exit")
+                break
+        plan_total = self.totals.actions + self.totals.clean_noops + self.totals.plan_skips
+        apply_total = (
+            self.totals.applied
+            + self.totals.apply_skips
+            + self.totals.failures
+            + self.totals.not_attempted
+        )
         if (
-            self.totals.actions + self.totals.clean_noops + self.totals.plan_skips
-            != self.totals.scanned
+            ("scan" in validated_stages and self.totals.scanned != self.file_count)
+            or ("plan" in validated_stages and plan_total != self.totals.scanned)
+            or (
+                "apply" in validated_stages
+                and (
+                    apply_total != self.totals.actions
+                    or self.totals.failures > 0
+                    or self.totals.not_attempted > 0
+                )
+            )
+            or ("verify" in validated_stages and self.totals.verified != self.totals.actions)
         ):
-            raise ValueError("scan/plan totals do not conserve the corpus")
+            trustworthy_failures.append("conservation-mismatch")
+        if (
+            "verify" in validated_stages
+            and self.totals.observed_findings != self.totals.expected_findings
+        ):
+            trustworthy_failures.append("finding-mismatch")
+        if self.thresholds is not None and not self.thresholds.passed:
+            trustworthy_failures.append("threshold-exceeded")
+        if self.workflow_runtime is not None and not self.workflow_runtime.passed:
+            trustworthy_failures.append("runtime-limit-exceeded")
+
+        if trustworthy_failures:
+            selected_failure = select_evidence_outcome(trustworthy_failures)
+            if (
+                self.status != selected_failure.status
+                or self.outcome_reason != selected_failure.reason
+            ):
+                raise ValueError(
+                    "trustworthy failure status/reason must follow the fixed precedence"
+                )
+        elif self.status == "failed":
+            raise ValueError("failed evidence requires a trustworthy observed failure")
+
+        if self.status != "failed":
+            if "scan" in validated_stages and self.totals.scanned != self.file_count:
+                raise ValueError("validated scan totals must equal file_count")
+            if "plan" in validated_stages and (
+                self.totals.actions + self.totals.clean_noops + self.totals.plan_skips
+                != self.totals.scanned
+            ):
+                raise ValueError("scan/plan totals do not conserve the corpus")
+            terminal = (
+                self.totals.applied
+                + self.totals.apply_skips
+                + self.totals.failures
+                + self.totals.not_attempted
+            )
+            if "apply" in validated_stages and terminal != self.totals.actions:
+                raise ValueError("apply totals do not reconcile with planned actions")
+            if "verify" in validated_stages and self.totals.verified != self.totals.actions:
+                raise ValueError("verified totals do not provide complete plan coverage")
+            if (
+                "verify" in validated_stages
+                and self.totals.observed_findings != self.totals.expected_findings
+            ):
+                raise ValueError("observed findings do not match the expected findings")
 
         if self.memory_measurement == "external-rss":
             mixed = any(stage.python_allocation_peak_bytes is not None for stage in self.stages)
@@ -295,28 +543,57 @@ class ScaleEvidence(_StrictModel):
         if mixed:
             raise ValueError("one evidence document must never mix memory measurement methods")
 
-        if self.status != "passing":
+        if self.tier == "release":
+            if not self.stages and self.workflow_runtime is not None:
+                raise ValueError("release workflow runtime must be null before scan dispatch")
+            if self.stages and self.workflow_runtime is None:
+                raise ValueError("release evidence requires workflow runtime after scan dispatch")
+            if len(validated_stages) == len(_STAGE_ORDER) and self.workflow_runtime is not None:
+                stage_elapsed = sum(stage.elapsed_seconds for stage in self.stages)
+                if self.workflow_runtime.elapsed_seconds < stage_elapsed:
+                    raise ValueError(
+                        "complete release workflow runtime cannot understate stage elapsed time"
+                    )
+        elif self.workflow_runtime is not None:
+            raise ValueError("only release evidence may carry workflow runtime")
+
+        if self.status not in {"passing", "diagnostic"}:
             return self
-        if not self.preflight.passed:
-            raise ValueError("passing evidence requires a passing preflight")
-        if self.tier != "pr" and self.wheel_sha256 is None:
-            raise ValueError("wheel_sha256 is required for passing installed-wheel evidence")
-        if self.tier in {"pilot", "scheduled", "release"}:
-            names = tuple(stage.stage for stage in self.stages)
-            expected: tuple[StageName, ...] = ("scan", "plan", "apply", "verify")
-            if names != expected or not all(stage.completed for stage in self.stages):
+        if self.preflight is None:
+            raise ValueError("complete evidence requires a preflight result")
+        if self.outcome_reason == "reference-mismatch":
+            if (
+                not self.preflight.filesystems
+                or not all(item.passed for item in self.preflight.filesystems)
+                or not self.preflight.capacity_margin_met
+                or not self.preflight.ram_requirement_met
+            ):
                 raise ValueError(
-                    "passing evidence requires completed scan, plan, apply, verify stages"
+                    "reference-mismatch diagnostics require all non-reference preflight checks"
                 )
-            if any(stage.exit_code != 0 for stage in self.stages[:3]):
-                raise ValueError("passing scan, plan, and apply must exit 0")
-            expected_verify_exit = 1 if self.totals.expected_findings else 0
-            if self.stages[3].exit_code != expected_verify_exit:
-                raise ValueError("verify exit code does not reconcile with expected findings")
+            if self.preflight.reference_environment_match and self.preflight.binding_filesystem:
+                raise ValueError(
+                    "reference-mismatch diagnostics require an actual reference mismatch"
+                )
+        elif not self.preflight.passed:
+            raise ValueError("passing or explicit diagnostic evidence requires a passing preflight")
+        if self.tier != "pr" and self.wheel_sha256 is None:
+            raise ValueError("wheel_sha256 is required for complete installed-wheel evidence")
+        if stage_names != _STAGE_ORDER or not all(
+            stage.completed and stage.artifact_validated for stage in self.stages
+        ):
+            raise ValueError(
+                "complete evidence requires artifact-validated scan, plan, apply, verify stages"
+            )
+        if any(stage.exit_code != 0 for stage in self.stages[:3]):
+            raise ValueError("complete scan, plan, and apply must exit 0")
+        expected_verify_exit = 1 if self.totals.expected_findings else 0
+        if self.stages[3].exit_code != expected_verify_exit:
+            raise ValueError("verify exit code does not reconcile with expected findings")
         if any(stage.vm_swap_peak_bytes is None for stage in self.stages):
-            raise ValueError("passing binding evidence requires available child swap telemetry")
+            raise ValueError("complete binding evidence requires available child swap telemetry")
         if any(stage.vm_swap_peak_bytes != 0 for stage in self.stages):
-            raise ValueError("passing binding evidence requires zero child swap")
+            raise ValueError("complete binding evidence requires zero child swap")
         terminal = (
             self.totals.applied
             + self.totals.apply_skips
@@ -326,19 +603,23 @@ class ScaleEvidence(_StrictModel):
         if terminal != self.totals.actions:
             raise ValueError("apply totals do not reconcile with planned actions")
         if self.totals.failures or self.totals.not_attempted:
-            raise ValueError("passing evidence cannot contain failures or not-attempted actions")
+            raise ValueError("complete evidence cannot contain failures or not-attempted actions")
         if self.totals.verified != self.totals.actions:
-            raise ValueError("passing evidence requires complete plan verification coverage")
+            raise ValueError("complete evidence requires complete plan verification coverage")
         if self.totals.observed_findings != self.totals.expected_findings:
-            raise ValueError("passing evidence requires exact expected finding totals")
+            raise ValueError("complete evidence requires exact expected finding totals")
         if self.tier in {"scheduled", "release"} and (
             self.thresholds is None or not self.thresholds.passed
         ):
-            raise ValueError("passing scheduled/release evidence requires passing thresholds")
+            raise ValueError("complete scheduled/release evidence requires passing thresholds")
         if self.tier in {"scheduled", "release"} and self.threshold_baseline_sha256 is None:
             raise ValueError(
-                "passing scheduled/release evidence requires threshold baseline provenance"
+                "complete scheduled/release evidence requires threshold baseline provenance"
             )
+        if self.tier == "release" and (
+            self.workflow_runtime is None or not self.workflow_runtime.passed
+        ):
+            raise ValueError("complete release evidence requires a passing workflow runtime")
         return self
 
 
@@ -412,10 +693,11 @@ class ThresholdBaseline(_StrictModel):
     schema_kind: Literal["docmend/scale-thresholds"] = Field(
         default="docmend/scale-thresholds", alias="schema"
     )
-    schema_version: Literal["1.0"] = SCALE_THRESHOLDS_SCHEMA_VERSION
+    schema_version: Literal["2.0"] = SCALE_THRESHOLDS_SCHEMA_VERSION
     reference_environment_sha256: Sha256
     measurement_points: tuple[ThresholdPointIdentity, ThresholdPointIdentity]
-    fitting_method: Literal["exact-linear-least-squares"]
+    target_file_count: Literal[1_000_000]
+    fitting_method: Literal["exact-per-stage-linear-projection"]
     limits: ThresholdSet
 
     @model_validator(mode="after")
@@ -434,6 +716,37 @@ class MemoryFit:
 
     slope_bytes_per_file: Fraction
     intercept_bytes: Fraction
+
+
+@dataclass(frozen=True, slots=True)
+class StageMemorySeries:
+    stage: StageName
+    rss_10k: int
+    rss_100k: int
+
+    def __post_init__(self) -> None:
+        if self.stage not in _STAGE_ORDER:
+            raise ValueError(f"unknown stage {self.stage}")
+        if (
+            type(self.rss_10k) is not int
+            or type(self.rss_100k) is not int
+            or self.rss_10k <= 0
+            or self.rss_100k <= 0
+        ):
+            raise ValueError("stage RSS pilot values must be positive integers")
+
+
+@dataclass(frozen=True, slots=True)
+class ThresholdContext:
+    baseline: ThresholdBaseline
+    baseline_sha256: Sha256
+    stage_memory: tuple[StageMemorySeries, ...]
+
+    def __post_init__(self) -> None:
+        if tuple(item.stage for item in self.stage_memory) != _STAGE_ORDER:
+            raise ValueError("threshold context stage memory must follow stage order")
+        if self.baseline.limits != derive_thresholds(self.stage_memory):
+            raise ValueError("threshold context limits do not match its stage memory")
 
 
 def fit_peak_rss_slope(points: Iterable[MemoryPoint]) -> MemoryFit:
@@ -459,32 +772,110 @@ def fit_peak_rss_slope(points: Iterable[MemoryPoint]) -> MemoryFit:
     return MemoryFit(slope_bytes_per_file=slope, intercept_bytes=intercept)
 
 
-def _as_fraction(value: float | Fraction) -> Fraction:
-    return value if isinstance(value, Fraction) else Fraction(str(value))
-
-
 def _ceil_fraction(value: Fraction) -> int:
     return -(-value.numerator // value.denominator)
 
 
-def derive_thresholds(
-    fit: MemoryFit,
-    *,
-    largest_peak_bytes: int,
-    headroom: float | Fraction = 0.25,
-    linearity_tolerance: float = 0.20,
-) -> ThresholdSet:
-    """Freeze upward-rounded peak/slope limits from pilot observations."""
-    if largest_peak_bytes <= 0:
-        raise ValueError("largest_peak_bytes must be positive")
-    headroom_fraction = _as_fraction(headroom)
-    if headroom_fraction < 0:
-        raise ValueError("headroom must not be negative")
-    multiplier = 1 + headroom_fraction
+def _stage_growth(series: StageMemorySeries) -> Fraction:
+    return max(Fraction(0), Fraction(series.rss_100k - series.rss_10k, 90_000))
+
+
+def _project_stage_peak(series: StageMemorySeries, file_count: int) -> Fraction:
+    growth = _stage_growth(series)
+    return max(
+        Fraction(series.rss_10k),
+        Fraction(series.rss_100k),
+        Fraction(series.rss_10k) + growth * (file_count - 10_000),
+    )
+
+
+def derive_thresholds(stage_memory: Iterable[StageMemorySeries]) -> ThresholdSet:
+    """Derive the fixed 1M limits from four stage-aligned pilot series."""
+    series = tuple(stage_memory)
+    if tuple(item.stage for item in series) != _STAGE_ORDER:
+        raise ValueError("stage memory must be ordered scan, plan, apply, verify")
+    multiplier = Fraction(5, 4)
     return ThresholdSet(
-        absolute_peak_rss_bytes=_ceil_fraction(Fraction(largest_peak_bytes) * multiplier),
-        slope_bytes_per_file=_ceil_fraction(fit.slope_bytes_per_file * multiplier),
-        linearity_tolerance=linearity_tolerance,
+        absolute_peak_rss_bytes=_ceil_fraction(
+            max(_project_stage_peak(item, 1_000_000) for item in series) * multiplier
+        ),
+        slope_bytes_per_file=_ceil_fraction(
+            max(_stage_growth(item) for item in series) * multiplier
+        ),
+        linearity_tolerance=0.2,
+    )
+
+
+def _ordinary_least_squares_slope(points: tuple[tuple[int, int], ...]) -> Fraction:
+    count = len(points)
+    sum_x = sum(x for x, _ in points)
+    sum_y = sum(y for _, y in points)
+    sum_xy = sum(x * y for x, y in points)
+    sum_x_squared = sum(x * x for x, _ in points)
+    denominator = count * sum_x_squared - sum_x * sum_x
+    if denominator == 0:
+        raise ValueError("memory points do not define a slope")
+    return Fraction(count * sum_xy - sum_x * sum_y, denominator)
+
+
+def _upward_rounded_ratio(value: Fraction) -> float:
+    scale = 10**12
+    return _ceil_fraction(value * scale) / scale
+
+
+def evaluate_thresholds(
+    context: ThresholdContext,
+    *,
+    file_count: Literal[100_000, 1_000_000],
+    stage_peak_rss: Mapping[StageName, int],
+) -> ThresholdVerdict:
+    """Evaluate one scheduled or release observation without rereading pilot files."""
+    if type(file_count) is not int or file_count not in (100_000, 1_000_000):
+        raise ValueError("file_count must be 100000 or 1000000")
+    if set(stage_peak_rss) != set(_STAGE_ORDER):
+        raise ValueError("stage_peak_rss must contain scan, plan, apply, verify")
+    if any(type(value) is not int or value <= 0 for value in stage_peak_rss.values()):
+        raise ValueError("stage_peak_rss values must be positive integers")
+
+    if file_count == 100_000:
+        observed_slopes = (
+            max(Fraction(0), Fraction(stage_peak_rss[item.stage] - item.rss_10k, 90_000))
+            for item in context.stage_memory
+        )
+    else:
+        observed_slopes = (
+            max(
+                Fraction(0),
+                _ordinary_least_squares_slope(
+                    (
+                        (10_000, item.rss_10k),
+                        (100_000, item.rss_100k),
+                        (1_000_000, stage_peak_rss[item.stage]),
+                    )
+                ),
+            )
+            for item in context.stage_memory
+        )
+    observed_slope = max(observed_slopes)
+    linearity = max(
+        abs(Fraction(stage_peak_rss[item.stage]) - _project_stage_peak(item, file_count))
+        / _project_stage_peak(item, file_count)
+        for item in context.stage_memory
+    )
+    observed_peak = max(stage_peak_rss.values())
+    limits = context.baseline.limits
+    peak_passed = observed_peak <= limits.absolute_peak_rss_bytes
+    slope_passed = observed_slope <= limits.slope_bytes_per_file
+    linearity_passed = linearity <= Fraction(1, 5)
+    return ThresholdVerdict(
+        limits=limits,
+        observed_peak_rss_bytes=observed_peak,
+        observed_slope_bytes_per_file=_ceil_fraction(observed_slope),
+        observed_linearity_ratio=_upward_rounded_ratio(linearity),
+        peak_passed=peak_passed,
+        slope_passed=slope_passed,
+        linearity_passed=linearity_passed,
+        passed=peak_passed and slope_passed and linearity_passed,
     )
 
 
@@ -526,26 +917,34 @@ def write_scale_evidence(
     threshold_baseline_path: Path | None = None,
 ) -> None:
     """Validate and publish evidence once; accepted locations require a passing run."""
-    if accepted and evidence.status != "passing":
+    try:
+        revalidated = ScaleEvidence.model_validate(evidence.model_dump())
+    except ModelValidationError as exc:
+        raise ScaleEvidenceError(f"scale evidence changed after model validation ({exc})") from exc
+    if revalidated.artifact_schema_versions != current_artifact_schema_versions():
+        raise ScaleEvidenceError(
+            "published artifact_schema_versions must match current code-owner versions"
+        )
+    if accepted and revalidated.status != "passing":
         raise ScaleEvidenceError("accepted evidence must have status passing")
-    if accepted and evidence.tier in {"scheduled", "release"}:
+    if accepted and revalidated.tier in {"scheduled", "release"}:
         if threshold_baseline_path is None:
             raise ScaleEvidenceError(
                 "accepted scheduled/release evidence requires a validated threshold baseline"
             )
         baseline, digest = load_threshold_baseline_snapshot(
             threshold_baseline_path,
-            reference_environment_sha256=evidence.reference_environment_sha256,
+            reference_environment_sha256=revalidated.reference_environment_sha256,
         )
-        if evidence.threshold_baseline_sha256 != digest:
+        if revalidated.threshold_baseline_sha256 != digest:
             raise ScaleEvidenceError(
                 "accepted evidence threshold baseline digest does not match validated bytes"
             )
-        if evidence.thresholds is None or evidence.thresholds.limits != baseline.limits:
+        if revalidated.thresholds is None or revalidated.thresholds.limits != baseline.limits:
             raise ScaleEvidenceError(
                 "accepted evidence threshold limits do not match the validated baseline"
             )
-    document = _validated_document(evidence, "scale-evidence")
+    document = _validated_document(revalidated, "scale-evidence")
     write_json_artifact(document, path, clobber=False)
 
 
@@ -560,9 +959,22 @@ def write_threshold_baseline(baseline: ThresholdBaseline, path: Path) -> None:
 
 
 def _read_payload(path: Path, *, description: str) -> tuple[bytes, object]:
+    nofollow_flag = cast("int", getattr(os, "O_NOFOLLOW", 0))
+    cloexec_flag = cast("int", getattr(os, "O_CLOEXEC", 0))
+    nonblock_flag = cast("int", getattr(os, "O_NONBLOCK", 0))
+    flags = os.O_RDONLY | nofollow_flag | cloexec_flag | nonblock_flag
     try:
-        payload = path.read_bytes()
-    except OSError as exc:
+        fd = os.open(path, flags)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError(f"{path} is not a regular file")
+            chunks: list[bytes] = []
+            while chunk := os.read(fd, 1 << 20):
+                chunks.append(chunk)
+            payload = b"".join(chunks)
+        finally:
+            os.close(fd)
+    except (OSError, ValueError) as exc:
         raise ScaleEvidenceError(f"{path}: cannot read {description} ({exc})") from exc
     return payload, _decode_payload(path, payload, description=description)
 
@@ -586,8 +998,9 @@ def _read_payload_beneath(
     directory_flag = cast("int", getattr(os, "O_DIRECTORY", 0))
     nofollow_flag = cast("int", getattr(os, "O_NOFOLLOW", 0))
     cloexec_flag = cast("int", getattr(os, "O_CLOEXEC", 0))
+    nonblock_flag = cast("int", getattr(os, "O_NONBLOCK", 0))
     directory_flags = os.O_RDONLY | directory_flag | nofollow_flag | cloexec_flag
-    file_flags = os.O_RDONLY | nofollow_flag | cloexec_flag
+    file_flags = os.O_RDONLY | nofollow_flag | cloexec_flag | nonblock_flag
     display_path = root / relative_name
     try:
         with ExitStack() as stack:
@@ -635,21 +1048,60 @@ def read_scale_evidence(path: Path) -> ScaleEvidence:
     return read_scale_evidence_snapshot(path)[0]
 
 
-def read_reference_environment(path: Path) -> ReferenceEnvironment:
+def read_reference_environment_snapshot(path: Path) -> tuple[ReferenceEnvironment, str]:
+    """Read a validated reference model and digest from one no-follow file snapshot."""
     payload, document = _read_payload(path, description="reference environment")
     validate_qualification_document("reference-environment", document)
     try:
-        return ReferenceEnvironment.model_validate_json(payload)
+        environment = ReferenceEnvironment.model_validate_json(payload)
     except ModelValidationError as exc:
         raise ScaleEvidenceError(
             f"{path}: reference environment failed model validation ({exc})"
         ) from exc
+    digest = f"sha256:{hashlib.sha256(payload).hexdigest()}"
+    return environment, digest
 
 
-def load_threshold_baseline_snapshot(
-    path: Path, *, reference_environment_sha256: Sha256
-) -> tuple[ThresholdBaseline, str]:
-    """Load a baseline and verify both referenced pilot documents byte-for-byte."""
+def read_reference_environment(path: Path) -> ReferenceEnvironment:
+    return read_reference_environment_snapshot(path)[0]
+
+
+def _threshold_point_stage_peaks(path: Path, evidence: ScaleEvidence) -> dict[StageName, int]:
+    if evidence.tier != "pilot":
+        raise ScaleEvidenceError(f"{path}: threshold evidence must use the pilot tier")
+    if evidence.file_count == 100_000:
+        if evidence.status != "passing":
+            raise ScaleEvidenceError(f"{path}: 100000-file point must be passing")
+    elif evidence.status not in {"passing", "diagnostic"} or (
+        evidence.status == "diagnostic" and evidence.outcome_reason != "explicit-diagnostic"
+    ):
+        raise ScaleEvidenceError(
+            f"{path}: 10000-file point must be passing-quality or explicitly diagnostic"
+        )
+    if evidence.preflight is None or not evidence.preflight.passed:
+        raise ScaleEvidenceError(f"{path}: threshold evidence requires passing preflight")
+    if evidence.memory_measurement != "external-rss":
+        raise ScaleEvidenceError(f"{path}: threshold evidence requires external RSS")
+    if evidence.cache_classification != "warm":
+        raise ScaleEvidenceError(f"{path}: threshold evidence requires warm cache")
+    if evidence.wheel_sha256 is None:
+        raise ScaleEvidenceError(f"{path}: threshold evidence requires installed-wheel provenance")
+    if tuple(stage.stage for stage in evidence.stages) != _STAGE_ORDER or not all(
+        stage.completed and stage.artifact_validated for stage in evidence.stages
+    ):
+        raise ScaleEvidenceError(f"{path}: threshold evidence pipeline is incomplete")
+    if any(stage.vm_swap_peak_bytes != 0 for stage in evidence.stages):
+        raise ScaleEvidenceError(f"{path}: threshold evidence requires zero child swap")
+    peaks: dict[StageName, int] = {}
+    for stage in evidence.stages:
+        if stage.peak_rss_bytes is None or stage.peak_rss_bytes <= 0:
+            raise ScaleEvidenceError(f"{path}: threshold evidence has no usable RSS peak")
+        peaks[stage.stage] = stage.peak_rss_bytes
+    return peaks
+
+
+def load_threshold_context(path: Path, *, reference_environment_sha256: Sha256) -> ThresholdContext:
+    """Load one immutable baseline plus both stage-aligned pilot snapshots."""
     payload, document = _read_payload(path, description="threshold baseline")
     if isinstance(document, dict):
         typed_document = cast("dict[str, object]", document)
@@ -668,7 +1120,7 @@ def load_threshold_baseline_snapshot(
 
     evidence_root = path.parent.resolve()
     pilot_evidence: list[ScaleEvidence] = []
-    memory_points: list[MemoryPoint] = []
+    stage_peaks: list[dict[StageName, int]] = []
     for point in baseline.measurement_points:
         point_path = (path.parent / point.evidence).resolve()
         if not point_path.is_relative_to(evidence_root):
@@ -686,31 +1138,15 @@ def load_threshold_baseline_snapshot(
             )
         if evidence.reference_environment_sha256 != baseline.reference_environment_sha256:
             raise ScaleEvidenceError(f"{point_path}: reference environment mismatch")
-        if point.file_count == 100_000 and evidence.status != "passing":
-            raise ScaleEvidenceError(f"{point_path}: 100000-file point must be passing")
-        if evidence.tier != "pilot":
-            raise ScaleEvidenceError(f"{point_path}: threshold evidence must use the pilot tier")
-        expected_stages: tuple[StageName, ...] = ("scan", "plan", "apply", "verify")
-        if tuple(stage.stage for stage in evidence.stages) != expected_stages or not all(
-            stage.completed for stage in evidence.stages
-        ):
-            raise ScaleEvidenceError(f"{point_path}: threshold evidence pipeline is incomplete")
-        if evidence.memory_measurement != "external-rss":
-            raise ScaleEvidenceError(f"{point_path}: threshold evidence requires external RSS")
-        stage_peaks = [
-            stage.peak_rss_bytes for stage in evidence.stages if stage.peak_rss_bytes is not None
-        ]
-        if len(stage_peaks) != len(evidence.stages) or not stage_peaks or max(stage_peaks) <= 0:
-            raise ScaleEvidenceError(f"{point_path}: threshold evidence has no usable RSS peak")
         pilot_evidence.append(evidence)
-        memory_points.append(
-            MemoryPoint(files=evidence.file_count, peak_rss_bytes=max(stage_peaks))
-        )
+        stage_peaks.append(_threshold_point_stage_peaks(point_path, evidence))
 
     first, second = pilot_evidence
     first_provenance = (
         first.candidate_commit,
         first.package_version,
+        first.build_frontend_version,
+        first.build_backend_version,
         first.wheel_sha256,
         first.lock_sha256,
         tuple(sorted(first.artifact_schema_versions.items())),
@@ -721,6 +1157,8 @@ def load_threshold_baseline_snapshot(
     second_provenance = (
         second.candidate_commit,
         second.package_version,
+        second.build_frontend_version,
+        second.build_backend_version,
         second.wheel_sha256,
         second.lock_sha256,
         tuple(sorted(second.artifact_schema_versions.items())),
@@ -731,14 +1169,34 @@ def load_threshold_baseline_snapshot(
     if first.wheel_sha256 is None or first_provenance != second_provenance:
         raise ScaleEvidenceError(f"{path}: pilot provenance mismatch between threshold points")
 
-    fit = fit_peak_rss_slope(memory_points)
-    expected_limits = derive_thresholds(
-        fit, largest_peak_bytes=max(point.peak_rss_bytes for point in memory_points)
+    ten_k_peaks, hundred_k_peaks = stage_peaks
+    stage_memory = tuple(
+        StageMemorySeries(
+            stage=stage,
+            rss_10k=ten_k_peaks[stage],
+            rss_100k=hundred_k_peaks[stage],
+        )
+        for stage in _STAGE_ORDER
     )
+    expected_limits = derive_thresholds(stage_memory)
     if baseline.limits != expected_limits:
         raise ScaleEvidenceError(f"{path}: threshold limits do not match the pinned pilot points")
     baseline_digest = f"sha256:{hashlib.sha256(payload).hexdigest()}"
-    return baseline, baseline_digest
+    return ThresholdContext(
+        baseline=baseline,
+        baseline_sha256=baseline_digest,
+        stage_memory=stage_memory,
+    )
+
+
+def load_threshold_baseline_snapshot(
+    path: Path, *, reference_environment_sha256: Sha256
+) -> tuple[ThresholdBaseline, str]:
+    """Load baseline compatibility data through the immutable threshold context."""
+    context = load_threshold_context(
+        path, reference_environment_sha256=reference_environment_sha256
+    )
+    return context.baseline, context.baseline_sha256
 
 
 def load_threshold_baseline(

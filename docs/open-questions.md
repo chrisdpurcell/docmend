@@ -96,6 +96,7 @@ Only release evidence may carry workflow runtime: it is null before scan dispatc
 #### Agent notes
 
 - Independent contract, provenance, and adversarial-plan reviews all found the literal four-file Task 6 unsafe. The split into Task 6A contract completion and Task 6B orchestration preserves the approved Tasks 7-12 order and does not pull heartbeat, workflow, pilot, file-size, or release evidence forward.
+- Task 6A now implements the reusable evidence/threshold 2.0, transport, schema-provenance, reference-observation, and capacity contracts on this assumption. Task 6B orchestration and the Task 9 pilot/revision-two owner approval boundary remain pending.
 - Scale-evidence 2.0 and thresholds 2.0 are major bumps because non-passing evidence and the absolute threshold change meaning. No accepted scale evidence or threshold baseline exists, so there is no accepted artifact to migrate.
 - The Task 9 pilot/revision-two review remains the owner approval boundary for OQ-038 through OQ-041 and all numeric thresholds/coefficient evidence.
 

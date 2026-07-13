@@ -15,6 +15,7 @@ substituted before removal.
 
 import ctypes
 import errno
+import hashlib
 import os
 import random
 import secrets
@@ -125,9 +126,16 @@ class ScaleCorpusSummary:
     count: int
     file_bytes: int
     allocated_bytes: int
+    fragment_size: int
+    largest_file_bytes: int
     file_inodes: int
     directory_inodes: int
     recipe_counts: ScaleRecipeCounts
+
+    def __post_init__(self) -> None:
+        allocated_bytes(0, self.fragment_size)
+        if type(self.largest_file_bytes) is not int or self.largest_file_bytes < 0:
+            raise ValueError("largest_file_bytes must be a non-negative integer")
 
     @property
     def required_inodes(self) -> int:
@@ -294,21 +302,75 @@ def render_recipe(recipe: ScaleRecipe) -> bytes:
     return text.encode("utf-8")
 
 
+@dataclass(frozen=True, slots=True)
+class ExpectedBoundaryOutput:
+    """Expected post-apply state for one canonical synthetic recipe."""
+
+    path: str
+    data: bytes
+    sha256: str
+    encoding: RecipeEncoding
+
+
+def _canonical_recipe(value: object) -> ScaleRecipe:
+    if not isinstance(value, ScaleRecipe):
+        raise TypeError("recipe must be a ScaleRecipe")
+    if value != _recipe(value.index, value.render_seed):
+        raise ValueError("recipe must match the canonical scale recipe contract")
+    return value
+
+
+def expected_boundary_output(recipe: ScaleRecipe) -> ExpectedBoundaryOutput:
+    """Derive the independent post-apply oracle from synthetic recipe semantics."""
+    recipe = _canonical_recipe(recipe)
+
+    source = render_recipe(recipe)
+    path = recipe.path
+    data = source
+    encoding: RecipeEncoding = recipe.encoding
+    match recipe.recipe_class:
+        case ScaleRecipeClass.RENAME_ONLY:
+            path = str(PurePosixPath(path).with_suffix(".md"))
+        case ScaleRecipeClass.REWRITE_AND_RENAME:
+            path = str(PurePosixPath(path).with_suffix(".md"))
+            data = source.replace(b"\r\n", b"\n")
+        case ScaleRecipeClass.CLEAN_MARKDOWN:
+            pass
+        case ScaleRecipeClass.REWRITE_MARKDOWN:
+            data = source.replace(b"\r\n", b"\n")
+        case ScaleRecipeClass.LEGACY_CONVERSION:
+            path = str(PurePosixPath(path).with_suffix(".md"))
+            data = source.decode("cp1252").replace("\r\n", "\n").encode("utf-8")
+            encoding = "utf-8"
+        case ScaleRecipeClass.BELOW_FLOOR_SKIP:
+            pass
+    return ExpectedBoundaryOutput(
+        path=path,
+        data=data,
+        sha256=f"sha256:{hashlib.sha256(data).hexdigest()}",
+        encoding=encoding,
+    )
+
+
 def summarize_scale_corpus(count: int, *, fragment_size: int) -> ScaleCorpusSummary:
     """Compute the exact no-write corpus budget with per-file block rounding."""
     counts = recipe_counts(count)
     allocated_bytes(0, fragment_size)
     logical_total = 0
     allocated_total = 0
+    largest_file_bytes = 0
     for recipe in iter_recipes(count):
         size = len(render_recipe(recipe))
         logical_total += size
         allocated_total += allocated_bytes(size, fragment_size)
+        largest_file_bytes = max(largest_file_bytes, size)
     file_inodes, directory_inodes = corpus_inode_needs(count)
     return ScaleCorpusSummary(
         count=count,
         file_bytes=logical_total,
         allocated_bytes=allocated_total,
+        fragment_size=fragment_size,
+        largest_file_bytes=largest_file_bytes,
         file_inodes=file_inodes,
         directory_inodes=directory_inodes,
         recipe_counts=counts,
@@ -603,12 +665,14 @@ def materialize_scale_corpus(
             directory_identities: dict[DirectoryKey, DirectoryIdentity] = {(): root_identity}
             logical_total = 0
             allocated_total = 0
+            largest_file_bytes = 0
             for recipe in iter_recipes(count):
                 data = render_recipe(recipe)
                 _materialize_recipe(root_fd, recipe, data, directory_identities)
                 size = len(data)
                 logical_total += size
                 allocated_total += allocated_bytes(size, effective_fragment_size)
+                largest_file_bytes = max(largest_file_bytes, size)
             _validate_directory_names(root_fd, directory_identities)
             _require_directory_name_identity(
                 parent_fd,
@@ -626,6 +690,8 @@ def materialize_scale_corpus(
         count=count,
         file_bytes=logical_total,
         allocated_bytes=allocated_total,
+        fragment_size=effective_fragment_size,
+        largest_file_bytes=largest_file_bytes,
         file_inodes=file_inodes,
         directory_inodes=directory_inodes,
         recipe_counts=recipe_counts(count),

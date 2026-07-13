@@ -32,6 +32,7 @@ REQUEST_SCHEMA = "docmend/scale-stage-request"
 RESULT_SCHEMA = "docmend/scale-stage-result"
 STAGE_SCHEMA_VERSION = "1.0"
 POLL_INTERVAL_SECONDS = 0.05
+_MAX_PRIVATE_JSON_BYTES = 1024 * 1024
 
 _AT_EMPTY_PATH = 0x1000
 _AT_FDCWD = -100
@@ -378,7 +379,10 @@ def _strict_int_or_none(value: object, *, field: str, non_negative: bool) -> int
 def _finite_elapsed(value: object) -> float:
     if type(value) not in {int, float}:
         raise StageContractError("elapsed_seconds must be a finite non-negative number")
-    seconds = float(cast("int | float", value))
+    try:
+        seconds = float(cast("int | float", value))
+    except OverflowError as exc:
+        raise StageContractError("elapsed_seconds must be a finite non-negative number") from exc
     if not math.isfinite(seconds) or seconds < 0:
         raise StageContractError("elapsed_seconds must be a finite non-negative number")
     return seconds
@@ -494,6 +498,67 @@ def _reject_json_constant(_value: str) -> object:
     raise StageContractError("JSON numbers must be finite")
 
 
+def _parse_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise StageContractError("JSON numbers must be finite")
+    return parsed
+
+
+def _validate_json_unicode(document: object) -> None:
+    pending = [document]
+    while pending:
+        value = pending.pop()
+        if type(value) is str:
+            _require_unicode_scalar(value, field="JSON string")
+        elif type(value) is list:
+            pending.extend(cast("list[object]", value))
+        elif type(value) is dict:
+            items = cast("dict[str, object]", value)
+            for key, item in items.items():
+                _require_unicode_scalar(key, field="JSON object key")
+                pending.append(item)
+
+
+def _parse_strict_json(raw: str, *, kind: str) -> object:
+    try:
+        document = cast(
+            "object",
+            json.loads(
+                raw,
+                object_pairs_hook=_json_object_pairs,
+                parse_constant=_reject_json_constant,
+                parse_float=_parse_json_float,
+            ),
+        )
+    except (RecursionError, ValueError) as exc:
+        raise StageContractError(f"{kind} is not valid strict JSON") from exc
+    _validate_json_unicode(document)
+    return document
+
+
+def _write_all(fd: int, payload: bytes) -> None:
+    remaining = memoryview(payload)
+    while remaining:
+        written = os.write(fd, remaining)
+        if written <= 0:
+            raise OSError(errno.EIO, "private JSON write made no progress")
+        remaining = remaining[written:]
+
+
+def _canonical_json_bytes(document: Mapping[str, object]) -> bytes:
+    return (
+        json.dumps(
+            document,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
 def _read_request_fd(fd: int) -> StageRequest:
     stats = os.fstat(fd)
     if not stat.S_ISREG(stats.st_mode) or stat.S_IMODE(stats.st_mode) != 0o600:
@@ -503,18 +568,7 @@ def _read_request_fd(fd: int) -> StageRequest:
             raw = request_file.read()
     except (OSError, UnicodeError) as exc:
         raise StageContractError("request is not readable strict UTF-8 JSON") from exc
-    try:
-        document = cast(
-            "object",
-            json.loads(
-                raw,
-                object_pairs_hook=_json_object_pairs,
-                parse_constant=_reject_json_constant,
-            ),
-        )
-    except (RecursionError, ValueError) as exc:
-        raise StageContractError("request is not valid strict JSON") from exc
-    return StageRequest.from_document(document)
+    return StageRequest.from_document(_parse_strict_json(raw, kind="request"))
 
 
 def load_stage_request(path: Path) -> StageRequest:
@@ -528,6 +582,63 @@ def load_stage_request(path: Path) -> StageRequest:
         return _read_request_fd(fd)
     finally:
         os.close(fd)
+
+
+def _read_result_fd(fd: int) -> StageResult:
+    details = os.fstat(fd)
+    if not stat.S_ISREG(details.st_mode) or stat.S_IMODE(details.st_mode) != 0o600:
+        raise StageContractError("result must be a regular no-follow file with mode 0600")
+    try:
+        snapshot = os.pread(fd, _MAX_PRIVATE_JSON_BYTES + 1, 0)
+    except OSError as exc:
+        raise StageContractError("result is not readable strict UTF-8 JSON") from exc
+    if len(snapshot) > _MAX_PRIVATE_JSON_BYTES:
+        raise StageContractError("result exceeds the maximum private JSON size")
+    try:
+        raw = snapshot.decode("utf-8")
+    except UnicodeError as exc:
+        raise StageContractError("result is not readable strict UTF-8 JSON") from exc
+    return StageResult.from_document(_parse_strict_json(raw, kind="result"))
+
+
+def load_stage_result(path: Path) -> StageResult:
+    """Open and validate one owner-only private result without following its name."""
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise StageContractError("result must be a regular no-follow file with mode 0600") from exc
+    try:
+        return _read_result_fd(fd)
+    finally:
+        os.close(fd)
+
+
+def write_stage_request(request: StageRequest, path: Path) -> None:
+    """Publish one canonical owner-only private stage request."""
+    validated = StageRequest.from_document(request.to_document())
+    document = validated.to_document()
+    if ".." in path.parts:
+        raise StageContractError("private request destination must stay confined to its parent")
+    destination = _absolute_lexical(path)
+    name = _safe_output_name(destination.name, field="request")
+    workspace_fd = _open_private_workspace(destination.parent)
+    try:
+        identity = _workspace_identity(workspace_fd)
+        try:
+            _publish_private_json(
+                workspace_fd,
+                name,
+                document,
+                kind="request",
+                before_link=lambda: _require_workspace_identity(
+                    destination.parent, workspace_fd, identity
+                ),
+            )
+        except FileExistsError as exc:
+            raise StageContractError("private request already exists or collides") from exc
+    finally:
+        os.close(workspace_fd)
 
 
 def _absolute_lexical(path: Path) -> Path:
@@ -942,9 +1053,16 @@ def _link_anonymous_file(source_fd: int, workspace_fd: int, name: str) -> None:
     _call_linkat(_AT_FDCWD, source, workspace_fd, destination, _AT_SYMLINK_FOLLOW)
 
 
-def _publish_private_result(workspace_fd: int, name: str, result: StageResult) -> None:
+def _publish_private_json(
+    workspace_fd: int,
+    name: str,
+    document: Mapping[str, object],
+    *,
+    kind: Literal["request", "result"],
+    before_link: Callable[[], None] | None = None,
+) -> None:
     if _O_TMPFILE_FLAG == 0:
-        raise StageSupervisorError("Linux O_TMPFILE is required for private result staging")
+        raise StageSupervisorError(f"Linux O_TMPFILE is required for private {kind} staging")
     try:
         staging_fd = os.open(
             ".",
@@ -953,42 +1071,52 @@ def _publish_private_result(workspace_fd: int, name: str, result: StageResult) -
             dir_fd=workspace_fd,
         )
     except OSError as exc:
-        raise StageSupervisorError("private anonymous result staging failed") from exc
+        raise StageSupervisorError(f"private anonymous {kind} staging failed") from exc
     try:
         os.fchmod(staging_fd, 0o600)
-        result_file = os.fdopen(staging_fd, "w", encoding="utf-8", closefd=False)
-        with result_file:
-            json.dump(result.to_document(), result_file, ensure_ascii=False, sort_keys=True)
-            result_file.write("\n")
-            result_file.flush()
-            os.fsync(result_file.fileno())
+        _write_all(staging_fd, _canonical_json_bytes(document))
+        os.fsync(staging_fd)
         staged_stats = os.fstat(staging_fd)
         if not stat.S_ISREG(staged_stats.st_mode) or stat.S_IMODE(staged_stats.st_mode) != 0o600:
-            raise StageSupervisorError("private result staging identity is invalid")
+            raise StageSupervisorError(f"private {kind} staging identity is invalid")
+        if before_link is not None:
+            before_link()
         try:
             _link_anonymous_file(staging_fd, workspace_fd, name)
-        except FileExistsError as exc:
-            raise StageSupervisorError("private result publication collision") from exc
+        except FileExistsError:
+            raise
         except OSError as exc:
-            raise StageSupervisorError("private result publication failed") from exc
+            raise StageSupervisorError(f"private {kind} publication failed") from exc
         try:
             published_stats = os.stat(name, dir_fd=workspace_fd, follow_symlinks=False)
         except OSError as exc:
-            raise StageSupervisorError("private result publication cannot be verified") from exc
+            raise StageSupervisorError(f"private {kind} publication cannot be verified") from exc
         if (
             (published_stats.st_dev, published_stats.st_ino)
             != (staged_stats.st_dev, staged_stats.st_ino)
             or not stat.S_ISREG(published_stats.st_mode)
             or stat.S_IMODE(published_stats.st_mode) != 0o600
         ):
-            raise StageSupervisorError("private result publication identity is invalid")
-        # Anonymous staging removes the pathname-cleanup race entirely. Once
-        # the exclusive link is identity-verified, a later directory-fsync
-        # failure cannot make the published result untrue.
+            raise StageSupervisorError(f"private {kind} publication identity is invalid")
+        # Once the exclusive link is identity-verified, a directory-fsync
+        # failure cannot be rolled back through a mutable name without risking
+        # deletion of a same-owner replacement. Preserve the published file.
         with suppress(OSError):
             os.fsync(workspace_fd)
     finally:
         os.close(staging_fd)
+
+
+def _publish_private_result(workspace_fd: int, name: str, result: StageResult) -> None:
+    try:
+        _publish_private_json(
+            workspace_fd,
+            name,
+            result.to_document(),
+            kind="result",
+        )
+    except FileExistsError as exc:
+        raise StageSupervisorError("private result publication collision") from exc
 
 
 def supervise_stage(

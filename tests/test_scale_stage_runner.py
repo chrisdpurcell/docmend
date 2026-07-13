@@ -20,9 +20,11 @@ from docmend.scale_stage import (
     StageResult,
     StageSupervisorError,
     load_stage_request,
+    load_stage_result,
     main,
     run_stage,
     supervise_stage,
+    write_stage_request,
 )
 
 
@@ -53,6 +55,32 @@ def _write_request(workspace: Path, document: Mapping[str, object]) -> Path:
     request_path.write_text(json.dumps(document), encoding="utf-8")
     request_path.chmod(0o600)
     return request_path
+
+
+def _result_document(**updates: object) -> dict[str, object]:
+    document: dict[str, object] = {
+        "schema": "docmend/scale-stage-result",
+        "schema_version": "1.0",
+        "stage": "scan",
+        "completed": True,
+        "exit_code": 0,
+        "elapsed_seconds": 1.25,
+        "peak_rss_bytes": 4096,
+        "vm_swap_peak_bytes": 0,
+        "tracing_enabled": False,
+        "stdout": "stage.stdout",
+        "stderr": "stage.stderr",
+        "error_code": None,
+    }
+    document.update(updates)
+    return document
+
+
+def _write_result(workspace: Path, document: Mapping[str, object]) -> Path:
+    result_path = workspace / "result.json"
+    result_path.write_text(json.dumps(document) + "\n", encoding="utf-8")
+    result_path.chmod(0o600)
+    return result_path
 
 
 def _mode(path: Path) -> int:
@@ -109,6 +137,338 @@ class _PollFailureProcess(_FakeProcess):
 
 
 class TestStageRequestBoundary:
+    def test_request_writer__publishes_canonical_owner_only_document(self, tmp_path: Path) -> None:
+        workspace = _private_workspace(tmp_path)
+        request = StageRequest.from_document(_request_document())
+        request_path = workspace / "request.json"
+
+        write_stage_request(request, request_path)
+
+        expected = (
+            json.dumps(
+                request.to_document(),
+                allow_nan=False,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode()
+        assert request_path.read_bytes() == expected
+        assert _mode(request_path) == 0o600
+        assert load_stage_request(request_path) == request
+
+    def test_request_writer__collision_preserves_existing_entry(self, tmp_path: Path) -> None:
+        workspace = _private_workspace(tmp_path)
+        request_path = workspace / "request.json"
+        request_path.write_text("sentinel", encoding="utf-8")
+        request_path.chmod(0o640)
+
+        with pytest.raises(StageContractError, match=r"exists|collision"):
+            write_stage_request(StageRequest.from_document(_request_document()), request_path)
+
+        assert request_path.read_text(encoding="utf-8") == "sentinel"
+        assert _mode(request_path) == 0o640
+
+    def test_request_writer__validates_model_before_publication(self, tmp_path: Path) -> None:
+        workspace = _private_workspace(tmp_path)
+        request = StageRequest.from_document(_request_document())
+        object.__setattr__(request, "stdout", "../escaped.stdout")
+        request_path = workspace / "request.json"
+
+        with pytest.raises(StageContractError, match="stdout"):
+            write_stage_request(request, request_path)
+
+        assert not request_path.exists()
+
+    def test_request_writer__staging_failure_never_publishes_or_unlinks_destination(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from docmend import scale_stage
+
+        workspace = _private_workspace(tmp_path)
+        request_path = workspace / "request.json"
+        unlink_calls = 0
+
+        def fail_fsync(_fd: int) -> None:
+            raise OSError("synthetic staging fsync failure")
+
+        def reject_unlink(
+            _path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+            *,
+            dir_fd: int | None = None,
+        ) -> None:
+            nonlocal unlink_calls
+            _ = dir_fd
+            unlink_calls += 1
+            raise AssertionError("request publication must not unlink by pathname")
+
+        monkeypatch.setattr(scale_stage.os, "fsync", fail_fsync)
+        monkeypatch.setattr(scale_stage.os, "unlink", reject_unlink)
+
+        with pytest.raises(OSError, match="staging fsync"):
+            write_stage_request(StageRequest.from_document(_request_document()), request_path)
+
+        assert not request_path.exists()
+        assert unlink_calls == 0
+
+    def test_request_writer__fully_writes_after_short_os_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from docmend import scale_stage
+
+        workspace = _private_workspace(tmp_path)
+        request = StageRequest.from_document(_request_document())
+        request_path = workspace / "request.json"
+        real_write = scale_stage.os.write
+
+        def short_write(fd: int, data: bytes | bytearray | memoryview) -> int:
+            return real_write(fd, bytes(data[:7]))
+
+        monkeypatch.setattr(scale_stage.os, "write", short_write)
+        write_stage_request(request, request_path)
+
+        assert load_stage_request(request_path) == request
+
+    def test_request_writer__rejects_parent_escape_components(self, tmp_path: Path) -> None:
+        tmp_path.chmod(0o700)
+        workspace = _private_workspace(tmp_path)
+        escaped = workspace / ".." / "escaped-request.json"
+
+        with pytest.raises(StageContractError, match=r"destination.*confined"):
+            write_stage_request(StageRequest.from_document(_request_document()), escaped)
+
+        assert not (tmp_path / "escaped-request.json").exists()
+
+    @pytest.mark.parametrize("mode", [0o755, 0o750, 0o770])
+    def test_request_writer__requires_exact_private_parent_mode(
+        self, tmp_path: Path, mode: int
+    ) -> None:
+        workspace = _private_workspace(tmp_path)
+        workspace.chmod(mode)
+
+        with pytest.raises(StageContractError, match="0700"):
+            write_stage_request(
+                StageRequest.from_document(_request_document()), workspace / "request.json"
+            )
+
+        assert not (workspace / "request.json").exists()
+
+    def test_request_writer__rejects_symlink_parent(self, tmp_path: Path) -> None:
+        workspace = _private_workspace(tmp_path)
+        parent_link = tmp_path / "private-stage-link"
+        parent_link.symlink_to(workspace.name, target_is_directory=True)
+
+        with pytest.raises(StageContractError, match="symlink"):
+            write_stage_request(
+                StageRequest.from_document(_request_document()), parent_link / "request.json"
+            )
+
+        assert not (workspace / "request.json").exists()
+
+    @pytest.mark.parametrize("name", ["request\n.json", "request\\name.json"])
+    def test_request_writer__rejects_unsafe_basename(self, tmp_path: Path, name: str) -> None:
+        workspace = _private_workspace(tmp_path)
+
+        with pytest.raises(StageContractError, match="safe workspace-relative"):
+            write_stage_request(StageRequest.from_document(_request_document()), workspace / name)
+
+    @pytest.mark.parametrize("parent_kind", ["missing", "regular"])
+    def test_request_writer__requires_existing_directory_parent(
+        self, tmp_path: Path, parent_kind: str
+    ) -> None:
+        parent = tmp_path / "not-a-workspace"
+        if parent_kind == "regular":
+            parent.write_text("synthetic", encoding="utf-8")
+
+        with pytest.raises(StageContractError, match="workspace"):
+            write_stage_request(
+                StageRequest.from_document(_request_document()), parent / "request.json"
+            )
+
+    @pytest.mark.parametrize("occupied_kind", ["symlink", "fifo", "directory"])
+    def test_request_writer__preserves_occupied_nonregular_destination(
+        self, tmp_path: Path, occupied_kind: str
+    ) -> None:
+        workspace = _private_workspace(tmp_path)
+        request_path = workspace / "request.json"
+        if occupied_kind == "symlink":
+            request_path.symlink_to("synthetic-unknown-target")
+        elif occupied_kind == "fifo":
+            os.mkfifo(request_path, mode=0o600)
+        else:
+            request_path.mkdir(mode=0o700)
+
+        before = request_path.lstat()
+        with pytest.raises(StageContractError, match=r"exists|collision"):
+            write_stage_request(StageRequest.from_document(_request_document()), request_path)
+
+        after = request_path.lstat()
+        assert (after.st_dev, after.st_ino, stat.S_IFMT(after.st_mode)) == (
+            before.st_dev,
+            before.st_ino,
+            stat.S_IFMT(before.st_mode),
+        )
+
+    def test_request_writer__post_link_verification_failure_preserves_published_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from docmend import scale_stage
+
+        workspace = _private_workspace(tmp_path)
+        request = StageRequest.from_document(_request_document())
+        request_path = workspace / "request.json"
+        real_stat = scale_stage.os.stat
+
+        def fail_published_stat(
+            path: str | bytes | os.PathLike[str] | os.PathLike[bytes] | int,
+            *,
+            dir_fd: int | None = None,
+            follow_symlinks: bool = True,
+        ) -> os.stat_result:
+            if path == request_path.name and dir_fd is not None and follow_symlinks is False:
+                raise OSError("synthetic publication verification failure")
+            return real_stat(path, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+        monkeypatch.setattr(scale_stage.os, "stat", fail_published_stat)
+
+        with pytest.raises(StageSupervisorError, match="publication cannot be verified"):
+            write_stage_request(request, request_path)
+
+        assert load_stage_request(request_path) == request
+
+    def test_request_writer__link_failure_does_not_publish_destination(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from docmend import scale_stage
+
+        workspace = _private_workspace(tmp_path)
+        request_path = workspace / "request.json"
+
+        def fail_link(*_arguments: object) -> int:
+            ctypes.set_errno(errno.EIO)
+            return -1
+
+        monkeypatch.setattr(scale_stage, "_LINKAT", fail_link)
+
+        with pytest.raises(StageSupervisorError, match="request publication failed"):
+            write_stage_request(StageRequest.from_document(_request_document()), request_path)
+
+        assert not request_path.exists()
+
+    def test_request_writer__workspace_replacement_before_link_is_rejected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from docmend import scale_stage
+
+        workspace = _private_workspace(tmp_path)
+        moved = tmp_path / "original-private-stage"
+        request_path = workspace / "request.json"
+        real_fsync = scale_stage.os.fsync
+        replaced = False
+
+        def replace_workspace_after_staging(fd: int) -> None:
+            nonlocal replaced
+            real_fsync(fd)
+            if not replaced:
+                workspace.rename(moved)
+                workspace.mkdir(mode=0o700)
+                workspace.chmod(0o700)
+                replaced = True
+
+        monkeypatch.setattr(scale_stage.os, "fsync", replace_workspace_after_staging)
+
+        with pytest.raises(StageSupervisorError, match=r"workspace.*changed"):
+            write_stage_request(StageRequest.from_document(_request_document()), request_path)
+
+        assert replaced is True
+        assert not request_path.exists()
+        assert not (moved / request_path.name).exists()
+
+    def test_request_writer__wrong_link_identity_is_preserved_without_cleanup(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from docmend import scale_stage
+
+        workspace = _private_workspace(tmp_path)
+        request_path = workspace / "request.json"
+
+        def publish_wrong_inode(*arguments: object) -> int:
+            destination_fd = _ctypes_int(arguments[2])
+            destination = _ctypes_bytes(arguments[3])
+            assert destination is not None
+            wrong_fd = os.open(
+                destination,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+                0o600,
+                dir_fd=destination_fd,
+            )
+            try:
+                os.write(wrong_fd, b"synthetic-attacker-substitution")
+            finally:
+                os.close(wrong_fd)
+            return 0
+
+        monkeypatch.setattr(scale_stage, "_LINKAT", publish_wrong_inode)
+
+        with pytest.raises(StageSupervisorError, match="identity"):
+            write_stage_request(StageRequest.from_document(_request_document()), request_path)
+
+        assert request_path.read_bytes() == b"synthetic-attacker-substitution"
+
+    def test_request_writer__post_link_directory_fsync_failure_keeps_request(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from docmend import scale_stage
+
+        workspace = _private_workspace(tmp_path)
+        request = StageRequest.from_document(_request_document())
+        request_path = workspace / "request.json"
+        real_fsync = scale_stage.os.fsync
+        fsync_calls = 0
+
+        def fail_directory_fsync(fd: int) -> None:
+            nonlocal fsync_calls
+            fsync_calls += 1
+            if fsync_calls == 2:
+                raise OSError("synthetic directory fsync failure")
+            real_fsync(fd)
+
+        monkeypatch.setattr(scale_stage.os, "fsync", fail_directory_fsync)
+
+        write_stage_request(request, request_path)
+
+        assert fsync_calls == 2
+        assert load_stage_request(request_path) == request
+
+    def test_request_writer__workspace_identity_failure_closes_held_descriptor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from docmend import scale_stage
+
+        workspace = _private_workspace(tmp_path)
+        request_path = workspace / "request.json"
+        real_open_workspace = scale_stage._open_private_workspace  # pyright: ignore[reportPrivateUsage]
+        held_fd: int | None = None
+
+        def capture_workspace(path: Path) -> int:
+            nonlocal held_fd
+            held_fd = real_open_workspace(path)
+            return held_fd
+
+        def fail_identity(_fd: int) -> tuple[int, int]:
+            raise OSError("synthetic identity read failure")
+
+        monkeypatch.setattr(scale_stage, "_open_private_workspace", capture_workspace)
+        monkeypatch.setattr(scale_stage, "_workspace_identity", fail_identity)
+
+        with pytest.raises(OSError, match="identity read failure"):
+            write_stage_request(StageRequest.from_document(_request_document()), request_path)
+
+        assert held_fd is not None
+        with pytest.raises(OSError):
+            os.fstat(held_fd)
+
     def test_request__round_trips_the_exact_private_contract(self) -> None:
         request = StageRequest.from_document(_request_document())
 
@@ -304,6 +664,210 @@ class TestStageRequestBoundary:
 
 
 class TestStageResultBoundary:
+    def test_result_loader__returns_validated_private_result(self, tmp_path: Path) -> None:
+        workspace = _private_workspace(tmp_path)
+        document = _result_document()
+        result_path = _write_result(workspace, document)
+
+        assert load_stage_result(result_path) == StageResult.from_document(document)
+
+    def test_result_loader__rejects_duplicate_object_keys(self, tmp_path: Path) -> None:
+        workspace = _private_workspace(tmp_path)
+        result_path = workspace / "result.json"
+        valid = json.dumps(_result_document(), separators=(",", ":"))
+        result_path.write_text('{"schema":"synthetic-duplicate",' + valid[1:], encoding="utf-8")
+        result_path.chmod(0o600)
+
+        with pytest.raises(StageContractError, match="duplicate"):
+            load_stage_result(result_path)
+
+    @pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+    def test_result_loader__rejects_non_finite_json_numbers(
+        self, tmp_path: Path, constant: str
+    ) -> None:
+        workspace = _private_workspace(tmp_path)
+        result_path = workspace / "result.json"
+        valid = json.dumps(_result_document(), separators=(",", ":"))
+        result_path.write_text(
+            valid.replace('"elapsed_seconds":1.25', f'"elapsed_seconds":{constant}'),
+            encoding="utf-8",
+        )
+        result_path.chmod(0o600)
+
+        with pytest.raises(StageContractError, match="JSON numbers must be finite"):
+            load_stage_result(result_path)
+
+    def test_result_loader__rejects_overflowing_json_float(self, tmp_path: Path) -> None:
+        workspace = _private_workspace(tmp_path)
+        result_path = workspace / "result.json"
+        valid = json.dumps(_result_document(), separators=(",", ":"))
+        result_path.write_text(
+            valid.replace('"elapsed_seconds":1.25', '"elapsed_seconds":1e9999'),
+            encoding="utf-8",
+        )
+        result_path.chmod(0o600)
+
+        with pytest.raises(StageContractError, match="JSON numbers must be finite"):
+            load_stage_result(result_path)
+
+    def test_result_loader__rejects_elapsed_integer_too_large_for_float(
+        self, tmp_path: Path
+    ) -> None:
+        workspace = _private_workspace(tmp_path)
+        result_path = workspace / "result.json"
+        valid = json.dumps(_result_document(), separators=(",", ":"))
+        result_path.write_text(
+            valid.replace('"elapsed_seconds":1.25', f'"elapsed_seconds":{10**400}'),
+            encoding="utf-8",
+        )
+        result_path.chmod(0o600)
+
+        with pytest.raises(StageContractError, match="finite non-negative"):
+            load_stage_result(result_path)
+
+    def test_result_loader__rejects_document_above_private_snapshot_bound(
+        self, tmp_path: Path
+    ) -> None:
+        workspace = _private_workspace(tmp_path)
+        result_path = workspace / "result.json"
+        result_path.write_bytes(b'{"padding":"' + (b"x" * (2 * 1024 * 1024)) + b'"}')
+        result_path.chmod(0o600)
+
+        with pytest.raises(StageContractError, match="maximum private JSON size"):
+            load_stage_result(result_path)
+
+    @pytest.mark.parametrize(
+        ("payload", "message"),
+        [
+            (b"\xff", "UTF-8"),
+            (b'{"schema":', "strict JSON"),
+            (b"{}\n{}\n", "strict JSON"),
+            (b"{} trailing", "strict JSON"),
+        ],
+    )
+    def test_result_loader__rejects_invalid_utf8_truncation_and_multiple_json(
+        self, tmp_path: Path, payload: bytes, message: str
+    ) -> None:
+        workspace = _private_workspace(tmp_path)
+        result_path = workspace / "result.json"
+        result_path.write_bytes(payload)
+        result_path.chmod(0o600)
+
+        with pytest.raises(StageContractError, match=message):
+            load_stage_result(result_path)
+
+    @pytest.mark.parametrize("payload", [b"[]", b"null", b'"result"'])
+    def test_result_loader__rejects_non_object_root(self, tmp_path: Path, payload: bytes) -> None:
+        workspace = _private_workspace(tmp_path)
+        result_path = workspace / "result.json"
+        result_path.write_bytes(payload)
+        result_path.chmod(0o600)
+
+        with pytest.raises(StageContractError, match="JSON object"):
+            load_stage_result(result_path)
+
+    def test_result_loader__rejects_excessive_json_recursion(self, tmp_path: Path) -> None:
+        workspace = _private_workspace(tmp_path)
+        result_path = workspace / "result.json"
+        result_path.write_bytes((b"[" * 100_000) + (b"]" * 100_000))
+        result_path.chmod(0o600)
+
+        with pytest.raises(StageContractError, match="strict JSON"):
+            load_stage_result(result_path)
+
+    @pytest.mark.parametrize("mode", [0o400, 0o640, 0o644])
+    def test_result_loader__requires_exact_private_mode(self, tmp_path: Path, mode: int) -> None:
+        workspace = _private_workspace(tmp_path)
+        result_path = _write_result(workspace, _result_document())
+        result_path.chmod(mode)
+
+        with pytest.raises(StageContractError, match="0600"):
+            load_stage_result(result_path)
+
+    @pytest.mark.parametrize("unsafe_kind", ["symlink", "fifo", "directory"])
+    def test_result_loader__rejects_nonregular_or_followed_target(
+        self, tmp_path: Path, unsafe_kind: str
+    ) -> None:
+        workspace = _private_workspace(tmp_path)
+        result_path = workspace / "result.json"
+        if unsafe_kind == "symlink":
+            target = workspace / "target.json"
+            target.write_text(json.dumps(_result_document()), encoding="utf-8")
+            target.chmod(0o600)
+            result_path.symlink_to(target.name)
+        elif unsafe_kind == "fifo":
+            os.mkfifo(result_path, mode=0o600)
+        else:
+            result_path.mkdir(mode=0o700)
+
+        with pytest.raises(StageContractError, match="regular no-follow"):
+            load_stage_result(result_path)
+
+    def test_result_loader__uses_one_held_descriptor_snapshot_during_substitution(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from docmend import scale_stage
+
+        workspace = _private_workspace(tmp_path)
+        original_document = _result_document(stage="scan")
+        result_path = _write_result(workspace, original_document)
+        moved_path = workspace / "original-result.json"
+        real_pread = scale_stage.os.pread
+        pread_calls = 0
+
+        def substitute_before_snapshot(fd: int, length: int, offset: int) -> bytes:
+            nonlocal pread_calls
+            pread_calls += 1
+            result_path.rename(moved_path)
+            _write_result(workspace, _result_document(stage="plan"))
+            return real_pread(fd, length, offset)
+
+        monkeypatch.setattr(scale_stage.os, "pread", substitute_before_snapshot)
+
+        loaded = load_stage_result(result_path)
+
+        assert loaded == StageResult.from_document(original_document)
+        assert pread_calls == 1
+        assert json.loads(result_path.read_text(encoding="utf-8"))["stage"] == "plan"
+
+    def test_result_loader__parses_only_captured_bytes_when_file_mutates_after_snapshot(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from docmend import scale_stage
+
+        workspace = _private_workspace(tmp_path)
+        document = _result_document()
+        result_path = _write_result(workspace, document)
+        real_pread = scale_stage.os.pread
+        pread_calls = 0
+
+        def mutate_after_snapshot(fd: int, length: int, offset: int) -> bytes:
+            nonlocal pread_calls
+            pread_calls += 1
+            snapshot = real_pread(fd, length, offset)
+            result_path.write_bytes(b"synthetic-mutated-after-snapshot")
+            result_path.chmod(0o600)
+            return snapshot
+
+        monkeypatch.setattr(scale_stage.os, "pread", mutate_after_snapshot)
+
+        assert load_stage_result(result_path) == StageResult.from_document(document)
+        assert pread_calls == 1
+        assert result_path.read_bytes() == b"synthetic-mutated-after-snapshot"
+
+    def test_result_loader__rejects_escaped_lone_surrogate(self, tmp_path: Path) -> None:
+        workspace = _private_workspace(tmp_path)
+        result_path = workspace / "result.json"
+        document = json.dumps(_result_document(), separators=(",", ":"))
+        result_path.write_text(
+            document.replace('"stdout":"stage.stdout"', '"stdout":"stage\\ud800.stdout"'),
+            encoding="utf-8",
+        )
+        result_path.chmod(0o600)
+
+        with pytest.raises(StageContractError, match="Unicode"):
+            load_stage_result(result_path)
+
     def test_result__rejects_booleans_as_integers_and_non_finite_elapsed(self) -> None:
         values: dict[str, object] = {
             "schema": "docmend/scale-stage-result",

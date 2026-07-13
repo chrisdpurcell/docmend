@@ -1,11 +1,12 @@
 """NFR-001 deterministic streamed-corpus contracts (OQ-037, OQ-040)."""
 
 import ast
+import hashlib
 import os
 import stat
 import sys
 from collections.abc import Iterator
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path, PurePosixPath
 from typing import cast
 
@@ -18,10 +19,13 @@ from docmend.plan import ArtifactRef
 from docmend.planning import build_plan
 from docmend.scale_corpus import (
     MAX_SCALE_FILE_COUNT,
+    ExpectedBoundaryOutput,
+    ScaleCorpusSummary,
     ScaleRecipe,
     ScaleRecipeClass,
     boundary_samples,
     corpus_inode_needs,
+    expected_boundary_output,
     expected_finding_keys,
     iter_recipes,
     materialize_scale_corpus,
@@ -181,6 +185,8 @@ class TestSummary:
         assert summary.allocated_bytes == sum(
             allocated_bytes(len(data), fragment_size) for data in rendered
         )
+        assert summary.fragment_size == fragment_size
+        assert summary.largest_file_bytes == max(map(len, rendered))
         assert summary.file_inodes == 43
         assert summary.required_inodes == summary.file_inodes + summary.directory_inodes
         assert summary.recipe_counts == recipe_counts(43)
@@ -198,6 +204,49 @@ class TestSummary:
     ) -> None:
         with pytest.raises(ValueError, match="fragment_size must be a positive integer"):
             summarize_scale_corpus(1, fragment_size=fragment_size)
+
+    @pytest.mark.parametrize("fragment_size", [0, -1, True, cast("int", 1.5)])
+    def test_summary__rejects_invalid_bound_fragment_size(self, fragment_size: int) -> None:
+        summary = summarize_scale_corpus(1, fragment_size=4_096)
+
+        with pytest.raises(ValueError, match="fragment_size must be a positive integer"):
+            replace(summary, fragment_size=fragment_size)
+
+    @pytest.mark.parametrize("largest_file_bytes", [-1, True, cast("int", 1.5)])
+    def test_summary__rejects_invalid_largest_file_size(self, largest_file_bytes: int) -> None:
+        summary = summarize_scale_corpus(1, fragment_size=4_096)
+
+        with pytest.raises(ValueError, match="largest_file_bytes must be a non-negative integer"):
+            replace(summary, largest_file_bytes=largest_file_bytes)
+
+    def test_summary__accepts_zero_as_a_non_negative_validated_boundary(self) -> None:
+        summary = summarize_scale_corpus(1, fragment_size=4_096)
+
+        assert replace(summary, largest_file_bytes=0).largest_file_bytes == 0
+
+    def test_summary__renders_each_recipe_once_when_computing_largest_file(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real_render_recipe = scale_corpus.render_recipe
+        rendered_indexes: list[int] = []
+
+        def recording_render_recipe(recipe: ScaleRecipe) -> bytes:
+            rendered_indexes.append(recipe.index)
+            return real_render_recipe(recipe)
+
+        monkeypatch.setattr(scale_corpus, "render_recipe", recording_render_recipe)
+
+        summary = summarize_scale_corpus(3, fragment_size=4_096)
+
+        assert rendered_indexes == [0, 1, 2]
+        assert summary.largest_file_bytes > 0
+
+    def test_summary__is_frozen(self) -> None:
+        summary = summarize_scale_corpus(1, fragment_size=4_096)
+
+        assert isinstance(summary, ScaleCorpusSummary)
+        with pytest.raises(FrozenInstanceError):
+            _set_attribute(summary, "fragment_size", 512)
 
     def test_summary__never_touches_the_filesystem(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def fail(*_args: object, **_kwargs: object) -> None:
@@ -243,6 +292,73 @@ class TestBoundarySamplesAndFindings:
         assert expected_finding_keys(40) == ((first_skipped.path, "encoding"),)
 
 
+class TestExpectedBoundaryOutput:
+    @pytest.mark.parametrize(
+        ("index", "target_suffix", "output_encoding"),
+        [
+            (0, ".md", "utf-8"),
+            (24, ".md", "utf-8"),
+            (32, ".md", "utf-8"),
+            (36, ".md", "utf-8"),
+            (38, ".md", "utf-8"),
+            (39, ".txt", "windows-1252"),
+        ],
+    )
+    def test_oracle__derives_exact_output_for_every_recipe_class(
+        self, index: int, target_suffix: str, output_encoding: str
+    ) -> None:
+        recipe = tuple(iter_recipes(40))[index]
+        source = render_recipe(recipe)
+
+        output = expected_boundary_output(recipe)
+
+        if recipe.recipe_class in (
+            ScaleRecipeClass.REWRITE_AND_RENAME,
+            ScaleRecipeClass.REWRITE_MARKDOWN,
+        ):
+            expected_data = source.replace(b"\r\n", b"\n")
+        elif recipe.recipe_class is ScaleRecipeClass.LEGACY_CONVERSION:
+            expected_data = source.decode("cp1252").replace("\r\n", "\n").encode()
+        else:
+            expected_data = source
+        expected_path = (
+            recipe.path
+            if recipe.recipe_class
+            in (
+                ScaleRecipeClass.CLEAN_MARKDOWN,
+                ScaleRecipeClass.REWRITE_MARKDOWN,
+                ScaleRecipeClass.BELOW_FLOOR_SKIP,
+            )
+            else PurePosixPath(recipe.path).with_suffix(".md").as_posix()
+        )
+        assert isinstance(output, ExpectedBoundaryOutput)
+        assert output.path == expected_path
+        assert PurePosixPath(output.path).suffix == target_suffix
+        assert output.data == expected_data
+        assert output.sha256 == f"sha256:{hashlib.sha256(expected_data).hexdigest()}"
+        assert output.encoding == output_encoding
+
+    def test_oracle__is_frozen(self) -> None:
+        output = expected_boundary_output(next(iter_recipes(1)))
+
+        with pytest.raises(FrozenInstanceError):
+            _set_attribute(output, "path", "changed.md")
+
+    def test_oracle__rejects_non_recipe_and_forged_recipe_contracts(self) -> None:
+        with pytest.raises(TypeError, match="ScaleRecipe"):
+            expected_boundary_output(cast("ScaleRecipe", object()))
+
+        canonical = next(iter_recipes(1))
+        for forged in (
+            replace(canonical, path="forged.txt"),
+            replace(canonical, encoding="windows-1252"),
+            replace(canonical, newline="crlf"),
+            replace(canonical, recipe_class=ScaleRecipeClass.BELOW_FLOOR_SKIP),
+        ):
+            with pytest.raises(ValueError, match="canonical scale recipe"):
+                expected_boundary_output(forged)
+
+
 class TestMaterialization:
     def test_materialize__matches_fresh_summary_and_actual_bytes(self, tmp_path: Path) -> None:
         root = tmp_path / "corpus"
@@ -257,6 +373,24 @@ class TestMaterialization:
         assert sum(allocated_bytes(len(data), 4_096) for data in files.values()) == (
             predicted.allocated_bytes
         )
+        assert predicted.largest_file_bytes == max(map(len, files.values()))
+
+    def test_materialize__renders_each_recipe_once_when_computing_summary(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real_render_recipe = scale_corpus.render_recipe
+        rendered_indexes: list[int] = []
+
+        def recording_render_recipe(recipe: ScaleRecipe) -> bytes:
+            rendered_indexes.append(recipe.index)
+            return real_render_recipe(recipe)
+
+        monkeypatch.setattr(scale_corpus, "render_recipe", recording_render_recipe)
+
+        summary = materialize_scale_corpus(tmp_path / "corpus", 3, fragment_size=4_096)
+
+        assert rendered_indexes == [0, 1, 2]
+        assert summary.largest_file_bytes > 0
 
     def test_materialize__is_repeatable_across_fresh_roots(self, tmp_path: Path) -> None:
         first = tmp_path / "first"
@@ -755,3 +889,13 @@ def test_shipped_module__has_no_test_or_third_party_imports() -> None:
     assert roots <= {*sys.stdlib_module_names, "docmend"}
     assert "faker" not in roots
     assert "tests" not in roots
+    imported_modules = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    }
+    assert not any(
+        module == forbidden or module.startswith(f"{forbidden}.")
+        for module in imported_modules
+        for forbidden in ("docmend.planning", "docmend.transform", "docmend.writer")
+    )

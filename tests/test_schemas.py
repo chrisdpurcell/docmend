@@ -30,6 +30,7 @@ from docmend.artifacts import (
     validate_artifact,
 )
 from docmend.config import DocmendConfig
+from docmend.frontmatter import FRONTMATTER_SCHEMA_VERSION
 from docmend.inventory import Inventory
 from docmend.plan import Plan, PlanSkipReason
 from docmend.report import Report
@@ -101,6 +102,9 @@ class TestSchemaFiles:
         docmend_ns = properties["docmend"]
         assert "pattern" in docmend_ns["properties"]["schema_version"]
         assert {"id", "schema_version"} <= set(docmend_ns["required"])
+
+    def test_frontmatter_schema__version_constant_is_code_owned(self) -> None:
+        assert FRONTMATTER_SCHEMA_VERSION == "1.0"
 
 
 class TestQualificationSchemaFiles:

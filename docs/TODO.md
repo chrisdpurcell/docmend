@@ -26,7 +26,7 @@ Instructions for AI agents:
   - [ ] Sub-project 2 — scale/DMR-08: execute the owner-approved [million-file design](superpowers/specs/2026-07-11-million-file-scale-and-resource-design.md) through the reviewed [implementation plan](superpowers/plans/2026-07-11-million-file-scale-and-resource-contract.md).
     - [x] Change control: settle OQ/RQ-037, revise SPEC-VHHB to 0.30, accept ADR-0022, supersede ADR-0007, and amend ADR-0005 for plan 2.0.
     - [x] Config and artifact compatibility: remove `parallel.*`, reject legacy tables, adopt plan schema 2.0, and reject plan 1.x before gate evaluation or mutation.
-    - [ ] Evidence and resource harness: Tasks 3-5 landed the strict public-safe evidence/reference/threshold contracts, external RSS supervision, capacity preflight, and deterministic corpus recipes; complete the revision 0.34/OQ-041 Task 6A contract corrections and Task 6B exact-HEAD installed-wheel orchestrator/acceptance boundary.
+    - [ ] Evidence and resource harness: Tasks 3-6A landed the strict public-safe evidence/reference/threshold contracts, external RSS supervision, capacity preflight, deterministic corpus recipes, truthful partial evidence, exact 1M threshold projection, strict result transport, and identity-held reference/capacity observation; complete Task 6B's exact-HEAD installed-wheel orchestrator/acceptance boundary.
     - [ ] Default guard: replace the stale scale test with the 1,000-file source-tree PR tier.
     - [ ] Liveness and capacity: add aggregate heartbeat/terminal events and evidence-based per-filesystem resource accounting.
     - [ ] Pilot and threshold revision: run the 10,000/100,000-file uninstrumented pilot, publish supporting evidence, and freeze numeric thresholds in SPEC revision two.

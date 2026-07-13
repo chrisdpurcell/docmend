@@ -2,7 +2,7 @@
 	"$schema": "https://json-schema.org/draft/2020-12/schema",
 	"$id": "https://raw.githubusercontent.com/chrisdpurcell/docmend/main/src/docmend/schemas/scale-evidence.schema.json",
 	"title": "docmend scale qualification evidence",
-	"description": "Sanitized aggregate evidence for the DMR-08 scale tiers. It binds candidate and installed-wheel provenance, resource preflight, per-stage measurements, conservation totals, and threshold verdicts without publishing host identities, paths, command lines, logs, document content, or other private corpus data (OQ-038, adr-0022).",
+	"description": "Sanitized aggregate evidence for the DMR-08 scale tiers. Version 2.0 binds candidate and installed-wheel/build provenance, truthful partial-stage measurement and artifact state, phase observations, finite outcomes, thresholds, and release runtime without publishing host identities, paths, command lines, logs, document content, or other private corpus data (OQ-038, OQ-041, adr-0022).",
 	"type": "object",
 	"additionalProperties": false,
 	"required": [
@@ -12,6 +12,8 @@
 		"tier",
 		"candidate_commit",
 		"package_version",
+		"build_frontend_version",
+		"build_backend_version",
 		"wheel_sha256",
 		"lock_sha256",
 		"reference_environment_sha256",
@@ -24,19 +26,23 @@
 		"started_at",
 		"completed_at",
 		"preflight",
+		"outcome_reason",
 		"file_count",
 		"corpus_bytes",
 		"stages",
 		"totals",
-		"thresholds"
+		"thresholds",
+		"workflow_runtime"
 	],
 	"properties": {
 		"schema": { "const": "docmend/scale-evidence" },
-		"schema_version": { "type": "string", "const": "1.1", "pattern": "^1\\.[0-9]+$" },
+		"schema_version": { "type": "string", "const": "2.0", "pattern": "^2\\.[0-9]+$" },
 		"status": { "enum": ["passing", "failed", "incomplete", "diagnostic"] },
 		"tier": { "enum": ["pr", "pilot", "scheduled", "release", "file-size"] },
 		"candidate_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
 		"package_version": { "$ref": "#/$defs/public_label" },
+		"build_frontend_version": { "$ref": "#/$defs/public_label" },
+		"build_backend_version": { "$ref": "#/$defs/public_label" },
 		"wheel_sha256": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }] },
 		"lock_sha256": { "$ref": "#/$defs/sha256" },
 		"reference_environment_sha256": { "$ref": "#/$defs/sha256" },
@@ -65,16 +71,244 @@
 		"cache_classification": { "enum": ["cold", "warm", "mixed"] },
 		"started_at": { "type": "string", "format": "date-time" },
 		"completed_at": { "type": "string", "format": "date-time" },
-		"preflight": { "$ref": "#/$defs/preflight_evidence" },
+		"preflight": {
+			"oneOf": [{ "type": "null" }, { "$ref": "#/$defs/preflight_evidence" }]
+		},
+		"outcome_reason": {
+			"oneOf": [
+				{ "type": "null" },
+				{
+					"enum": [
+						"explicit-diagnostic",
+						"reference-mismatch",
+						"reference-observation-unavailable",
+						"provenance-changed",
+						"build-failed",
+						"install-failed",
+						"capacity-insufficient",
+						"capacity-estimate-exceeded",
+						"corpus-materialization-failed",
+						"supervisor-failed",
+						"telemetry-unavailable",
+						"stage-exit",
+						"artifact-invalid",
+						"conservation-mismatch",
+						"finding-mismatch",
+						"threshold-exceeded",
+						"runtime-limit-exceeded",
+						"harness-error"
+					]
+				}
+			]
+		},
 		"file_count": { "type": "integer", "minimum": 1 },
 		"corpus_bytes": { "type": "integer", "minimum": 0 },
-		"stages": { "type": "array", "items": { "$ref": "#/$defs/stage_evidence" } },
+		"stages": {
+			"type": "array",
+			"maxItems": 4,
+			"prefixItems": [
+				{
+					"$ref": "#/$defs/stage_evidence",
+					"properties": { "stage": { "const": "scan" } },
+					"required": ["stage"]
+				},
+				{
+					"$ref": "#/$defs/stage_evidence",
+					"properties": { "stage": { "const": "plan" } },
+					"required": ["stage"]
+				},
+				{
+					"$ref": "#/$defs/stage_evidence",
+					"properties": { "stage": { "const": "apply" } },
+					"required": ["stage"]
+				},
+				{
+					"$ref": "#/$defs/stage_evidence",
+					"properties": { "stage": { "const": "verify" } },
+					"required": ["stage"]
+				}
+			],
+			"items": false
+		},
 		"totals": { "$ref": "#/$defs/qualification_totals" },
 		"thresholds": {
 			"oneOf": [{ "type": "null" }, { "$ref": "#/$defs/threshold_verdict" }]
+		},
+		"workflow_runtime": {
+			"oneOf": [{ "type": "null" }, { "$ref": "#/$defs/workflow_runtime_verdict" }]
 		}
 	},
 	"allOf": [
+		{
+			"if": { "properties": { "stages": { "minItems": 2 } }, "required": ["stages"] },
+			"then": {
+				"properties": {
+					"stages": {
+						"prefixItems": [
+							{
+								"properties": { "artifact_validated": { "const": true } },
+								"required": ["artifact_validated"]
+							}
+						]
+					}
+				}
+			}
+		},
+		{
+			"if": { "properties": { "stages": { "minItems": 3 } }, "required": ["stages"] },
+			"then": {
+				"properties": {
+					"stages": {
+						"prefixItems": [
+							{},
+							{
+								"properties": { "artifact_validated": { "const": true } },
+								"required": ["artifact_validated"]
+							}
+						]
+					}
+				}
+			}
+		},
+		{
+			"if": { "properties": { "stages": { "minItems": 4 } }, "required": ["stages"] },
+			"then": {
+				"properties": {
+					"stages": {
+						"prefixItems": [
+							{},
+							{},
+							{
+								"properties": { "artifact_validated": { "const": true } },
+								"required": ["artifact_validated"]
+							}
+						]
+					}
+				}
+			}
+		},
+		{
+			"if": {
+				"properties": {
+					"stages": {
+						"not": {
+							"minItems": 1,
+							"prefixItems": [
+								{
+									"properties": { "artifact_validated": { "const": true } },
+									"required": ["artifact_validated"]
+								}
+							]
+						}
+					}
+				},
+				"required": ["stages"]
+			},
+			"then": {
+				"properties": {
+					"totals": {
+						"properties": { "scanned": { "const": 0 } },
+						"required": ["scanned"]
+					}
+				}
+			}
+		},
+		{
+			"if": {
+				"properties": {
+					"stages": {
+						"not": {
+							"minItems": 2,
+							"prefixItems": [
+								{},
+								{
+									"properties": { "artifact_validated": { "const": true } },
+									"required": ["artifact_validated"]
+								}
+							]
+						}
+					}
+				},
+				"required": ["stages"]
+			},
+			"then": {
+				"properties": {
+					"totals": {
+						"properties": {
+							"actions": { "const": 0 },
+							"clean_noops": { "const": 0 },
+							"plan_skips": { "const": 0 }
+						},
+						"required": ["actions", "clean_noops", "plan_skips"]
+					}
+				}
+			}
+		},
+		{
+			"if": {
+				"properties": {
+					"stages": {
+						"not": {
+							"minItems": 3,
+							"prefixItems": [
+								{},
+								{},
+								{
+									"properties": { "artifact_validated": { "const": true } },
+									"required": ["artifact_validated"]
+								}
+							]
+						}
+					}
+				},
+				"required": ["stages"]
+			},
+			"then": {
+				"properties": {
+					"totals": {
+						"properties": {
+							"applied": { "const": 0 },
+							"apply_skips": { "const": 0 },
+							"failures": { "const": 0 },
+							"not_attempted": { "const": 0 }
+						},
+						"required": ["applied", "apply_skips", "failures", "not_attempted"]
+					}
+				}
+			}
+		},
+		{
+			"if": {
+				"properties": {
+					"stages": {
+						"not": {
+							"minItems": 4,
+							"prefixItems": [
+								{},
+								{},
+								{},
+								{
+									"properties": { "artifact_validated": { "const": true } },
+									"required": ["artifact_validated"]
+								}
+							]
+						}
+					}
+				},
+				"required": ["stages"]
+			},
+			"then": {
+				"properties": {
+					"totals": {
+						"properties": {
+							"verified": { "const": 0 },
+							"observed_findings": { "const": 0 }
+						},
+						"required": ["verified", "observed_findings"]
+					}
+				}
+			}
+		},
 		{
 			"if": {
 				"properties": { "status": { "const": "passing" } },
@@ -82,6 +316,7 @@
 			},
 			"then": {
 				"properties": {
+					"outcome_reason": { "type": "null" },
 					"memory_measurement": { "const": "external-rss" },
 					"preflight": {
 						"allOf": [
@@ -102,6 +337,415 @@
 						}
 					}
 				}
+			}
+		},
+		{
+			"if": {
+				"properties": { "status": { "const": "failed" } },
+				"required": ["status"]
+			},
+			"then": {
+				"properties": {
+					"outcome_reason": {
+						"enum": [
+							"stage-exit",
+							"conservation-mismatch",
+							"finding-mismatch",
+							"threshold-exceeded",
+							"runtime-limit-exceeded"
+						]
+					}
+				},
+				"required": ["outcome_reason"]
+			}
+		},
+		{
+			"if": {
+				"properties": { "status": { "const": "incomplete" } },
+				"required": ["status"]
+			},
+			"then": {
+				"properties": {
+					"outcome_reason": {
+						"enum": [
+							"reference-observation-unavailable",
+							"provenance-changed",
+							"build-failed",
+							"install-failed",
+							"capacity-insufficient",
+							"capacity-estimate-exceeded",
+							"corpus-materialization-failed",
+							"supervisor-failed",
+							"telemetry-unavailable",
+							"artifact-invalid",
+							"harness-error"
+						]
+					}
+				},
+				"required": ["outcome_reason"]
+			}
+		},
+		{
+			"if": {
+				"properties": { "status": { "const": "diagnostic" } },
+				"required": ["status"]
+			},
+			"then": {
+				"properties": {
+					"outcome_reason": { "enum": ["reference-mismatch", "explicit-diagnostic"] },
+					"preflight": { "$ref": "#/$defs/preflight_evidence" },
+					"stages": {
+						"type": "array",
+						"items": {
+							"allOf": [
+								{ "$ref": "#/$defs/stage_evidence" },
+								{
+									"properties": { "vm_swap_peak_bytes": { "const": 0 } },
+									"required": ["vm_swap_peak_bytes"]
+								}
+							]
+						}
+					}
+				},
+				"required": ["outcome_reason", "preflight"],
+				"allOf": [
+					{
+						"if": {
+							"properties": { "outcome_reason": { "const": "explicit-diagnostic" } },
+							"required": ["outcome_reason"]
+						},
+						"then": {
+							"properties": {
+								"preflight": {
+									"allOf": [
+										{ "$ref": "#/$defs/preflight_evidence" },
+										{
+											"properties": { "passed": { "const": true } },
+											"required": ["passed"]
+										}
+									]
+								}
+							}
+						}
+					},
+					{
+						"if": {
+							"properties": { "outcome_reason": { "const": "reference-mismatch" } },
+							"required": ["outcome_reason"]
+						},
+						"then": {
+							"properties": {
+								"preflight": {
+									"allOf": [
+										{ "$ref": "#/$defs/preflight_evidence" },
+										{
+											"properties": {
+												"filesystems": {
+													"type": "array",
+													"minItems": 1,
+													"items": {
+														"allOf": [
+															{ "$ref": "#/$defs/filesystem_capacity_evidence" },
+															{
+																"properties": { "passed": { "const": true } },
+																"required": ["passed"]
+															}
+														]
+													}
+												},
+												"capacity_margin_met": { "const": true },
+												"ram_requirement_met": { "const": true }
+											},
+											"required": [
+												"filesystems",
+												"capacity_margin_met",
+												"ram_requirement_met"
+											]
+										},
+										{
+											"not": {
+												"properties": {
+													"reference_environment_match": { "const": true },
+													"binding_filesystem": { "const": true }
+												},
+												"required": [
+													"reference_environment_match",
+													"binding_filesystem"
+												]
+											}
+										}
+									]
+								}
+							}
+						}
+					}
+				]
+			}
+		},
+		{
+			"if": {
+				"properties": { "tier": { "const": "release" }, "stages": { "minItems": 1 } },
+				"required": ["tier", "stages"]
+			},
+			"then": {
+				"properties": {
+					"workflow_runtime": { "$ref": "#/$defs/workflow_runtime_verdict" }
+				}
+			}
+		},
+		{
+			"if": {
+				"properties": { "tier": { "const": "release" }, "stages": { "maxItems": 0 } },
+				"required": ["tier", "stages"]
+			},
+			"then": { "properties": { "workflow_runtime": { "type": "null" } } }
+		},
+		{
+			"if": {
+				"properties": { "tier": { "not": { "const": "release" } } },
+				"required": ["tier"]
+			},
+			"then": { "properties": { "workflow_runtime": { "type": "null" } } }
+		},
+		{
+			"if": {
+				"properties": {
+					"stages": {
+						"contains": {
+							"properties": {
+								"stage": { "enum": ["scan", "plan", "apply"] },
+								"completed": { "const": true },
+								"exit_code": { "not": { "const": 0 } }
+							},
+							"required": ["stage", "completed", "exit_code"]
+						}
+					}
+				},
+				"required": ["stages"]
+			},
+			"then": {
+				"properties": {
+					"status": { "const": "failed" },
+					"outcome_reason": { "const": "stage-exit" }
+				},
+				"required": ["status", "outcome_reason"]
+			}
+		},
+		{
+			"if": {
+				"properties": {
+					"status": { "const": "failed" },
+					"outcome_reason": { "const": "stage-exit" }
+				},
+				"required": ["status", "outcome_reason"]
+			},
+			"then": {
+				"anyOf": [
+					{
+						"properties": {
+							"stages": {
+								"contains": {
+									"properties": {
+										"stage": { "enum": ["scan", "plan", "apply"] },
+										"completed": { "const": true },
+										"exit_code": { "not": { "const": 0 } }
+									},
+									"required": ["stage", "completed", "exit_code"]
+								}
+							}
+						},
+						"required": ["stages"]
+					},
+					{
+						"properties": {
+							"totals": {
+								"properties": { "expected_findings": { "const": 0 } },
+								"required": ["expected_findings"]
+							},
+							"stages": {
+								"contains": {
+									"properties": {
+										"stage": { "const": "verify" },
+										"completed": { "const": true },
+										"exit_code": { "not": { "const": 0 } }
+									},
+									"required": ["stage", "completed", "exit_code"]
+								}
+							}
+						},
+						"required": ["totals", "stages"]
+					},
+					{
+						"properties": {
+							"totals": {
+								"properties": { "expected_findings": { "minimum": 1 } },
+								"required": ["expected_findings"]
+							},
+							"stages": {
+								"contains": {
+									"properties": {
+										"stage": { "const": "verify" },
+										"completed": { "const": true },
+										"exit_code": { "not": { "const": 1 } }
+									},
+									"required": ["stage", "completed", "exit_code"]
+								}
+							}
+						},
+						"required": ["totals", "stages"]
+					}
+				]
+			}
+		},
+		{
+			"if": {
+				"properties": {
+					"status": { "const": "failed" },
+					"outcome_reason": { "const": "threshold-exceeded" }
+				},
+				"required": ["status", "outcome_reason"]
+			},
+			"then": {
+				"properties": {
+					"thresholds": {
+						"allOf": [
+							{ "$ref": "#/$defs/threshold_verdict" },
+							{ "properties": { "passed": { "const": false } }, "required": ["passed"] }
+						]
+					}
+				},
+				"required": ["thresholds"]
+			}
+		},
+		{
+			"if": {
+				"properties": {
+					"status": { "const": "failed" },
+					"outcome_reason": { "const": "runtime-limit-exceeded" }
+				},
+				"required": ["status", "outcome_reason"]
+			},
+			"then": {
+				"properties": {
+					"workflow_runtime": {
+						"allOf": [
+							{ "$ref": "#/$defs/workflow_runtime_verdict" },
+							{ "properties": { "passed": { "const": false } }, "required": ["passed"] }
+						]
+					}
+				},
+				"required": ["workflow_runtime"]
+			}
+		},
+		{
+			"if": {
+				"properties": {
+					"totals": {
+						"properties": { "expected_findings": { "const": 0 } },
+						"required": ["expected_findings"]
+					},
+					"stages": {
+						"contains": {
+							"properties": {
+								"stage": { "const": "verify" },
+								"completed": { "const": true },
+								"exit_code": { "not": { "const": 0 } }
+							},
+							"required": ["stage", "completed", "exit_code"]
+						}
+					}
+				},
+				"required": ["totals", "stages"]
+			},
+			"then": {
+				"properties": {
+					"status": { "const": "failed" },
+					"outcome_reason": { "const": "stage-exit" }
+				},
+				"required": ["status", "outcome_reason"]
+			}
+		},
+		{
+			"if": {
+				"properties": {
+					"totals": {
+						"properties": { "expected_findings": { "minimum": 1 } },
+						"required": ["expected_findings"]
+					},
+					"stages": {
+						"contains": {
+							"properties": {
+								"stage": { "const": "verify" },
+								"completed": { "const": true },
+								"exit_code": { "not": { "const": 1 } }
+							},
+							"required": ["stage", "completed", "exit_code"]
+						}
+					}
+				},
+				"required": ["totals", "stages"]
+			},
+			"then": {
+				"properties": {
+					"status": { "const": "failed" },
+					"outcome_reason": { "const": "stage-exit" }
+				},
+				"required": ["status", "outcome_reason"]
+			}
+		},
+		{
+			"if": {
+				"properties": {
+					"thresholds": {
+						"allOf": [
+							{ "$ref": "#/$defs/threshold_verdict" },
+							{ "properties": { "passed": { "const": false } }, "required": ["passed"] }
+						]
+					}
+				},
+				"required": ["thresholds"]
+			},
+			"then": {
+				"properties": {
+					"status": { "const": "failed" },
+					"outcome_reason": {
+						"enum": [
+							"stage-exit",
+							"conservation-mismatch",
+							"finding-mismatch",
+							"threshold-exceeded"
+						]
+					}
+				},
+				"required": ["status", "outcome_reason"]
+			}
+		},
+		{
+			"if": {
+				"properties": {
+					"workflow_runtime": {
+						"allOf": [
+							{ "$ref": "#/$defs/workflow_runtime_verdict" },
+							{ "properties": { "passed": { "const": false } }, "required": ["passed"] }
+						]
+					}
+				},
+				"required": ["workflow_runtime"]
+			},
+			"then": {
+				"properties": {
+					"status": { "const": "failed" },
+					"outcome_reason": {
+						"enum": [
+							"stage-exit",
+							"conservation-mismatch",
+							"finding-mismatch",
+							"threshold-exceeded",
+							"runtime-limit-exceeded"
+						]
+					}
+				},
+				"required": ["status", "outcome_reason"]
 			}
 		},
 		{
@@ -141,7 +785,7 @@
 		{
 			"if": {
 				"properties": {
-					"status": { "const": "passing" },
+					"status": { "enum": ["passing", "diagnostic"] },
 					"tier": { "enum": ["pilot", "scheduled", "release", "file-size"] }
 				},
 				"required": ["status", "tier"]
@@ -150,11 +794,8 @@
 		},
 		{
 			"if": {
-				"properties": {
-					"status": { "const": "passing" },
-					"tier": { "enum": ["pilot", "scheduled", "release"] }
-				},
-				"required": ["status", "tier"]
+				"properties": { "status": { "enum": ["passing", "diagnostic"] } },
+				"required": ["status"]
 			},
 			"then": {
 				"properties": {
@@ -170,10 +811,17 @@
 										"properties": {
 											"stage": { "const": "scan" },
 											"completed": { "const": true },
+											"artifact_validated": { "const": true },
 											"exit_code": { "const": 0 },
 											"run_id": { "$ref": "#/$defs/run_id" }
 										},
-										"required": ["stage", "completed", "exit_code", "run_id"]
+										"required": [
+											"stage",
+											"completed",
+											"artifact_validated",
+											"exit_code",
+											"run_id"
+										]
 									}
 								]
 							},
@@ -184,10 +832,17 @@
 										"properties": {
 											"stage": { "const": "plan" },
 											"completed": { "const": true },
+											"artifact_validated": { "const": true },
 											"exit_code": { "const": 0 },
 											"run_id": { "$ref": "#/$defs/run_id" }
 										},
-										"required": ["stage", "completed", "exit_code", "run_id"]
+										"required": [
+											"stage",
+											"completed",
+											"artifact_validated",
+											"exit_code",
+											"run_id"
+										]
 									}
 								]
 							},
@@ -198,10 +853,17 @@
 										"properties": {
 											"stage": { "const": "apply" },
 											"completed": { "const": true },
+											"artifact_validated": { "const": true },
 											"exit_code": { "const": 0 },
 											"run_id": { "$ref": "#/$defs/run_id" }
 										},
-										"required": ["stage", "completed", "exit_code", "run_id"]
+										"required": [
+											"stage",
+											"completed",
+											"artifact_validated",
+											"exit_code",
+											"run_id"
+										]
 									}
 								]
 							},
@@ -212,10 +874,17 @@
 										"properties": {
 											"stage": { "const": "verify" },
 											"completed": { "const": true },
+											"artifact_validated": { "const": true },
 											"exit_code": { "enum": [0, 1] },
 											"run_id": { "$ref": "#/$defs/run_id" }
 										},
-										"required": ["stage", "completed", "exit_code", "run_id"]
+										"required": [
+											"stage",
+											"completed",
+											"artifact_validated",
+											"exit_code",
+											"run_id"
+										]
 									}
 								]
 							}
@@ -228,7 +897,7 @@
 		{
 			"if": {
 				"properties": {
-					"status": { "const": "passing" },
+					"status": { "enum": ["passing", "diagnostic"] },
 					"tier": { "enum": ["scheduled", "release"] }
 				},
 				"required": ["status", "tier"]
@@ -248,14 +917,32 @@
 		{
 			"if": {
 				"properties": {
-					"status": { "const": "passing" },
-					"tier": { "enum": ["pilot", "scheduled", "release"] },
+					"status": { "enum": ["passing", "diagnostic"] },
+					"tier": { "const": "release" }
+				},
+				"required": ["status", "tier"]
+			},
+			"then": {
+				"properties": {
+					"workflow_runtime": {
+						"allOf": [
+							{ "$ref": "#/$defs/workflow_runtime_verdict" },
+							{ "properties": { "passed": { "const": true } }, "required": ["passed"] }
+						]
+					}
+				}
+			}
+		},
+		{
+			"if": {
+				"properties": {
+					"status": { "enum": ["passing", "diagnostic"] },
 					"totals": {
 						"properties": { "expected_findings": { "const": 0 } },
 						"required": ["expected_findings"]
 					}
 				},
-				"required": ["status", "tier", "totals"]
+				"required": ["status", "totals"]
 			},
 			"then": {
 				"properties": {
@@ -276,14 +963,13 @@
 		{
 			"if": {
 				"properties": {
-					"status": { "const": "passing" },
-					"tier": { "enum": ["pilot", "scheduled", "release"] },
+					"status": { "enum": ["passing", "diagnostic"] },
 					"totals": {
 						"properties": { "expected_findings": { "minimum": 1 } },
 						"required": ["expected_findings"]
 					}
 				},
-				"required": ["status", "tier", "totals"]
+				"required": ["status", "totals"]
 			},
 			"then": {
 				"properties": {
@@ -320,9 +1006,42 @@
 					"report",
 					"manifest",
 					"verify-report",
+					"structured-log",
 					"stdout-log",
 					"stderr-log"
 				]
+			},
+			"additionalProperties": { "type": "integer", "minimum": 0 }
+		},
+		"scan_artifact_bytes": {
+			"type": "object",
+			"maxProperties": 4,
+			"propertyNames": {
+				"enum": ["inventory", "structured-log", "stdout-log", "stderr-log"]
+			},
+			"additionalProperties": { "type": "integer", "minimum": 0 }
+		},
+		"plan_artifact_bytes": {
+			"type": "object",
+			"maxProperties": 4,
+			"propertyNames": {
+				"enum": ["plan", "structured-log", "stdout-log", "stderr-log"]
+			},
+			"additionalProperties": { "type": "integer", "minimum": 0 }
+		},
+		"apply_artifact_bytes": {
+			"type": "object",
+			"maxProperties": 5,
+			"propertyNames": {
+				"enum": ["report", "manifest", "structured-log", "stdout-log", "stderr-log"]
+			},
+			"additionalProperties": { "type": "integer", "minimum": 0 }
+		},
+		"verify_artifact_bytes": {
+			"type": "object",
+			"maxProperties": 4,
+			"propertyNames": {
+				"enum": ["verify-report", "structured-log", "stdout-log", "stderr-log"]
 			},
 			"additionalProperties": { "type": "integer", "minimum": 0 }
 		},
@@ -426,6 +1145,32 @@
 						"properties": { "capacity_margin_met": { "const": false } },
 						"required": ["capacity_margin_met"]
 					}
+				},
+				{
+					"if": {
+						"properties": {
+							"filesystems": {
+								"minItems": 1,
+								"items": {
+									"properties": { "passed": { "const": true } },
+									"required": ["passed"]
+								}
+							},
+							"capacity_margin_met": { "const": true },
+							"reference_environment_match": { "const": true },
+							"binding_filesystem": { "const": true },
+							"ram_requirement_met": { "const": true }
+						},
+						"required": [
+							"filesystems",
+							"capacity_margin_met",
+							"reference_environment_match",
+							"binding_filesystem",
+							"ram_requirement_met"
+						]
+					},
+					"then": { "properties": { "passed": { "const": true } } },
+					"else": { "properties": { "passed": { "const": false } } }
 				}
 			]
 		},
@@ -443,6 +1188,7 @@
 				"vm_swap_peak_bytes",
 				"exit_code",
 				"completed",
+				"artifact_validated",
 				"artifact_bytes"
 			],
 			"properties": {
@@ -460,8 +1206,9 @@
 				"vm_swap_peak_bytes": {
 					"oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 0 }]
 				},
-				"exit_code": { "type": "integer" },
+				"exit_code": { "oneOf": [{ "type": "null" }, { "type": "integer" }] },
 				"completed": { "type": "boolean" },
+				"artifact_validated": { "type": "boolean" },
 				"artifact_bytes": { "$ref": "#/$defs/artifact_bytes" }
 			},
 			"allOf": [
@@ -471,7 +1218,7 @@
 						"required": ["completed"]
 					},
 					"then": {
-						"properties": { "run_id": { "$ref": "#/$defs/run_id" } },
+						"properties": { "exit_code": { "type": "integer" } },
 						"oneOf": [
 							{
 								"properties": {
@@ -488,6 +1235,111 @@
 								"required": ["peak_rss_bytes", "python_allocation_peak_bytes"]
 							}
 						]
+					},
+					"else": {
+						"properties": {
+							"exit_code": { "type": "null" },
+							"peak_rss_bytes": { "type": "null" },
+							"python_allocation_peak_bytes": { "type": "null" },
+							"vm_swap_peak_bytes": { "type": "null" }
+						},
+						"required": [
+							"exit_code",
+							"peak_rss_bytes",
+							"python_allocation_peak_bytes",
+							"vm_swap_peak_bytes"
+						]
+					}
+				},
+				{
+					"if": {
+						"properties": { "artifact_validated": { "const": true } },
+						"required": ["artifact_validated"]
+					},
+					"then": {
+						"properties": {
+							"completed": { "const": true },
+							"run_id": { "$ref": "#/$defs/run_id" }
+						},
+						"required": ["completed", "run_id"],
+						"allOf": [
+							{
+								"if": {
+									"properties": { "stage": { "const": "scan" } },
+									"required": ["stage"]
+								},
+								"then": { "properties": { "artifact_bytes": { "minProperties": 4 } } }
+							},
+							{
+								"if": {
+									"properties": { "stage": { "const": "plan" } },
+									"required": ["stage"]
+								},
+								"then": { "properties": { "artifact_bytes": { "minProperties": 4 } } }
+							},
+							{
+								"if": {
+									"properties": { "stage": { "const": "apply" } },
+									"required": ["stage"]
+								},
+								"then": { "properties": { "artifact_bytes": { "minProperties": 5 } } }
+							},
+							{
+								"if": {
+									"properties": { "stage": { "const": "verify" } },
+									"required": ["stage"]
+								},
+								"then": { "properties": { "artifact_bytes": { "minProperties": 4 } } }
+							}
+						]
+					},
+					"else": {
+						"properties": { "run_id": { "type": "null" } },
+						"required": ["run_id"]
+					}
+				},
+				{
+					"if": {
+						"properties": { "stage": { "const": "scan" } },
+						"required": ["stage"]
+					},
+					"then": {
+						"properties": {
+							"artifact_bytes": { "$ref": "#/$defs/scan_artifact_bytes" }
+						}
+					}
+				},
+				{
+					"if": {
+						"properties": { "stage": { "const": "plan" } },
+						"required": ["stage"]
+					},
+					"then": {
+						"properties": {
+							"artifact_bytes": { "$ref": "#/$defs/plan_artifact_bytes" }
+						}
+					}
+				},
+				{
+					"if": {
+						"properties": { "stage": { "const": "apply" } },
+						"required": ["stage"]
+					},
+					"then": {
+						"properties": {
+							"artifact_bytes": { "$ref": "#/$defs/apply_artifact_bytes" }
+						}
+					}
+				},
+				{
+					"if": {
+						"properties": { "stage": { "const": "verify" } },
+						"required": ["stage"]
+					},
+					"then": {
+						"properties": {
+							"artifact_bytes": { "$ref": "#/$defs/verify_artifact_bytes" }
+						}
 					}
 				}
 			]
@@ -533,7 +1385,7 @@
 			"properties": {
 				"absolute_peak_rss_bytes": { "type": "integer", "minimum": 1 },
 				"slope_bytes_per_file": { "type": "integer", "minimum": 0 },
-				"linearity_tolerance": { "type": "number", "minimum": 0, "maximum": 1 }
+				"linearity_tolerance": { "const": 0.2 }
 			}
 		},
 		"threshold_verdict": {
@@ -552,13 +1404,47 @@
 			"properties": {
 				"limits": { "$ref": "#/$defs/threshold_set" },
 				"observed_peak_rss_bytes": { "type": "integer", "minimum": 0 },
-				"observed_slope_bytes_per_file": { "type": "number", "minimum": 0 },
+				"observed_slope_bytes_per_file": { "type": "integer", "minimum": 0 },
 				"observed_linearity_ratio": { "type": "number", "minimum": 0 },
 				"peak_passed": { "type": "boolean" },
 				"slope_passed": { "type": "boolean" },
 				"linearity_passed": { "type": "boolean" },
 				"passed": { "type": "boolean" }
-			}
+			},
+			"allOf": [
+				{
+					"if": {
+						"properties": {
+							"peak_passed": { "const": true },
+							"slope_passed": { "const": true },
+							"linearity_passed": { "const": true }
+						},
+						"required": ["peak_passed", "slope_passed", "linearity_passed"]
+					},
+					"then": { "properties": { "passed": { "const": true } } },
+					"else": { "properties": { "passed": { "const": false } } }
+				}
+			]
+		},
+		"workflow_runtime_verdict": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["elapsed_seconds", "limit_seconds", "passed"],
+			"properties": {
+				"elapsed_seconds": { "type": "number", "minimum": 0 },
+				"limit_seconds": { "const": 43200 },
+				"passed": { "type": "boolean" }
+			},
+			"allOf": [
+				{
+					"if": {
+						"properties": { "elapsed_seconds": { "maximum": 43200 } },
+						"required": ["elapsed_seconds"]
+					},
+					"then": { "properties": { "passed": { "const": true } } },
+					"else": { "properties": { "passed": { "const": false } } }
+				}
+			]
 		}
 	}
 }

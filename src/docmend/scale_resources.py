@@ -10,13 +10,20 @@ The external grammars follow Linux ``proc_pid_mountinfo(5)``, ``statvfs(3)``,
 fields are intentionally tolerated; unavailable binding measurements are not.
 """
 
+import fcntl
 import os
+import platform
 import re
+import stat
+import struct
+import weakref
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass, field
 from fractions import Fraction
 from pathlib import Path
-from typing import Literal, cast
+from types import TracebackType
+from typing import TYPE_CHECKING, Literal, Protocol, cast
+from uuid import UUID
 
 from docmend.scale_evidence import (
     BINDING_CAPACITY_MARGIN,
@@ -24,11 +31,28 @@ from docmend.scale_evidence import (
     MountFlag,
     PreflightEvidence,
     ReferenceEnvironment,
+    StorageClass,
 )
 
+if TYPE_CHECKING:
+    from docmend.scale_corpus import ScaleCorpusSummary
+
 ALLOWED_BINDING_FILESYSTEMS = frozenset({"ext4", "xfs", "btrfs"})
-REJECTED_NETWORK_FILESYSTEMS = frozenset({"nfs", "nfs4", "cifs", "smb3"})
+REJECTED_NETWORK_FILESYSTEMS = frozenset(
+    {"9p", "ceph", "cifs", "fuse.sshfs", "glusterfs", "nfs", "nfs4", "smb3"}
+)
 MIN_BINDING_RAM_BYTES = 16 * 1024**3
+QUALIFICATION_BASE_BYTES = 256 * 1024 * 1024
+INVENTORY_BYTES_PER_INPUT = 2_048
+PLAN_BYTES_PER_INPUT = 4_096
+REPORT_BYTES_PER_ACTION = 2_048
+MANIFEST_BYTES_PER_ACTION = 8_192
+VERIFY_BYTES_PER_INPUT = 1_024
+STRUCTURED_LOG_BYTES_PER_INPUT_STAGE = 4_096
+SUPERVISOR_PRIVATE_BYTES_PER_FILE = 2 * 1024 * 1024
+SUPERVISOR_PRIVATE_FILES_PER_STAGE = 4
+QUALIFICATION_NONCORPUS_INODES = 64
+_QUALIFICATION_STAGE_COUNT = 4
 
 PUBLIC_MOUNT_FLAGS: tuple[MountFlag, ...] = (
     "ro",
@@ -43,6 +67,11 @@ PUBLIC_MOUNT_FLAGS: tuple[MountFlag, ...] = (
 _PUBLIC_MOUNT_FLAG_SET = frozenset(PUBLIC_MOUNT_FLAGS)
 _BINDING_CAPACITY_MARGIN_FRACTION = Fraction(str(BINDING_CAPACITY_MARGIN))
 _ALLOWED_CAPACITY_MARGINS = frozenset({Fraction(0), _BINDING_CAPACITY_MARGIN_FRACTION})
+
+# Linux UAPI pads ``btrfs_ioctl_fs_info_args`` to exactly 1 KiB; the `_IOR`
+# request encodes that size, so the request number and buffer must stay paired.
+_BTRFS_FS_INFO_SIZE = 1_024
+_BTRFS_IOC_FS_INFO = 0x8400941F
 
 type ReferenceField = Literal[
     "operating_system",
@@ -71,10 +100,86 @@ _REFERENCE_FIELDS: tuple[ReferenceField, ...] = (
 
 type StatPath = Callable[[Path], os.stat_result]
 type StatVfs = Callable[[Path], os.statvfs_result]
+type FstatVfs = Callable[[int], os.statvfs_result]
+
+
+class ReferenceProbes(Protocol):
+    """Supply the private Linux and platform observations used for reference capture."""
+
+    def read_text(self, path: Path) -> str: ...
+
+    def list_directory(self, path: Path) -> tuple[str, ...]: ...
+
+    def resolve(self, path: Path) -> Path: ...
+
+    def statvfs(self, path: Path) -> os.statvfs_result: ...
+
+    def machine(self) -> str: ...
+
+    def python_version(self) -> str: ...
+
+    def kernel_version(self) -> str: ...
+
+    def logical_cpu_count(self) -> int | None: ...
+
+    def btrfs_filesystem_info(self, path: Path) -> tuple[bytes, int]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _DefaultReferenceProbes:
+    def read_text(self, path: Path) -> str:
+        return path.read_text(encoding="utf-8")
+
+    def list_directory(self, path: Path) -> tuple[str, ...]:
+        with os.scandir(path) as entries:
+            return tuple(sorted(entry.name for entry in entries))
+
+    def resolve(self, path: Path) -> Path:
+        return path.resolve(strict=True)
+
+    def statvfs(self, path: Path) -> os.statvfs_result:
+        return os.statvfs(path)
+
+    def machine(self) -> str:
+        return platform.machine()
+
+    def python_version(self) -> str:
+        return platform.python_version()
+
+    def kernel_version(self) -> str:
+        return platform.release()
+
+    def logical_cpu_count(self) -> int | None:
+        return os.cpu_count()
+
+    def btrfs_filesystem_info(self, path: Path) -> tuple[bytes, int]:
+        fd = os.open(
+            path,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        try:
+            payload = bytearray(_BTRFS_FS_INFO_SIZE)
+            fcntl.ioctl(fd, _BTRFS_IOC_FS_INFO, payload, True)
+        finally:
+            os.close(fd)
+        (_max_device_id, num_devices) = struct.unpack_from("=QQ", payload)
+        return bytes(payload[16:32]), num_devices
+
+
+_DEFAULT_REFERENCE_PROBES = _DefaultReferenceProbes()
 
 
 class ResourcePreflightError(Exception):
     """Required Linux resource telemetry is missing, malformed, or ambiguous."""
+
+
+class _Finalizer(Protocol):
+    """Runtime-safe structural surface used from ``weakref.finalize``."""
+
+    @property
+    def alive(self) -> bool: ...
+
+    def __call__(self) -> object | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,12 +189,132 @@ class Requirement:
     path: Path
     bytes: int
     inodes: int
+    placement: CapacityPlacement | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if type(self.bytes) is not int or self.bytes < 0:
             raise ValueError("requirement bytes must be a non-negative integer")
         if type(self.inodes) is not int or self.inodes < 0:
             raise ValueError("requirement inodes must be a non-negative integer")
+        if self.placement is not None and self.placement.path != self.path:
+            raise ValueError("requirement path must match its held capacity placement")
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True)
+class CapacityPlacement:
+    """Hold one real probe-directory identity and its observed fragment size."""
+
+    path: Path
+    fragment_size: int
+    _fstatvfs: InitVar[FstatVfs] = os.fstatvfs
+    _directory_fd: int = field(init=False, repr=False, compare=False)
+    _finalizer: _Finalizer = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self, _fstatvfs: FstatVfs) -> None:
+        if type(self.fragment_size) is not int or self.fragment_size <= 0:
+            raise ValueError("fragment_size must be a positive integer")
+        if not self.path.is_absolute():
+            raise ResourcePreflightError("capacity placement must be an absolute real directory")
+        try:
+            initial = os.lstat(self.path)
+            resolved = self.path.resolve(strict=True)
+            fd = os.open(
+                self.path,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            )
+        except OSError as exc:
+            raise ResourcePreflightError(
+                "capacity placement must be an existing real directory"
+            ) from exc
+        finalizer: _Finalizer | None = None
+        adopted = False
+        try:
+            descriptor = os.fstat(fd)
+            current = os.lstat(self.path)
+            current_resolved = self.path.resolve(strict=True)
+            capacity = _fstatvfs(fd)
+            identities = {
+                (initial.st_dev, initial.st_ino),
+                (descriptor.st_dev, descriptor.st_ino),
+                (current.st_dev, current.st_ino),
+            }
+            if (
+                len(identities) != 1
+                or not stat.S_ISDIR(descriptor.st_mode)
+                or stat.S_ISLNK(initial.st_mode)
+                or stat.S_ISLNK(current.st_mode)
+                or resolved != self.path
+                or current_resolved != self.path
+            ):
+                raise ResourcePreflightError(
+                    "capacity placement must retain one real directory identity"
+                )
+            if capacity.f_frsize <= 0 or capacity.f_frsize != self.fragment_size:
+                raise ResourcePreflightError(
+                    "capacity placement fragment size must match held-directory statvfs"
+                )
+            finalizer = weakref.finalize(self, os.close, fd)
+            object.__setattr__(self, "_directory_fd", fd)
+            object.__setattr__(self, "_finalizer", finalizer)
+            adopted = True
+        except ResourcePreflightError:
+            raise
+        except Exception as exc:
+            raise ResourcePreflightError("capacity placement validation failed") from exc
+        finally:
+            if not adopted:
+                if finalizer is None:
+                    os.close(fd)
+                else:
+                    finalizer()
+
+    def __enter__(self) -> CapacityPlacement:
+        self.require_current_identity()
+        return self
+
+    def __exit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        _exc: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Release the held directory identity; repeated closes are harmless."""
+        self._finalizer()
+
+    def require_current_identity(self) -> os.stat_result:
+        """Return held identity only while the original pathname still names it."""
+        if not self._finalizer.alive:
+            raise ResourcePreflightError("capacity placement identity is closed")
+        try:
+            descriptor = os.fstat(self._directory_fd)
+            current = os.lstat(self.path)
+            resolved = self.path.resolve(strict=True)
+        except OSError as exc:
+            raise ResourcePreflightError(
+                "capacity placement identity changed after validation"
+            ) from exc
+        if (
+            (descriptor.st_dev, descriptor.st_ino) != (current.st_dev, current.st_ino)
+            or not stat.S_ISDIR(descriptor.st_mode)
+            or stat.S_ISLNK(current.st_mode)
+            or resolved != self.path
+        ):
+            raise ResourcePreflightError("capacity placement identity changed after validation")
+        return descriptor
+
+    def capacity_stats(self) -> os.statvfs_result:
+        """Read capacity through the held descriptor and recheck its fragment contract."""
+        self.require_current_identity()
+        try:
+            capacity = os.fstatvfs(self._directory_fd)
+        except OSError as exc:
+            raise ResourcePreflightError("held capacity probe failed") from exc
+        if capacity.f_frsize <= 0 or capacity.f_frsize != self.fragment_size:
+            raise ResourcePreflightError("held capacity fragment size changed")
+        return capacity
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +362,15 @@ class ReferenceComparison:
 
 
 @dataclass(frozen=True, slots=True)
+class ReferenceObservation:
+    """Return only the public environment and reduced mount/capacity observations."""
+
+    environment: ReferenceEnvironment
+    mount_projection: MountFlagProjection
+    fragment_size: int
+
+
+@dataclass(frozen=True, slots=True)
 class SwapCounters:
     """Diagnostic cumulative ``/proc/vmstat`` swap-page counters or their delta."""
 
@@ -151,6 +385,7 @@ class SwapCounters:
 @dataclass(slots=True)
 class _CapacityGroup:
     probe: Path
+    placement: CapacityPlacement | None
     required_bytes: int
     required_inodes: int
 
@@ -169,6 +404,76 @@ def available_capacity(stats: os.statvfs_result) -> tuple[int, int]:
     if stats.f_frsize <= 0 or stats.f_bavail < 0 or stats.f_favail < 0:
         raise ValueError("statvfs returned invalid unprivileged capacity")
     return stats.f_bavail * stats.f_frsize, stats.f_favail
+
+
+def qualification_requirements(
+    *,
+    workspace: CapacityPlacement,
+    corpus: CapacityPlacement,
+    artifact: CapacityPlacement,
+    supervisor: CapacityPlacement,
+    summary: ScaleCorpusSummary,
+) -> tuple[Requirement, ...]:
+    """Return exact pre-margin qualification allocations for four destinations."""
+    for placement in (workspace, corpus, artifact, supervisor):
+        placement.require_current_identity()
+    if corpus.fragment_size != summary.fragment_size:
+        raise ValueError("corpus placement fragment size must match the corpus summary")
+
+    action_count = summary.recipe_counts.actions
+    inventory_size = INVENTORY_BYTES_PER_INPUT * summary.count
+    plan_size = PLAN_BYTES_PER_INPUT * summary.count
+    report_size = REPORT_BYTES_PER_ACTION * action_count
+    manifest_size = MANIFEST_BYTES_PER_ACTION * action_count
+    verify_size = VERIFY_BYTES_PER_INPUT * summary.count
+    structured_log_size = STRUCTURED_LOG_BYTES_PER_INPUT_STAGE * summary.count
+    atomic_staging_size = max(inventory_size, plan_size, report_size, verify_size)
+    artifact_sizes = (
+        inventory_size,
+        plan_size,
+        report_size,
+        manifest_size,
+        verify_size,
+        *(structured_log_size for _ in range(_QUALIFICATION_STAGE_COUNT)),
+        atomic_staging_size,
+    )
+
+    corpus_bytes = summary.allocated_bytes + allocated_bytes(
+        summary.largest_file_bytes, corpus.fragment_size
+    )
+    artifact_bytes = sum(allocated_bytes(size, artifact.fragment_size) for size in artifact_sizes)
+    supervisor_file_count = _QUALIFICATION_STAGE_COUNT * SUPERVISOR_PRIVATE_FILES_PER_STAGE
+    supervisor_bytes = supervisor_file_count * allocated_bytes(
+        SUPERVISOR_PRIVATE_BYTES_PER_FILE, supervisor.fragment_size
+    )
+    workspace_bytes = allocated_bytes(QUALIFICATION_BASE_BYTES, workspace.fragment_size)
+
+    return (
+        Requirement(
+            path=corpus.path,
+            bytes=corpus_bytes,
+            inodes=summary.required_inodes + 1,
+            placement=corpus,
+        ),
+        Requirement(
+            path=artifact.path,
+            bytes=artifact_bytes,
+            inodes=len(artifact_sizes),
+            placement=artifact,
+        ),
+        Requirement(
+            path=supervisor.path,
+            bytes=supervisor_bytes,
+            inodes=supervisor_file_count,
+            placement=supervisor,
+        ),
+        Requirement(
+            path=workspace.path,
+            bytes=workspace_bytes,
+            inodes=QUALIFICATION_NONCORPUS_INODES,
+            placement=workspace,
+        ),
+    )
 
 
 def _default_stat(path: Path) -> os.stat_result:
@@ -212,11 +517,18 @@ def check_capacity(
     groups: dict[int, _CapacityGroup] = {}
     try:
         for requirement in values:
-            device = stat_path(requirement.path).st_dev
+            placement = requirement.placement
+            held_identity = placement.require_current_identity() if placement is not None else None
+            device = (
+                held_identity.st_dev
+                if held_identity is not None and stat_path is _default_stat
+                else stat_path(requirement.path).st_dev
+            )
             current = groups.get(device)
             if current is None:
                 groups[device] = _CapacityGroup(
                     probe=requirement.path,
+                    placement=placement,
                     required_bytes=requirement.bytes,
                     required_inodes=requirement.inodes,
                 )
@@ -230,7 +542,11 @@ def check_capacity(
     public_results: list[FilesystemCapacityEvidence] = []
     for group in groups.values():
         try:
-            available_bytes, available_inodes = available_capacity(statvfs(group.probe))
+            if group.placement is not None and statvfs is _default_statvfs:
+                stats = group.placement.capacity_stats()
+            else:
+                stats = statvfs(group.probe)
+            available_bytes, available_inodes = available_capacity(stats)
         except (OSError, ValueError) as exc:
             raise ResourcePreflightError(
                 "capacity probe failed for an aggregated filesystem"
@@ -433,6 +749,224 @@ def is_binding_filesystem(mount: MountInfo, projection: MountFlagProjection) -> 
     if mount.filesystem in REJECTED_NETWORK_FILESYSTEMS:
         return False
     return mount.filesystem in ALLOWED_BINDING_FILESYSTEMS and projection.complete
+
+
+def _public_probe_label(value: str) -> str:
+    normalized = " ".join(value.split())
+    if (
+        not normalized
+        or len(normalized) > 256
+        or any(character in "/\\=" or ord(character) < 32 for character in normalized)
+    ):
+        return "unknown"
+    return normalized
+
+
+def _cpu_model(cpuinfo: str) -> str:
+    fields: dict[str, list[str]] = {}
+    for line in cpuinfo.splitlines():
+        name, separator, value = line.partition(":")
+        if separator:
+            fields.setdefault(name.strip().lower(), []).append(value)
+    for field_name in ("model name", "hardware", "processor"):
+        if values := fields.get(field_name):
+            return _public_probe_label(values[0])
+    raise ResourcePreflightError("CPU model telemetry unavailable")
+
+
+_MEM_TOTAL_PATTERN = re.compile(r"^MemTotal:[ \t]+([0-9]+)[ \t]+kB$")
+
+
+def _ram_bytes(meminfo: str) -> int:
+    values = tuple(
+        match
+        for line in meminfo.splitlines()
+        if (match := _MEM_TOTAL_PATTERN.fullmatch(line)) is not None
+    )
+    if len(values) != 1:
+        raise ResourcePreflightError("RAM telemetry unavailable")
+    value = int(values[0].group(1), 10) * 1024
+    if value <= 0:
+        raise ResourcePreflightError("RAM telemetry unavailable")
+    return value
+
+
+def _leaf_rotational_values(
+    node: Path,
+    probes: ReferenceProbes,
+    *,
+    visiting: frozenset[Path] = frozenset(),
+) -> tuple[int, ...]:
+    """Return one rotational bit per proven leaf in a block-device stack.
+
+    Every branch must resolve: classifying a dm/LVM stack from only the
+    readable leaves could publish an SSD/HDD assertion that the topology does
+    not support.
+    """
+    resolved = probes.resolve(node)
+    if resolved in visiting:
+        raise ResourcePreflightError("block-device topology is cyclic")
+    try:
+        descendants = probes.list_directory(node / "slaves")
+    except FileNotFoundError:
+        descendants = ()
+    if descendants:
+        if any(not name or name in {".", ".."} or "/" in name for name in descendants):
+            raise ResourcePreflightError("block-device topology is malformed")
+        next_visiting = visiting | {resolved}
+        return tuple(
+            value
+            for name in descendants
+            for value in _leaf_rotational_values(
+                node / "slaves" / name,
+                probes,
+                visiting=next_visiting,
+            )
+        )
+    try:
+        value = probes.read_text(resolved / "queue" / "rotational").strip()
+    except OSError:
+        partition = probes.read_text(resolved / "partition").strip()
+        if not partition.isdigit() or int(partition, 10) <= 0:
+            raise ResourcePreflightError("partition topology is malformed") from None
+        value = probes.read_text(resolved.parent / "queue" / "rotational").strip()
+    if value not in {"0", "1"}:
+        raise ResourcePreflightError("rotational telemetry is malformed")
+    return (int(value, 10),)
+
+
+@dataclass(frozen=True, slots=True)
+class _BtrfsDeviceSnapshot:
+    """One private, comparable btrfs identity and member-device snapshot."""
+
+    fsid: bytes
+    num_devices: int
+    nodes: tuple[Path, ...]
+    targets: tuple[Path, ...]
+
+
+def _btrfs_device_snapshot(workspace: Path, probes: ReferenceProbes) -> _BtrfsDeviceSnapshot:
+    """Bind an anonymous btrfs mount to its complete kernel-reported device set."""
+    fsid_bytes, num_devices = probes.btrfs_filesystem_info(workspace)
+    if type(fsid_bytes) is not bytes or len(fsid_bytes) != 16:
+        raise ResourcePreflightError("btrfs filesystem identity is malformed")
+    if type(num_devices) is not int or num_devices <= 0:
+        raise ResourcePreflightError("btrfs device count is malformed")
+    try:
+        identity = UUID(bytes=fsid_bytes)
+    except ValueError as exc:
+        raise ResourcePreflightError("btrfs filesystem identity is malformed") from exc
+    if identity.int == 0:
+        raise ResourcePreflightError("btrfs filesystem identity is malformed")
+
+    devices = Path("/sys/fs/btrfs") / str(identity) / "devices"
+    names = probes.list_directory(devices)
+    if (
+        len(names) != num_devices
+        or len(set(names)) != len(names)
+        or any(not name or name in {".", ".."} or "/" in name for name in names)
+    ):
+        raise ResourcePreflightError("btrfs device topology is incomplete or malformed")
+    nodes = tuple(devices / name for name in names)
+    targets = tuple(probes.resolve(node) for node in nodes)
+    sysfs_devices = Path("/sys/devices")
+    if len(set(targets)) != len(targets) or any(
+        not target.is_absolute()
+        or target == sysfs_devices
+        or not target.is_relative_to(sysfs_devices)
+        for target in targets
+    ):
+        raise ResourcePreflightError("btrfs member topology is incomplete or malformed")
+    return _BtrfsDeviceSnapshot(
+        fsid=fsid_bytes,
+        num_devices=num_devices,
+        nodes=nodes,
+        targets=targets,
+    )
+
+
+def _storage_class(
+    workspace: Path,
+    mount: MountInfo,
+    probes: ReferenceProbes,
+) -> StorageClass:
+    if mount.filesystem in {"tmpfs", "ramfs"}:
+        return "memory"
+    if mount.filesystem in REJECTED_NETWORK_FILESYSTEMS:
+        return "network"
+    if mount.filesystem not in ALLOWED_BINDING_FILESYSTEMS:
+        return "unknown"
+    try:
+        btrfs_snapshot = (
+            _btrfs_device_snapshot(workspace, probes) if mount.filesystem == "btrfs" else None
+        )
+        nodes = (
+            btrfs_snapshot.nodes
+            if btrfs_snapshot is not None
+            else (Path(f"/sys/dev/block/{mount.device_major}:{mount.device_minor}"),)
+        )
+        rotational_values = tuple(
+            value for node in nodes for value in _leaf_rotational_values(node, probes)
+        )
+        if btrfs_snapshot is not None:
+            final_snapshot = _btrfs_device_snapshot(workspace, probes)
+            final_rotational_values = tuple(
+                value
+                for node in final_snapshot.nodes
+                for value in _leaf_rotational_values(node, probes)
+            )
+            if final_snapshot != btrfs_snapshot or final_rotational_values != rotational_values:
+                raise ResourcePreflightError("btrfs device topology changed during observation")
+        rotational = frozenset(rotational_values)
+    except OSError, RuntimeError, ResourcePreflightError:
+        return "unknown"
+    if rotational == frozenset({0}):
+        return "local-ssd"
+    if rotational == frozenset({1}):
+        return "local-hdd"
+    return "unknown"
+
+
+def observe_reference_environment(
+    workspace: Path,
+    *,
+    probes: ReferenceProbes = _DEFAULT_REFERENCE_PROBES,
+) -> ReferenceObservation:
+    """Observe one sanitized public environment from private Linux telemetry."""
+    try:
+        mountinfo = probes.read_text(Path("/proc/self/mountinfo"))
+        cpuinfo = probes.read_text(Path("/proc/cpuinfo"))
+        meminfo = probes.read_text(Path("/proc/meminfo"))
+        capacity = probes.statvfs(workspace)
+    except OSError as exc:
+        raise ResourcePreflightError("reference environment telemetry unavailable") from exc
+    if capacity.f_frsize <= 0:
+        raise ResourcePreflightError("reference fragment size unavailable")
+    logical_cpu_count = probes.logical_cpu_count()
+    if type(logical_cpu_count) is not int or logical_cpu_count <= 0:
+        raise ResourcePreflightError("logical CPU count unavailable")
+    mount = select_mount(workspace, parse_mountinfo(mountinfo))
+    projection = project_mount_flags(mount)
+    filesystem = (
+        mount.filesystem if re.fullmatch(r"[a-z0-9][a-z0-9._+-]*", mount.filesystem) else "unknown"
+    )
+    environment = ReferenceEnvironment(
+        operating_system="linux",
+        cpu_architecture=_public_probe_label(probes.machine()),
+        cpu_model=_cpu_model(cpuinfo),
+        logical_cpu_count=logical_cpu_count,
+        ram_bytes=_ram_bytes(meminfo),
+        storage_class=_storage_class(workspace, mount, probes),
+        filesystem=filesystem,
+        mount_flags=projection.flags,
+        python_version=_public_probe_label(probes.python_version()),
+        kernel_version=_public_probe_label(probes.kernel_version()),
+    )
+    return ReferenceObservation(
+        environment=environment,
+        mount_projection=projection,
+        fragment_size=capacity.f_frsize,
+    )
 
 
 def _reference_value(environment: ReferenceEnvironment, field: ReferenceField) -> object:

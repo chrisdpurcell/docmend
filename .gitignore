@@ -227,3 +227,6 @@ __marimo__/
 
 # Superpowers/Codex implementation worktrees (session-local).
 .worktrees/
+
+# Specification-authoring drafts are promoted only after validation.
+.project-pipeline/

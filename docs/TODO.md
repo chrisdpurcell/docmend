@@ -27,7 +27,7 @@ Instructions for AI agents:
     - [x] Change control: settle OQ/RQ-037, revise SPEC-VHHB to 0.30, accept ADR-0022, supersede ADR-0007, and amend ADR-0005 for plan 2.0.
     - [x] Config and artifact compatibility: remove `parallel.*`, reject legacy tables, adopt plan schema 2.0, and reject plan 1.x before gate evaluation or mutation.
     - [x] Evidence and resource harness: Tasks 3-6B landed the strict public-safe evidence/reference/threshold contracts, external RSS supervision, capacity preflight, deterministic streamed corpus recipes, exact 1M threshold projection, exact-HEAD wheel build/install, four-stage artifact reconciliation, and evidence-first no-clobber publication/acceptance boundary. The clean-HEAD 40-file diagnostic completed all four installed-wheel stages with zero child swap; the terminal `/proc` zombie-sampling race exposed by the first diagnostic was fixed and regression-tested.
-    - [ ] Default guard: replace the stale scale test with the 1,000-file source-tree PR tier.
+    - [x] Default guard: replace the stale scale test with the 1,000-file source-tree PR tier, including exact path-level conservation, recipe-derived findings, and deterministic per-class boundaries.
     - [ ] Liveness and capacity: add aggregate heartbeat/terminal events and evidence-based per-filesystem resource accounting.
     - [ ] Pilot and threshold revision: run the 10,000/100,000-file uninstrumented pilot, publish supporting evidence, and freeze numeric thresholds in SPEC revision two.
     - [ ] Scheduled diagnostic: add the installed-wheel 100,000-file scheduled/manual workflow.

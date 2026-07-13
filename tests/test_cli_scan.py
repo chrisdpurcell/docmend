@@ -76,6 +76,10 @@ class TestScanCommand:
         assert log_file.is_file()
         events = [json.loads(line) for line in log_file.read_text().splitlines()]
         assert all(event["run_id"] == run_id for event in events)
+        stage_events = [event for event in events if str(event["event"]).startswith("stage.")]
+        assert [event["event"] for event in stage_events] == ["stage.start", "stage.complete"]
+        assert {event["stage"] for event in stage_events} == {"scan"}
+        assert all("path" not in event for event in stage_events)
 
     def test_report_flag__overrides_artifact_path(self, corpus: Path, tmp_path: Path) -> None:
         """spec: IR-001 — `scan PATH --report FILE` contract."""

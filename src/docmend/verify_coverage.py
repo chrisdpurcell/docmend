@@ -15,6 +15,7 @@ from typing import Literal
 from docmend import artifacts
 from docmend.artifacts import ArtifactError
 from docmend.lineage import PriorAttempt
+from docmend.observability import ProgressHeartbeat
 from docmend.plan import Plan
 from docmend.report import ApplyOutcome, Report
 from docmend.verify import VerifyFinding
@@ -352,7 +353,9 @@ def _report_observation(outcome: ApplyOutcome) -> ReportObservation | None:
     return "skipped"
 
 
-def check_plan_coverage(evidence: VerificationEvidence) -> CoverageResult:
+def check_plan_coverage(
+    evidence: VerificationEvidence, *, heartbeat: ProgressHeartbeat | None = None
+) -> CoverageResult:
     """Reduce ordered mutation and report evidence to one outcome per plan action."""
     if evidence.plan is None or evidence.plan_sha256 is None:
         raise ArtifactError("plan coverage requires a supplied plan artifact")
@@ -364,6 +367,20 @@ def check_plan_coverage(evidence: VerificationEvidence) -> CoverageResult:
         for action_id, count in sorted(plan_counts.items())
         if count > 1
     ]
+    if heartbeat is not None:
+        processed, skipped, failed_before = heartbeat.counts
+    else:
+        processed = skipped = failed_before = 0
+
+    def advance() -> None:
+        nonlocal processed
+        if heartbeat is not None:
+            processed += 1
+            heartbeat.advance(
+                processed=processed,
+                skipped=skipped,
+                failed=failed_before + len(findings),
+            )
 
     lifecycle = reduce_lifecycle(evidence.manifest_inspection.chain)
     evidence_actions = set(lifecycle)
@@ -383,14 +400,18 @@ def check_plan_coverage(evidence: VerificationEvidence) -> CoverageResult:
                     f"manifest lifecycle is {state.state}; plan is not fully applied",
                 )
             )
+        advance()
 
-    manifest_applied = {
-        record.action_id
-        for manifest_set in evidence.manifest_inspection.chain.sets
-        if manifest_set.header.kind == "apply"
-        for record in manifest_set.records
-        if record.result == "applied" and record.undoes_action_id is None
-    }
+    manifest_applied: set[str] = set()
+    for manifest_set in evidence.manifest_inspection.chain.sets:
+        for record in manifest_set.records:
+            if (
+                manifest_set.header.kind == "apply"
+                and record.result == "applied"
+                and record.undoes_action_id is None
+            ):
+                manifest_applied.add(record.action_id)
+            advance()
     report_states: dict[str, CertifiedOutcome] = {}
     preview_actions: set[str] = set()
     for attempt in evidence.attempts:
@@ -411,11 +432,13 @@ def check_plan_coverage(evidence: VerificationEvidence) -> CoverageResult:
             action_id = outcome.action_id
             evidence_actions.add(action_id)
             if action_id in seen_in_report:
+                advance()
                 continue
             seen_in_report.add(action_id)
             observation = _report_observation(outcome)
             if observation is None:
                 preview_actions.add(action_id)
+                advance()
                 continue
             if observation in ("applied", "already-applied") and action_id not in manifest_applied:
                 findings.append(
@@ -425,12 +448,14 @@ def check_plan_coverage(evidence: VerificationEvidence) -> CoverageResult:
                         f"report claims {observation} without manifest-applied authority",
                     )
                 )
+                advance()
                 continue
             previous = report_states.get(action_id)
             if previous is None:
                 report_states[action_id] = (
                     "applied" if observation == "already-applied" else observation
                 )
+                advance()
                 continue
             transition = (previous, observation)
             if transition not in _ALLOWED_REPORT_TRANSITIONS:
@@ -441,9 +466,11 @@ def check_plan_coverage(evidence: VerificationEvidence) -> CoverageResult:
                         f"illegal report transition {previous} -> {observation}",
                     )
                 )
+                advance()
                 continue
             if observation != "already-applied":
                 report_states[action_id] = observation
+            advance()
 
     for action_id, report_state in sorted(report_states.items()):
         mutation_state = lifecycle.get(action_id)
@@ -502,9 +529,16 @@ def check_plan_coverage(evidence: VerificationEvidence) -> CoverageResult:
             findings.append(
                 VerifyFinding(action_id, "coverage", "plan action has no terminal outcome")
             )
+        advance()
     for action_id in sorted(evidence_actions - plan_actions):
         findings.append(
             VerifyFinding(action_id, "coverage", "artifact evidence names no plan action")
+        )
+    if heartbeat is not None:
+        heartbeat.advance(
+            processed=processed,
+            skipped=skipped,
+            failed=failed_before + len(findings),
         )
 
     return CoverageResult(

@@ -27,7 +27,7 @@ from pathspec.patterns.gitignore.spec import GitIgnoreSpecPattern
 from docmend import __version__
 from docmend.config import DocmendConfig
 from docmend.inventory import FileRecord, Inventory
-from docmend.observability import get_logger
+from docmend.observability import ProgressHeartbeat, get_logger
 from docmend.plan import (
     PLAN_SCHEMA_VERSION,
     ActionProvenance,
@@ -176,6 +176,7 @@ def build_plan(
     generated_at: str,
     inventory_ref: ArtifactRef,
     mint_id: Callable[[], uuid.UUID] = uuid.uuid7,
+    heartbeat: ProgressHeartbeat | None = None,
 ) -> Plan:
     log = get_logger(__name__)
     include = PathSpec.from_lines(GitIgnoreSpecPattern, config.paths.include)
@@ -188,6 +189,14 @@ def build_plan(
 
     actions: list[PlanAction] = []
     skips: list[SkipDecision] = []
+    processed = 0
+
+    def advance() -> None:
+        nonlocal processed
+        processed += 1
+        if heartbeat is not None:
+            heartbeat.advance(processed=processed, skipped=len(skips), failed=0)
+
     for link in inventory.symlinks:
         # A plan-time exclude added after the scan can cover a symlink the
         # inventory already recorded; the more specific "excluded" reason
@@ -202,6 +211,7 @@ def build_plan(
             )
         else:
             skips.append(SkipDecision(path=link.path, reason="symlink", detail=f"-> {link.target}"))
+        advance()
     pending: list[FileRecord] = []
     for record in inventory.files:
         decision = _fact_skip(
@@ -210,8 +220,11 @@ def build_plan(
         if decision is not None:
             skips.append(decision)
             log.debug("planned skip", path=record.path, reason=decision.reason)
+            advance()
         else:
             pending.append(record)
+            if heartbeat is not None:
+                heartbeat.advance(processed=processed, skipped=len(skips), failed=0)
 
     # Part 2: turn `pending` into actions, content-derived skips, or no-ops
     # (FR-017's third state — a file that needs nothing is in neither list).
@@ -229,7 +242,11 @@ def build_plan(
     inventory_paths = {f.path for f in inventory.files}
     source_root = Path(inventory.source_root)
     seq = 0
+    pending_started = 0
     for record in pending:
+        if pending_started:
+            advance()
+        pending_started += 1
         # FR-019: the content pass — verified read + decode + transform
         # prediction — is this layer's unbounded per-file work; catastrophic
         # regex backtracking in an FR-009 transform (R-007) surfaces here. The
@@ -401,6 +418,9 @@ def build_plan(
                 err="ERR-009",
             )
             continue
+
+    if pending_started:
+        advance()
 
     skips.sort(key=lambda s: s.path)
     if config.write.backup_dir is not None and not config.write.backup_dir.is_absolute():

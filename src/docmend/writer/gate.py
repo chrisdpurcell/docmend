@@ -14,13 +14,22 @@ regardless (G-002).
 """
 
 import os
-import shutil
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 from docmend.config import DocmendConfig
 from docmend.plan import Plan, PlanAction
+from docmend.scale_resources import (
+    MANIFEST_BYTES_PER_ACTION,
+    REPORT_BYTES_PER_ACTION,
+    STRUCTURED_LOG_BYTES_PER_INPUT_STAGE,
+    VERIFY_BYTES_PER_INPUT,
+    Requirement,
+    ResourcePreflightError,
+    allocated_bytes,
+    check_capacity,
+)
 
 
 @dataclass(frozen=True)
@@ -166,25 +175,6 @@ def _backup_destination(
                 message=f"{options.backup_root}: backup destination is not writable (OQ-005)",
             )
         ]
-    needed = sum(a.source_size_bytes for a in plan.actions)
-    if config.rename.on_collision == "overwrite":
-        # codex CR-006: overwrite mode also backs up each live-colliding
-        # target, so its bytes count against the same mount.
-        needed += sum(
-            (source_root / a.target_path).stat().st_size
-            for a in plan.actions
-            if a.target_path is not None and (source_root / a.target_path).exists()
-        )
-    if shutil.disk_usage(options.backup_root).free < needed:
-        return [
-            GateRefusal(
-                predicate="disk-preflight",
-                message=(
-                    f"{options.backup_root}: {needed} bytes of backups planned but less "
-                    "free space on the destination mount (OQ-005 per-mount preflight)"
-                ),
-            )
-        ]
     return []
 
 
@@ -199,24 +189,165 @@ def _manifest_destination(manifest_dir: Path) -> list[GateRefusal]:
     ]
 
 
-def _source_headroom(plan: Plan, config: DocmendConfig, source_root: Path) -> list[GateRefusal]:
-    if not plan.actions:
+def _capacity_probe(path: Path) -> tuple[Path, int]:
+    """Return the hosting filesystem probe and missing directory count."""
+    probe = path.resolve()
+    missing_directories = 0
+    while not probe.exists():
+        parent = probe.parent
+        if parent == probe:
+            raise ResourcePreflightError("capacity destination has no existing ancestor")
+        probe = parent
+        missing_directories += 1
+    return (probe if probe.is_dir() else probe.parent), missing_directories
+
+
+def _existing_capacity_probe(path: Path) -> Path:
+    return _capacity_probe(path)[0]
+
+
+def _allocated_file_sizes(probe: Path, sizes: list[int]) -> int:
+    try:
+        fragment_size = os.statvfs(probe).f_frsize
+        return sum(allocated_bytes(size, fragment_size) for size in sizes)
+    except (OSError, ValueError) as exc:
+        raise ResourcePreflightError("capacity fragment-size probe failed") from exc
+
+
+def _capacity_requirements(
+    plan: Plan,
+    config: DocmendConfig,
+    *,
+    source_root: Path,
+    options: ApplyOptions,
+    manifest_dir: Path,
+    report_path: Path | None,
+    log_path: Path | None,
+) -> tuple[Requirement, ...]:
+    """Build per-file physical estimates before followed-filesystem aggregation."""
+    source_probe = _existing_capacity_probe(source_root)
+    artifact_probe = _existing_capacity_probe(manifest_dir)
+    report_probe, report_missing_directories = (
+        _capacity_probe(report_path.parent) if report_path is not None else (artifact_probe, 0)
+    )
+    log_probe = (
+        _existing_capacity_probe(log_path.parent) if log_path is not None else artifact_probe
+    )
+    requirements: list[Requirement] = []
+
+    if options.backup_root is not None:
+        backup_probe = _existing_capacity_probe(options.backup_root)
+        try:
+            fragment_size = os.statvfs(backup_probe).f_frsize
+            if fragment_size <= 0:
+                raise ValueError("invalid backup fragment size")
+        except (OSError, ValueError) as exc:
+            raise ResourcePreflightError("backup capacity fragment-size probe failed") from exc
+        backup_bytes = 0
+        backup_inodes = 1 if plan.actions else 0  # one run directory
+        for action in plan.actions:
+            backup_bytes += allocated_bytes(action.source_size_bytes, fragment_size)
+            # Unique action directory, source-role directory, relative parents,
+            # and the source backup file itself.
+            backup_inodes += 3 + sum(part != "." for part in Path(action.path).parent.parts)
+            if config.rename.on_collision != "overwrite" or action.target_path is None:
+                continue
+            target = source_root / action.target_path
+            try:
+                target_size = target.stat().st_size
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise ResourcePreflightError("overwrite target capacity probe failed") from exc
+            backup_bytes += allocated_bytes(target_size, fragment_size)
+            # Overwritten-role directory, relative parents, and backup file;
+            # the run/action directories were counted with the source role.
+            backup_inodes += 2 + sum(part != "." for part in Path(action.target_path).parent.parts)
+        requirements.append(
+            Requirement(
+                path=backup_probe,
+                bytes=backup_bytes,
+                inodes=backup_inodes,
+            )
+        )
+
+    # Transformed output can be larger than input: UTF-8 re-encoding and tab
+    # expansion are mutually exclusive maxima, so reserve their larger factor.
+    if plan.actions:
+        factor = max(3, config.whitespace.tab_width if config.whitespace.normalize_tabs else 1)
+        largest_staging = max(action.source_size_bytes for action in plan.actions) * factor
+        requirements.append(
+            Requirement(
+                path=source_probe,
+                bytes=_allocated_file_sizes(source_probe, [largest_staging]),
+                inodes=1,
+            )
+        )
+
+    # Apply/report/plan-coverage growth follows represented plan records. Clean
+    # no-ops produce no apply outcome or coverage finding; the separate scale
+    # qualification preflight owns full-corpus scan/verify logs and artifacts.
+    record_count = max(1, len(plan.actions) + len(plan.skips))
+    report_size = REPORT_BYTES_PER_ACTION * record_count
+    verify_size = VERIFY_BYTES_PER_INPUT * record_count
+    staging_probe = report_probe if report_size >= verify_size else artifact_probe
+    staging_size = max(report_size, verify_size)
+    artifact_sizes = (
+        (artifact_probe, MANIFEST_BYTES_PER_ACTION * record_count, 0),
+        (report_probe, report_size, report_missing_directories),
+        (artifact_probe, verify_size, 0),
+        (log_probe, STRUCTURED_LOG_BYTES_PER_INPUT_STAGE * record_count, 0),
+        (staging_probe, staging_size, 0),
+    )
+    for probe, size, directory_count in artifact_sizes:
+        requirements.append(
+            Requirement(
+                path=probe,
+                bytes=_allocated_file_sizes(probe, [size, *([1] * directory_count)]),
+                inodes=1 + directory_count,
+            )
+        )
+    return tuple(requirements)
+
+
+def _capacity_preflight(
+    plan: Plan,
+    config: DocmendConfig,
+    *,
+    source_root: Path,
+    options: ApplyOptions,
+    manifest_dir: Path,
+    report_path: Path | None,
+    log_path: Path | None,
+) -> list[GateRefusal]:
+    try:
+        result = check_capacity(
+            _capacity_requirements(
+                plan,
+                config,
+                source_root=source_root,
+                options=options,
+                manifest_dir=manifest_dir,
+                report_path=report_path,
+                log_path=log_path,
+            )
+        )
+    except ResourcePreflightError as exc:
+        return [
+            GateRefusal(
+                predicate="disk-preflight",
+                message=f"filesystem-aware capacity preflight could not be completed ({exc})",
+            )
+        ]
+    if result.ok:
         return []
-    # codex CR-006: transformed output can be LARGER than the input. Bound the
-    # mechanical growth instead of assuming size parity: a legacy single-byte
-    # encoding re-encodes to at most 3 UTF-8 bytes per byte, and leading-tab
-    # expansion multiplies by tab_width; the two maxima cannot compound (tabs
-    # are ASCII and re-encode 1:1), so the factor is their max, not product.
-    factor = max(3, config.whitespace.tab_width if config.whitespace.normalize_tabs else 1)
-    largest = max(a.source_size_bytes for a in plan.actions) * factor
-    if shutil.disk_usage(source_root).free >= largest:
-        return []
+    failed = sum(not filesystem.passed for filesystem in result.filesystems)
     return [
         GateRefusal(
             predicate="disk-preflight",
             message=(
-                f"{source_root}: the largest planned temp file (bounded at {largest} bytes) "
-                "exceeds free space on the target mount (OQ-005 per-mount preflight)"
+                f"{max(1, failed)} filesystem(s) lack the grouped byte or inode capacity "
+                "for backups, staging, manifest/report/verify, and structured logs"
             ),
         )
     ]
@@ -229,12 +360,25 @@ def evaluate_gate(
     source_root: Path,
     options: ApplyOptions,
     manifest_dir: Path,
+    report_path: Path | None = None,
+    log_path: Path | None = None,
 ) -> list[GateRefusal]:
+    backup_refusals = _backup_destination(plan, config, source_root, options)
+    manifest_refusals = _manifest_destination(manifest_dir)
+    capacity_refusals = _capacity_preflight(
+        plan,
+        config,
+        source_root=source_root,
+        options=options,
+        manifest_dir=manifest_dir,
+        report_path=report_path,
+        log_path=log_path,
+    )
     return [
         *_containment(plan, source_root),
         *_preservation(plan, options),
         *_overwrite_preservation(plan, config, source_root, options),
-        *_backup_destination(plan, config, source_root, options),
-        *_manifest_destination(manifest_dir),
-        *_source_headroom(plan, config, source_root),
+        *backup_refusals,
+        *manifest_refusals,
+        *capacity_refusals,
     ]

@@ -37,7 +37,13 @@ from docmend import __version__, artifacts, discovery, lock, planning
 from docmend.artifacts import ARTIFACT_DIR_NAME
 from docmend.config import ConfigError, DocmendConfig, PathsConfig, load_config
 from docmend.lineage import PriorAttempt
-from docmend.observability import configure_logging, get_logger, new_run_id
+from docmend.observability import (
+    ProgressHeartbeat,
+    configure_logging,
+    emit_progress_to_log,
+    get_logger,
+    new_run_id,
+)
 from docmend.plan import PLAN_SCHEMA_VERSION, ArtifactRef
 from docmend.report import Report, ReportTotals
 from docmend.restore import preview_restore, run_restore
@@ -78,6 +84,47 @@ class GlobalOptions:
     verbose: int
     quiet: bool
     dry_run: bool
+
+
+def _start_stage(stage: str, *, total: int | None) -> ProgressHeartbeat:
+    heartbeat = ProgressHeartbeat(stage=stage, emit=emit_progress_to_log)
+    heartbeat.start(total=total)
+    return heartbeat
+
+
+def _finish_stage(
+    heartbeat: ProgressHeartbeat,
+    *artifacts_written: Path,
+    not_attempted: int = 0,
+) -> None:
+    """Finish after outputs publish, excluding the still-active structured log.
+
+    The terminal event changes that log's final size, so an external supervisor
+    owns the post-exit log measurement without a self-referential byte count.
+    """
+    artifact_bytes = sum(
+        path.stat().st_size for path in artifacts_written if path.exists() and path.is_file()
+    )
+    processed, skipped, failed = heartbeat.counts
+    heartbeat.finish(
+        processed=processed,
+        skipped=skipped,
+        failed=failed,
+        not_attempted=not_attempted,
+        artifact_bytes=artifact_bytes,
+    )
+
+
+def _incomplete_stage(heartbeat: ProgressHeartbeat | None, *, reason: str) -> None:
+    if heartbeat is None or heartbeat.is_terminal:
+        return
+    processed, skipped, failed = heartbeat.counts
+    heartbeat.incomplete(
+        processed=processed,
+        skipped=skipped,
+        failed=max(failed, 1),
+        reason=reason,
+    )
 
 
 @app.callback(invoke_without_command=True)
@@ -230,9 +277,20 @@ def scan(
     _guard_artifact_paths([out_path], corpus_root=corpus_root, input_artifacts=[], config=config)
 
     run_lock = _acquire_read_lock(corpus_root, run_id=run_id, command="scan")
+    heartbeat = _start_stage("scan", total=None)
     try:
-        inventory = discovery.scan(path, config, run_id=run_id, generated_at=now.isoformat())
+        inventory = discovery.scan(
+            path,
+            config,
+            run_id=run_id,
+            generated_at=now.isoformat(),
+            heartbeat=heartbeat,
+        )
         artifacts.write_inventory(inventory, out_path)
+        _finish_stage(heartbeat, out_path)
+    except Exception as exc:
+        _incomplete_stage(heartbeat, reason=type(exc).__name__)
+        raise
     finally:
         if run_lock is not None:
             run_lock.release()
@@ -338,8 +396,22 @@ def plan(
         )
         run_lock = _acquire_read_lock(scan_root, run_id=run_id, command="plan")
         log.info("plan starting (scan shorthand)", path=str(path))
-        inventory = discovery.scan(path, config, run_id=run_id, generated_at=now.isoformat())
-        artifacts.write_inventory(inventory, inventory_artifact)
+        scan_heartbeat = _start_stage("scan", total=None)
+        try:
+            inventory = discovery.scan(
+                path,
+                config,
+                run_id=run_id,
+                generated_at=now.isoformat(),
+                heartbeat=scan_heartbeat,
+            )
+            artifacts.write_inventory(inventory, inventory_artifact)
+            _finish_stage(scan_heartbeat, inventory_artifact)
+        except Exception as exc:
+            _incomplete_stage(scan_heartbeat, reason=type(exc).__name__)
+            if run_lock is not None:
+                run_lock.release()
+            raise
     else:
         assert inventory_path is not None
         log.info("plan starting", inventory=str(inventory_path))
@@ -359,7 +431,9 @@ def plan(
         # acquired here rather than up front (OQ-027).
         run_lock = _acquire_read_lock(Path(inventory.source_root), run_id=run_id, command="plan")
 
+    plan_heartbeat: ProgressHeartbeat | None = None
     try:
+        plan_heartbeat = _start_stage("plan", total=len(inventory.files) + len(inventory.symlinks))
         inventory_ref = ArtifactRef(
             path=str(inventory_artifact),
             run_id=inventory.run_id,
@@ -371,8 +445,10 @@ def plan(
             run_id=run_id,
             generated_at=now.isoformat(),
             inventory_ref=inventory_ref,
+            heartbeat=plan_heartbeat,
         )
         artifacts.write_plan(result, out_path)
+        _finish_stage(plan_heartbeat, out_path)
 
         reasons = Counter(skip.reason for skip in result.skips)
         typer.echo(f"plan: {out_path}")
@@ -410,6 +486,9 @@ def plan(
             )
         if findings:
             raise typer.Exit(1)
+    except Exception as exc:
+        _incomplete_stage(plan_heartbeat, reason=type(exc).__name__)
+        raise
     finally:
         if run_lock is not None:
             run_lock.release()
@@ -542,7 +621,7 @@ def apply(
     now = datetime.now(UTC)
     run_id = new_run_id(now)
     artifact_dir = Path(ARTIFACT_DIR_NAME)
-    configure_logging(
+    log_path = configure_logging(
         run_id=run_id, command="apply", log_dir=artifact_dir, verbose=opts.verbose, quiet=opts.quiet
     )
     log = get_logger(__name__)
@@ -603,6 +682,7 @@ def apply(
         config=config,
     )
     if write:
+        apply_heartbeat: ProgressHeartbeat | None = None
 
         def on_refusal(
             refusals: list[commit.GateRefusal],
@@ -626,6 +706,7 @@ def apply(
                 run_id=run_id,
                 manifest_path=manifest_path,
                 report_path=report_path,
+                log_path=log_path,
                 backup_root_override=backup_dir.resolve() if backup_dir is not None else None,
                 preserved_by=preserved_by.value if preserved_by is not None else None,
                 allow_no_backup=allow_no_backup,
@@ -635,6 +716,7 @@ def apply(
                 on_refusal=on_refusal,
             ) as safety:
                 gated_plan, _, _, effective_options, _, _ = safety._consume_apply_state()  # pyright: ignore[reportPrivateUsage]
+                apply_heartbeat = _start_stage("apply", total=len(gated_plan.actions))
                 content_rewrites = sum(
                     1 for action in gated_plan.actions if is_content_rewrite(action)
                 )
@@ -650,6 +732,7 @@ def apply(
                     manifest_path=manifest_path,
                     started_at=started_at,
                     safety=safety,
+                    heartbeat=apply_heartbeat,
                 )
                 if manifest_path.exists():
                     result = result.model_copy(
@@ -657,17 +740,32 @@ def apply(
                     )
                 safety.confirm_report(report_path)
                 artifacts.write_report(result, report_path)
+                written_artifacts = [report_path]
+                if manifest_path.exists():
+                    written_artifacts.append(manifest_path)
+                _finish_stage(
+                    apply_heartbeat,
+                    *written_artifacts,
+                    not_attempted=result.totals.not_attempted,
+                )
         except manifest.ManifestContainmentError as exc:
+            _incomplete_stage(apply_heartbeat, reason="manifest-containment")
             typer.echo(f"refused [manifest-containment]: {exc}", err=True)
             raise typer.Exit(3) from exc
         except artifacts.ArtifactError as exc:
+            _incomplete_stage(apply_heartbeat, reason="artifact-error")
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(2) from exc
         except commit.WriteRefusedError as exc:
+            _incomplete_stage(apply_heartbeat, reason="write-refused")
             raise typer.Exit(3) from exc
         except commit.SafetyRefusedError as exc:
+            _incomplete_stage(apply_heartbeat, reason="safety-refused")
             typer.echo(f"refused: {exc}", err=True)
             raise typer.Exit(3) from exc
+        except Exception as exc:
+            _incomplete_stage(apply_heartbeat, reason=type(exc).__name__)
+            raise
     else:
         try:
             resume_chain, prior_attempt = _load_apply_predecessors(
@@ -683,6 +781,7 @@ def apply(
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(2) from exc
         run_lock = _acquire_run_lock_strict(source_root, run_id=run_id, command="apply")
+        apply_heartbeat = _start_stage("apply", total=len(plan.actions))
         try:
             result = preview_plan(
                 plan,
@@ -692,6 +791,7 @@ def apply(
                 started_at=started_at,
                 resume_chain=resume_chain,
                 prior_attempt=prior_attempt,
+                heartbeat=apply_heartbeat,
             )
             try:
                 artifacts.write_report(result, report_path, clobber=False)
@@ -702,6 +802,14 @@ def apply(
                     err=True,
                 )
                 raise typer.Exit(2) from exc
+            _finish_stage(
+                apply_heartbeat,
+                report_path,
+                not_attempted=result.totals.not_attempted,
+            )
+        except Exception as exc:
+            _incomplete_stage(apply_heartbeat, reason=type(exc).__name__)
+            raise
         finally:
             run_lock.release()
 
@@ -1033,10 +1141,23 @@ def verify(
 
     started_at = now.isoformat()
     run_lock = _acquire_read_lock(corpus_root, run_id=run_id, command="verify")
+    scan_heartbeat: ProgressHeartbeat | None = None
+    verify_heartbeat: ProgressHeartbeat | None = None
     try:
-        inventory = discovery.scan(path, config, run_id=run_id, generated_at=started_at)
+        scan_heartbeat = _start_stage("scan", total=None)
+        inventory = discovery.scan(
+            path,
+            config,
+            run_id=run_id,
+            generated_at=started_at,
+            heartbeat=scan_heartbeat,
+        )
+        _finish_stage(scan_heartbeat)
+        verify_heartbeat = _start_stage("verify", total=None)
         findings = (
-            check_content(inventory) + check_frontmatter(inventory) + check_discovery(inventory)
+            check_content(inventory, heartbeat=verify_heartbeat)
+            + check_frontmatter(inventory, heartbeat=verify_heartbeat)
+            + check_discovery(inventory)
         )
         evidence = None
         if manifest_paths or report_paths or plan_path is not None:
@@ -1060,13 +1181,25 @@ def verify(
                 findings.extend(manifest_inspection_findings(inspection))
                 root_findings = check_manifest_root(inspection.chain, corpus_root)
                 findings.extend(root_findings)
-                findings.extend(check_lifecycle(inspection.chain))
+                findings.extend(check_lifecycle(inspection.chain, heartbeat=verify_heartbeat))
                 if not root_findings:
                     unsafe = frozenset(item.action_id for item in inspection.findings)
-                    findings.extend(check_outputs(inspection.chain, unsafe_action_ids=unsafe))
-                    findings.extend(check_backups(inspection.chain, unsafe_action_ids=unsafe))
+                    findings.extend(
+                        check_outputs(
+                            inspection.chain,
+                            unsafe_action_ids=unsafe,
+                            heartbeat=verify_heartbeat,
+                        )
+                    )
+                    findings.extend(
+                        check_backups(
+                            inspection.chain,
+                            unsafe_action_ids=unsafe,
+                            heartbeat=verify_heartbeat,
+                        )
+                    )
         if plan_path is not None and evidence is not None:
-            findings.extend(check_plan_coverage(evidence).findings)
+            findings.extend(check_plan_coverage(evidence, heartbeat=verify_heartbeat).findings)
         if out_path is not None:
             result_report = VerifyReport(
                 run_id=run_id,
@@ -1092,6 +1225,19 @@ def verify(
             except artifacts.ArtifactError as exc:
                 typer.echo(f"error: {exc}", err=True)
                 raise typer.Exit(2) from exc
+        processed, skipped, failed = verify_heartbeat.counts
+        verify_heartbeat.advance(
+            processed=processed,
+            skipped=skipped,
+            failed=max(failed, len(findings)),
+        )
+        _finish_stage(verify_heartbeat, *([out_path] if out_path is not None else []))
+    except Exception as exc:
+        if verify_heartbeat is not None:
+            _incomplete_stage(verify_heartbeat, reason=type(exc).__name__)
+        else:
+            _incomplete_stage(scan_heartbeat, reason=type(exc).__name__)
+        raise
     finally:
         if run_lock is not None:
             run_lock.release()

@@ -10,6 +10,7 @@ against `schemas/frontmatter.schema.json`.
 """
 
 import hashlib
+from collections.abc import Iterable, Iterator
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,7 @@ from typing import Literal
 
 from docmend.frontmatter import validate_frontmatter
 from docmend.inventory import Inventory
+from docmend.observability import ProgressHeartbeat
 from docmend.writer.commit import InterferenceError, bind_file
 from docmend.writer.manifest import (
     ManifestChain,
@@ -38,14 +40,38 @@ class VerifyFinding:
     detail: str
 
 
-def check_content(inventory: Inventory) -> list[VerifyFinding]:
+def _record_boundaries[T](
+    records: Iterable[T],
+    *,
+    heartbeat: ProgressHeartbeat | None,
+    findings: list[VerifyFinding],
+) -> Iterator[T]:
+    """Advance cumulative verify progress after each yielded record returns."""
+    if heartbeat is None:
+        yield from records
+        return
+    processed, skipped, failed_before = heartbeat.counts
+    findings_before = len(findings)
+    for record in records:
+        yield record
+        processed += 1
+        heartbeat.advance(
+            processed=processed,
+            skipped=skipped,
+            failed=failed_before + len(findings) - findings_before,
+        )
+
+
+def check_content(
+    inventory: Inventory, *, heartbeat: ProgressHeartbeat | None = None
+) -> list[VerifyFinding]:
     """Content-check findings over a scanned corpus (adr-0012 v1 content checks).
 
     Reuses scan's own encoding/newline facts, so "verify passes" means exactly
     "scan sees clean output" — one detection code path, never a second opinion.
     """
     findings: list[VerifyFinding] = []
-    for record in inventory.files:
+    for record in _record_boundaries(inventory.files, heartbeat=heartbeat, findings=findings):
         if not record.encoding.utf8_valid:
             findings.append(
                 VerifyFinding(record.path, "encoding", "not UTF-8 decodable without replacement")
@@ -59,7 +85,9 @@ def check_content(inventory: Inventory) -> list[VerifyFinding]:
     return findings
 
 
-def check_frontmatter(inventory: Inventory) -> list[VerifyFinding]:
+def check_frontmatter(
+    inventory: Inventory, *, heartbeat: ProgressHeartbeat | None = None
+) -> list[VerifyFinding]:
     """Frontmatter-validity findings where frontmatter is present (FR-016).
 
     Scoped to `.md` files — docmend's output format, the only place the DR-005
@@ -70,7 +98,7 @@ def check_frontmatter(inventory: Inventory) -> list[VerifyFinding]:
     """
     findings: list[VerifyFinding] = []
     root = Path(inventory.source_root)
-    for record in inventory.files:
+    for record in _record_boundaries(inventory.files, heartbeat=heartbeat, findings=findings):
         if not record.path.endswith(".md") or not record.encoding.utf8_valid:
             continue
         try:
@@ -133,24 +161,29 @@ def manifest_inspection_findings(inspection: ManifestInspection) -> list[VerifyF
     ]
 
 
-def check_lifecycle(chain: ManifestChain) -> list[VerifyFinding]:
+def check_lifecycle(
+    chain: ManifestChain, *, heartbeat: ProgressHeartbeat | None = None
+) -> list[VerifyFinding]:
     """Report final mutation states that cannot certify an applied plan."""
     uncertified = frozenset({"pending-intent", "pending-restore", "restored", "restore-failed"})
-    return [
-        VerifyFinding(action_id, "lifecycle", lifecycle.state)
-        for action_id, lifecycle in sorted(reduce_lifecycle(chain).items())
-        if lifecycle.state in uncertified
-    ]
+    findings: list[VerifyFinding] = []
+    records = sorted(reduce_lifecycle(chain).items())
+    for action_id, lifecycle in _record_boundaries(records, heartbeat=heartbeat, findings=findings):
+        if lifecycle.state in uncertified:
+            findings.append(VerifyFinding(action_id, "lifecycle", lifecycle.state))
+    return findings
 
 
 def check_outputs(
     chain: ManifestChain,
     *,
     unsafe_action_ids: AbstractSet[str] = frozenset(),
+    heartbeat: ProgressHeartbeat | None = None,
 ) -> list[VerifyFinding]:
     """Hash each final applied output once, skipping untrusted manifest paths."""
     findings: list[VerifyFinding] = []
-    for action_id, lifecycle in sorted(reduce_lifecycle(chain).items()):
+    records = sorted(reduce_lifecycle(chain).items())
+    for action_id, lifecycle in _record_boundaries(records, heartbeat=heartbeat, findings=findings):
         record = lifecycle.record
         if (
             lifecycle.state != "applied"
@@ -206,10 +239,12 @@ def check_backups(
     chain: ManifestChain,
     *,
     unsafe_action_ids: AbstractSet[str] = frozenset(),
+    heartbeat: ProgressHeartbeat | None = None,
 ) -> list[VerifyFinding]:
     """Verify each final applied action's trusted backup references once."""
     findings: list[VerifyFinding] = []
-    for action_id, lifecycle in sorted(reduce_lifecycle(chain).items()):
+    records = sorted(reduce_lifecycle(chain).items())
+    for action_id, lifecycle in _record_boundaries(records, heartbeat=heartbeat, findings=findings):
         if lifecycle.state != "applied" or action_id in unsafe_action_ids:
             continue
         record = lifecycle.record

@@ -410,6 +410,49 @@ class TestApplyLogContent:
         assert {"a.txt", "c.txt"} <= {record["path"] for record in outcomes}
         assert all(record["level"] == "INFO" for record in outcomes)
         assert {record["status"] for record in outcomes} == {"applied"}
+        stage_events = [
+            record for record in records if str(record.get("event", "")).startswith("stage.")
+        ]
+        assert [record["event"] for record in stage_events] == [
+            "stage.start",
+            "stage.complete",
+        ]
+        assert {record["stage"] for record in stage_events} == {"apply"}
+        assert all("path" not in record for record in stage_events)
+
+    def test_apply_abort__terminal_event_accounts_for_not_attempted_actions(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "a.txt").write_text("clean a\n", encoding="utf-8")
+        (corpus / "z.txt").write_text("clean z\n", encoding="utf-8")
+        config_path = tmp_path / "fail.toml"
+        config_path.write_text('[rename]\non_collision = "fail"\n', encoding="utf-8")
+        plan_path = tmp_path / "plan.json"
+        planned = runner.invoke(
+            app,
+            ["plan", str(corpus), "--config", str(config_path), "--out", str(plan_path)],
+        )
+        assert planned.exit_code == 0, planned.output
+        (corpus / "a.md").write_text("appeared after planning\n", encoding="utf-8")
+
+        applied = runner.invoke(
+            app,
+            ["apply", str(plan_path), "--write", "--preserved-by", "external"],
+        )
+        assert applied.exit_code == 1, applied.output
+        [report_path] = (tmp_path / ".docmend").glob("docmend-*-report.json")
+        run_id = report_path.name.removeprefix("docmend-").removesuffix("-report.json")
+        log_path = tmp_path / ".docmend" / f"docmend-{run_id}.jsonl"
+        events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+        [terminal] = [event for event in events if event.get("event") == "stage.complete"]
+
+        assert terminal["stage"] == "apply"
+        assert terminal["total"] == 2
+        assert terminal["processed"] == 1
+        assert terminal["not_attempted"] == 1
 
 
 class TestPartialUndoWarning:

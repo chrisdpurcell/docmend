@@ -382,8 +382,11 @@ class SwapCounters:
             raise ValueError("swap counters must be non-negative")
 
 
-@dataclass(slots=True)
-class _CapacityGroup:
+@dataclass(frozen=True, slots=True)
+class FilesystemRequirement:
+    """One private followed-filesystem aggregate before capacity comparison."""
+
+    device: int = field(repr=False, compare=False)
     probe: Path
     placement: CapacityPlacement | None
     required_bytes: int
@@ -500,21 +503,16 @@ def _ceil_fraction(value: Fraction) -> int:
     return -(-value.numerator // value.denominator)
 
 
-def check_capacity(
+def group_capacity_by_filesystem(
     requirements: Iterable[Requirement],
     *,
     stat_path: StatPath = _default_stat,
-    statvfs: StatVfs = _default_statvfs,
-    margin: int | float | Fraction = BINDING_CAPACITY_MARGIN,
-) -> CapacityCheck:
-    """Group requirements by followed ``st_dev`` and check each filesystem once."""
+) -> tuple[FilesystemRequirement, ...]:
+    """Sum destination requirements by followed ``st_dev`` without double counting."""
     values = tuple(requirements)
     if not values:
         raise ResourcePreflightError("at least one capacity requirement is required")
-    margin_value = _margin_fraction(margin)
-    if margin_value not in _ALLOWED_CAPACITY_MARGINS:
-        raise ValueError("capacity margin must be zero or the exact binding margin")
-    groups: dict[int, _CapacityGroup] = {}
+    groups: dict[int, FilesystemRequirement] = {}
     try:
         for requirement in values:
             placement = requirement.placement
@@ -526,21 +524,42 @@ def check_capacity(
             )
             current = groups.get(device)
             if current is None:
-                groups[device] = _CapacityGroup(
+                groups[device] = FilesystemRequirement(
+                    device=device,
                     probe=requirement.path,
                     placement=placement,
                     required_bytes=requirement.bytes,
                     required_inodes=requirement.inodes,
                 )
             else:
-                current.required_bytes += requirement.bytes
-                current.required_inodes += requirement.inodes
+                groups[device] = FilesystemRequirement(
+                    device=device,
+                    probe=current.probe,
+                    placement=current.placement,
+                    required_bytes=current.required_bytes + requirement.bytes,
+                    required_inodes=current.required_inodes + requirement.inodes,
+                )
     except (OSError, ValueError) as exc:
         raise ResourcePreflightError("capacity probe failed before device aggregation") from exc
+    return tuple(groups[device] for device in sorted(groups))
+
+
+def check_capacity(
+    requirements: Iterable[Requirement],
+    *,
+    stat_path: StatPath = _default_stat,
+    statvfs: StatVfs = _default_statvfs,
+    margin: int | float | Fraction = BINDING_CAPACITY_MARGIN,
+) -> CapacityCheck:
+    """Group requirements by followed ``st_dev`` and check each filesystem once."""
+    margin_value = _margin_fraction(margin)
+    if margin_value not in _ALLOWED_CAPACITY_MARGINS:
+        raise ValueError("capacity margin must be zero or the exact binding margin")
+    groups = group_capacity_by_filesystem(requirements, stat_path=stat_path)
 
     multiplier = 1 + margin_value
     public_results: list[FilesystemCapacityEvidence] = []
-    for group in groups.values():
+    for group in groups:
         try:
             if group.placement is not None and statvfs is _default_statvfs:
                 stats = group.placement.capacity_stats()

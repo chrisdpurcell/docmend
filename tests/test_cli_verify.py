@@ -69,6 +69,15 @@ def test_verify_clean_corpus__exit_0(tmp_path: Path, monkeypatch: pytest.MonkeyP
     result = runner.invoke(app, ["verify", str(corpus)])
 
     assert result.exit_code == 0, result.output
+    [log_path] = (tmp_path / ".docmend").glob("docmend-*.jsonl")
+    events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    stage_events = [event for event in events if str(event["event"]).startswith("stage.")]
+    assert [(event["stage"], event["event"]) for event in stage_events] == [
+        ("scan", "stage.start"),
+        ("scan", "stage.complete"),
+        ("verify", "stage.start"),
+        ("verify", "stage.complete"),
+    ]
 
 
 def test_verify_bad_encoding__exit_1(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

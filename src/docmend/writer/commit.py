@@ -521,6 +521,7 @@ def apply_write_context(
     run_id: str,
     manifest_path: Path,
     report_path: Path,
+    log_path: Path | None = None,
     backup_root_override: Path | None = None,
     preserved_by: str | None = None,
     allow_no_backup: bool = False,
@@ -585,6 +586,8 @@ def apply_write_context(
             source_root=source_root,
             options=options,
             manifest_dir=manifest_path.resolve().parent,
+            report_path=report_path.resolve(),
+            log_path=log_path.resolve() if log_path is not None else None,
         )
         if refusals:
             if on_refusal is not None:

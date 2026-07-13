@@ -58,7 +58,7 @@ from docmend.inventory import (
     SkipRecord,
     SymlinkRecord,
 )
-from docmend.observability import get_logger
+from docmend.observability import ProgressHeartbeat, get_logger
 from docmend.watchdog import PerFileTimeoutError, per_file_watchdog
 
 _CHUNK_SIZE = 1 << 20  # 1 MiB per read: bounded memory regardless of file size
@@ -347,6 +347,7 @@ def scan(
     *,
     run_id: str,
     generated_at: str,
+    heartbeat: ProgressHeartbeat | None = None,
 ) -> Inventory:
     """Scan PATH (file or directory, NFR-006) into a DR-001 inventory. Read-only."""
     log = get_logger(__name__)
@@ -356,6 +357,17 @@ def scan(
     include = PathSpec.from_lines(GitIgnoreSpecPattern, config.paths.include)
     exclude = PathSpec.from_lines(GitIgnoreSpecPattern, config.paths.exclude)
     state = _ScanState()
+    processed = 0
+
+    def advance() -> None:
+        nonlocal processed
+        processed += 1
+        if heartbeat is not None:
+            heartbeat.advance(
+                processed=processed,
+                skipped=len(state.skipped),
+                failed=0,
+            )
 
     if requested.is_dir():
 
@@ -367,6 +379,7 @@ def scan(
                 rel = str(failed)
             state.skipped.append(SkipRecord(path=rel, reason="unreadable", detail=str(error)))
             log.warning("directory unreadable", path=rel, error=str(error), err="ERR-007")
+            advance()
 
         for dirpath, dirnames, filenames in os.walk(
             root, topdown=True, onerror=on_walk_error, followlinks=False
@@ -393,6 +406,7 @@ def scan(
                     dirnames.remove(dirname)
                     if not exclude.match_file(rel):
                         _record_symlink(state, sub, rel)
+                        advance()
             for filename in sorted(filenames):
                 full = base / filename
                 rel = full.relative_to(root).as_posix()
@@ -405,6 +419,7 @@ def scan(
                     detect=config.encoding.detect,
                     timeout=config.limits.per_file_timeout,
                 )
+                advance()
     else:
         rel = requested.name
         _process_candidate(
@@ -416,6 +431,7 @@ def scan(
             detect=config.encoding.detect,
             timeout=config.limits.per_file_timeout,
         )
+        advance()
         if not state.files and not state.symlinks and not state.skipped:
             log.warning(
                 "single-file PATH matched no include pattern; inventory is empty",

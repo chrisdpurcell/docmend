@@ -32,7 +32,7 @@ from docmend.artifacts import ArtifactError
 from docmend.config import DocmendConfig
 from docmend.discovery import sniff_bom
 from docmend.lineage import ObjectIdentity, PriorAttempt
-from docmend.observability import get_logger
+from docmend.observability import ProgressHeartbeat, get_logger
 from docmend.plan import ArtifactRef, Plan, PlanAction
 from docmend.report import (
     ApplyOutcome,
@@ -978,6 +978,7 @@ def preview_plan(
     now: Callable[[], str] = lambda: datetime.now(UTC).isoformat(),
     resume_chain: ManifestChain | None = None,
     prior_attempt: PriorAttempt | None = None,
+    heartbeat: ProgressHeartbeat | None = None,
 ) -> Report:
     """Preview a plan through a structurally read-only engine."""
     assert plan.source_root is not None
@@ -988,8 +989,9 @@ def preview_plan(
     lifecycle = _validate_resume_lifecycle(resume_chain)
     outcomes: list[ApplyOutcome] = []
     abort = False
+    skipped_count = failed_count = 0
     log = get_logger(__name__)
-    for action in plan.actions:
+    for processed, action in enumerate(plan.actions, start=1):
         if abort:
             break
         state = lifecycle.get(action.action_id)
@@ -1003,6 +1005,8 @@ def preview_plan(
                 action, source_root, root_resolved, config, include, exclude
             )
         outcomes.append(outcome)
+        skipped_count += outcome.status == "skipped"
+        failed_count += outcome.status == "failed"
         log.info(
             "apply outcome",
             path=action.path,
@@ -1010,6 +1014,12 @@ def preview_plan(
             reason=outcome.skip_reason,
             action=action.action_id,
         )
+        if heartbeat is not None:
+            heartbeat.advance(
+                processed=processed,
+                skipped=skipped_count,
+                failed=failed_count,
+            )
     _complete_outcomes(plan, outcomes, abort=abort)
     return _build_report(
         plan,
@@ -1031,6 +1041,7 @@ def execute_plan(
     safety: WriteSafetyContext,
     now: Callable[[], str] = lambda: datetime.now(UTC).isoformat(),
     hooks: CommitHooks = NO_HOOKS,
+    heartbeat: ProgressHeartbeat | None = None,
 ) -> Report:
     """Execute only the immutable plan/options licensed by a live capability."""
     safety.confirm_apply(run_id=run_id, manifest_path=manifest_path)
@@ -1044,6 +1055,7 @@ def execute_plan(
     prior_manifest_sha256 = resume_chain.sets[-1].sha256 if resume_chain.sets else None
     outcomes: list[ApplyOutcome] = []
     abort = False
+    skipped_count = failed_count = 0
     if plan.actions:
         manifest = ManifestWriter(
             manifest_path,
@@ -1080,7 +1092,7 @@ def execute_plan(
         )
         log = get_logger(__name__)
         try:
-            for action in plan.actions:
+            for processed, action in enumerate(plan.actions, start=1):
                 if abort:
                     break
                 state = lifecycle.get(action.action_id)
@@ -1092,6 +1104,8 @@ def execute_plan(
                 if outcome is None:
                     outcome, abort = _execute_action(run, action.action_id)
                 outcomes.append(outcome)
+                skipped_count += outcome.status == "skipped"
+                failed_count += outcome.status == "failed"
                 log.info(
                     "apply outcome",
                     path=action.path,
@@ -1099,6 +1113,12 @@ def execute_plan(
                     reason=outcome.skip_reason,
                     action=action.action_id,
                 )
+                if heartbeat is not None:
+                    heartbeat.advance(
+                        processed=processed,
+                        skipped=skipped_count,
+                        failed=failed_count,
+                    )
         finally:
             manifest.close()
     _complete_outcomes(plan, outcomes, abort=abort)

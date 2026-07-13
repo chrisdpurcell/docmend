@@ -21,6 +21,9 @@ Cross-file contract:
 import logging
 import secrets
 import sys
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -33,6 +36,202 @@ if TYPE_CHECKING:
 #: Wire format of a run-ID: UTC second-resolution timestamp + 6 hex chars of
 #: randomness (collision guard for runs started within the same second).
 RUN_ID_FORMAT = "run_{YYYYMMDDTHHMMSSZ}_{6 lowercase hex}"
+HEARTBEAT_INTERVAL_SECONDS = 30.0
+
+type ProgressEvent = dict[str, object]
+type ProgressEmitter = Callable[[ProgressEvent], None]
+type MonotonicClock = Callable[[], float]
+
+
+@dataclass(slots=True)
+class ProgressHeartbeat:
+    """Emit best-effort, aggregate-only stage liveness at record boundaries.
+
+    This object never schedules work. Callers invoke :meth:`advance` only after
+    control returns between records, so a native call can delay both the
+    cooperative watchdog and these events exactly as documented in §18.5.
+    """
+
+    stage: str
+    emit: ProgressEmitter
+    clock: MonotonicClock = time.monotonic
+    interval_seconds: float = HEARTBEAT_INTERVAL_SECONDS
+    _started_at: float | None = field(default=None, init=False, repr=False)
+    _last_emitted_at: float | None = field(default=None, init=False, repr=False)
+    _total: int | None = field(default=None, init=False, repr=False)
+    _last_counts: tuple[int, int, int] = field(default=(0, 0, 0), init=False, repr=False)
+    _terminal: bool = field(default=False, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if not self.stage:
+            raise ValueError("heartbeat stage must not be empty")
+        if self.interval_seconds <= 0:
+            raise ValueError("heartbeat interval must be positive")
+
+    def start(self, *, total: int | None) -> None:
+        """Start one stage and emit its input count when known."""
+        if self._started_at is not None:
+            raise RuntimeError("heartbeat already started")
+        if total is not None and (type(total) is not int or total < 0):
+            raise ValueError("heartbeat total must be a non-negative integer or None")
+        now = self.clock()
+        self._started_at = now
+        self._last_emitted_at = now
+        self._total = total
+        self.emit(self._event("stage.start", now, processed=0, skipped=0, failed=0))
+
+    @property
+    def counts(self) -> tuple[int, int, int]:
+        """Return the latest cumulative processed, skipped, and failed counts."""
+        return self._last_counts
+
+    @property
+    def is_terminal(self) -> bool:
+        """Return whether a complete or incomplete event has already been emitted."""
+        return self._terminal
+
+    def advance(self, *, processed: int, skipped: int, failed: int) -> None:
+        """Record one deterministic boundary and emit when the target interval elapsed."""
+        now = self._require_active()
+        self._validate_counts(processed, skipped, failed)
+        self._last_counts = (processed, skipped, failed)
+        assert self._last_emitted_at is not None
+        if now - self._last_emitted_at < self.interval_seconds:
+            return
+        self.emit(
+            self._event(
+                "stage.heartbeat",
+                now,
+                processed=processed,
+                skipped=skipped,
+                failed=failed,
+            )
+        )
+        self._last_emitted_at = now
+
+    def finish(
+        self,
+        *,
+        processed: int,
+        skipped: int,
+        failed: int,
+        not_attempted: int = 0,
+        artifact_bytes: int | None = None,
+        peak_rss_bytes: int | None = None,
+    ) -> None:
+        """Emit the successful terminal totals and optional aggregate measurements."""
+        if type(not_attempted) is not int or not_attempted < 0:
+            raise ValueError("heartbeat not-attempted count must be a non-negative integer")
+        if self._total is not None and processed + not_attempted != self._total:
+            raise ValueError("completed heartbeat must account for its total")
+        extra: ProgressEvent = {}
+        if not_attempted:
+            extra["not_attempted"] = not_attempted
+        if artifact_bytes is not None:
+            extra["artifact_bytes"] = artifact_bytes
+        if peak_rss_bytes is not None:
+            extra["peak_rss_bytes"] = peak_rss_bytes
+        self._terminal_event(
+            "stage.complete",
+            processed=processed,
+            skipped=skipped,
+            failed=failed,
+            extra=extra,
+        )
+
+    def incomplete(
+        self,
+        *,
+        processed: int,
+        skipped: int,
+        failed: int,
+        reason: str,
+    ) -> None:
+        """Emit aggregate progress for a handled stage failure."""
+        if not reason:
+            raise ValueError("incomplete heartbeat reason must not be empty")
+        self._terminal_event(
+            "stage.incomplete",
+            processed=processed,
+            skipped=skipped,
+            failed=failed,
+            extra={"reason": reason},
+        )
+
+    def _terminal_event(
+        self,
+        event: str,
+        *,
+        processed: int,
+        skipped: int,
+        failed: int,
+        extra: ProgressEvent,
+    ) -> None:
+        now = self._require_active()
+        self._validate_counts(processed, skipped, failed)
+        self._last_counts = (processed, skipped, failed)
+        self.emit(
+            self._event(
+                event,
+                now,
+                processed=processed,
+                skipped=skipped,
+                failed=failed,
+                extra=extra,
+            )
+        )
+        self._terminal = True
+
+    def _require_active(self) -> float:
+        if self._started_at is None:
+            raise RuntimeError("heartbeat has not started")
+        if self._terminal:
+            raise RuntimeError("heartbeat is already terminal")
+        return self.clock()
+
+    def _validate_counts(self, processed: int, skipped: int, failed: int) -> None:
+        counts = (processed, skipped, failed)
+        if any(type(value) is not int or value < 0 for value in counts):
+            raise ValueError("heartbeat counts must be non-negative integers")
+        if any(
+            current < previous for current, previous in zip(counts, self._last_counts, strict=True)
+        ):
+            raise ValueError("heartbeat counts must be monotonic")
+        if self._total is not None and processed > self._total:
+            raise ValueError("heartbeat processed count exceeds total")
+
+    def _event(
+        self,
+        event: str,
+        now: float,
+        *,
+        processed: int,
+        skipped: int,
+        failed: int,
+        extra: ProgressEvent | None = None,
+    ) -> ProgressEvent:
+        assert self._started_at is not None
+        elapsed = max(0.0, now - self._started_at)
+        payload: ProgressEvent = {
+            "event": event,
+            "stage": self.stage,
+            "total": self._total,
+            "processed": processed,
+            "skipped": skipped,
+            "failed": failed,
+            "elapsed_seconds": elapsed,
+            "rate_per_second": processed / elapsed if elapsed else 0.0,
+        }
+        if extra is not None:
+            payload.update(extra)
+        return payload
+
+
+def emit_progress_to_log(event: ProgressEvent) -> None:
+    """Adapt a progress mapping to structlog without changing its event name."""
+    event_name = str(event["event"])
+    fields = {key: value for key, value in event.items() if key != "event"}
+    get_logger(__name__).info(event_name, **fields)
 
 
 def new_run_id(now: datetime | None = None) -> str:

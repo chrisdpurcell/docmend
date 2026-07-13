@@ -5,9 +5,9 @@ Pure independent predicates; every failing predicate refuses with exit 3
 Operations row (allpairspy, t=3 for the preservation/manifest/backup trio).
 """
 
+import os
 from collections.abc import Sequence
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from allpairspy import AllPairs  # pyright: ignore[reportMissingTypeStubs]
@@ -19,6 +19,13 @@ from docmend.plan import (
     Plan,
     PlanAction,
     PlanTotals,
+    SkipDecision,
+)
+from docmend.scale_resources import (
+    MANIFEST_BYTES_PER_ACTION,
+    CapacityCheck,
+    Requirement,
+    group_capacity_by_filesystem,
 )
 from docmend.transform.dispatch import Operation
 from docmend.writer import gate
@@ -308,17 +315,217 @@ class TestWritabilityProbes:
 
 
 class TestDiskPreflight:
+    def test_grouping__sums_shared_mount_once_and_keeps_distinct_mounts_separate(self) -> None:
+        requirements = (
+            Requirement(path=Path("/source"), bytes=300, inodes=1),
+            Requirement(path=Path("/backup"), bytes=100, inodes=2),
+            Requirement(path=Path("/artifacts"), bytes=50, inodes=4),
+        )
+        devices = {Path("/source"): 7, Path("/backup"): 7, Path("/artifacts"): 9}
+
+        def fake_stat(path: Path) -> os.stat_result:
+            return os.stat_result((0, 0, devices[path], 0, 0, 0, 0, 0, 0, 0))
+
+        groups = group_capacity_by_filesystem(
+            requirements,
+            stat_path=fake_stat,
+        )
+
+        assert [(group.required_bytes, group.required_inodes) for group in groups] == [
+            (400, 3),
+            (50, 4),
+        ]
+
+    def test_gate__groups_backup_staging_and_artifact_allowances_on_shared_mount(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source_root = tmp_path / "root"
+        source_root.mkdir()
+        backup_root = tmp_path / "backups"
+        manifest_dir = tmp_path / "manifest"
+        captured: list[Requirement] = []
+
+        def fail_shared_capacity(requirements: Sequence[Requirement]) -> CapacityCheck:
+            captured.extend(requirements)
+
+            def same_device(_path: Path) -> os.stat_result:
+                return os.stat_result((0, 0, 11, 0, 0, 0, 0, 0, 0, 0))
+
+            groups = group_capacity_by_filesystem(
+                requirements,
+                stat_path=same_device,
+            )
+            assert len(groups) == 1
+            assert groups[0].required_bytes == sum(item.bytes for item in requirements)
+            return CapacityCheck(ok=False, filesystems=())
+
+        monkeypatch.setattr(gate, "check_capacity", fail_shared_capacity)
+        refusals = evaluate_gate(
+            single_rewrite_plan(),
+            DocmendConfig(),
+            source_root=source_root,
+            options=ApplyOptions(
+                write=True,
+                backup_root=backup_root,
+                preserved_by=None,
+                allow_no_backup=False,
+            ),
+            manifest_dir=manifest_dir,
+        )
+
+        assert [refusal.predicate for refusal in refusals].count("disk-preflight") == 1
+        assert {item.path for item in captured} == {source_root, backup_root, manifest_dir}
+        assert len(captured) == 7
+        assert sum(item.inodes for item in captured) == 10
+
+    def test_gate__reserves_custom_report_parent_directories_and_keeps_refusal_order(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source_root = tmp_path / "root"
+        source_root.mkdir()
+        manifest_dir = tmp_path / "manifest"
+        captured: list[Requirement] = []
+
+        def fail_capacity(requirements: Sequence[Requirement]) -> CapacityCheck:
+            captured.extend(requirements)
+            return CapacityCheck(ok=False, filesystems=())
+
+        monkeypatch.setattr(gate, "check_capacity", fail_capacity)
+        refusals = evaluate_gate(
+            single_rewrite_plan(),
+            DocmendConfig(),
+            source_root=source_root,
+            options=no_op_options(),
+            manifest_dir=manifest_dir,
+            report_path=tmp_path / "nested" / "reports" / "report.json",
+        )
+
+        assert [refusal.predicate for refusal in refusals] == [
+            "preservation",
+            "disk-preflight",
+        ]
+        report_requirements = [item for item in captured if item.path == tmp_path]
+        assert sum(item.inodes for item in report_requirements) == 4
+
+    def test_gate__artifact_allowance_counts_actions_and_plan_skips(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source_root = tmp_path / "root"
+        source_root.mkdir()
+        manifest_dir = tmp_path / "manifest"
+        skips = [
+            SkipDecision(path=f"skip-{index}.txt", reason="excluded", detail=None)
+            for index in range(9)
+        ]
+        plan = single_rewrite_plan().model_copy(
+            update={"skips": skips, "totals": PlanTotals(actions=0, skips=0)}
+        )
+        captured: list[Requirement] = []
+
+        def capture_capacity(requirements: Sequence[Requirement]) -> CapacityCheck:
+            captured.extend(requirements)
+            return CapacityCheck(ok=True, filesystems=())
+
+        monkeypatch.setattr(gate, "check_capacity", capture_capacity)
+        assert (
+            evaluate_gate(
+                plan,
+                DocmendConfig(),
+                source_root=source_root,
+                options=ApplyOptions(
+                    write=True,
+                    backup_root=None,
+                    preserved_by="external",
+                    allow_no_backup=False,
+                ),
+                manifest_dir=manifest_dir,
+            )
+            == []
+        )
+
+        artifact_requirements = [item for item in captured if item.path == manifest_dir]
+        assert max(item.bytes for item in artifact_requirements) >= MANIFEST_BYTES_PER_ACTION * 10
+
+    def test_gate__overwrite_target_probe_race_becomes_disk_refusal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source_root = tmp_path / "root"
+        source_root.mkdir()
+        target = source_root / "existing.md"
+        target.write_text("existing", encoding="utf-8")
+        action = make_action(
+            operations=["normalize_newlines"],
+            path="source.txt",
+            target_path="existing.md",
+        )
+        config = DocmendConfig(rename=RenameConfig(on_collision="overwrite"))
+        real_stat = Path.stat
+
+        def racing_stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            if path == target:
+                raise PermissionError("synthetic target race")
+            return real_stat(path, follow_symlinks=follow_symlinks)
+
+        monkeypatch.setattr(Path, "stat", racing_stat)
+        refusals = evaluate_gate(
+            make_plan([action], config=config),
+            config,
+            source_root=source_root,
+            options=ApplyOptions(
+                write=True,
+                backup_root=tmp_path / "backups",
+                preserved_by=None,
+                allow_no_backup=False,
+            ),
+            manifest_dir=tmp_path / "manifest",
+        )
+
+        assert any(
+            refusal.predicate == "disk-preflight"
+            and "overwrite target capacity probe failed" in refusal.message
+            for refusal in refusals
+        )
+
+    def test_gate__invalid_fragment_size_becomes_disk_refusal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source_root = tmp_path / "root"
+        source_root.mkdir()
+
+        def invalid_statvfs(_path: Path) -> os.statvfs_result:
+            return os.statvfs_result((4096, 0, 1, 1, 1, 1, 1, 1, 0, 255))
+
+        monkeypatch.setattr(gate.os, "statvfs", invalid_statvfs)
+        refusals = evaluate_gate(
+            single_rewrite_plan(),
+            DocmendConfig(),
+            source_root=source_root,
+            options=ApplyOptions(
+                write=True,
+                backup_root=tmp_path / "backups",
+                preserved_by=None,
+                allow_no_backup=False,
+            ),
+            manifest_dir=tmp_path / "manifest",
+        )
+
+        assert any(
+            refusal.predicate == "disk-preflight"
+            and "fragment-size probe failed" in refusal.message
+            for refusal in refusals
+        )
+
     def test_disk_preflight__refused_when_backup_mount_too_small(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """OQ-005: a backup mount without room for the planned copies must refuse."""
-
-        def fake_disk_usage(_path: Path) -> SimpleNamespace:
-            return SimpleNamespace(total=0, used=0, free=1)
-
         source_root = tmp_path / "root"
         source_root.mkdir()
-        monkeypatch.setattr(gate.shutil, "disk_usage", fake_disk_usage)
+
+        def fail_capacity(_requirements: Sequence[Requirement]) -> CapacityCheck:
+            return CapacityCheck(ok=False, filesystems=())
+
+        monkeypatch.setattr(gate, "check_capacity", fail_capacity)
         options = ApplyOptions(
             write=True,
             backup_root=tmp_path / "backups",
@@ -355,12 +562,13 @@ class TestDiskPreflight:
         )
         backup_root = tmp_path / "backups"
 
-        def fake_disk_usage_backup(path: Path) -> SimpleNamespace:
-            if Path(path) == backup_root:
-                return SimpleNamespace(total=0, used=0, free=15)  # covers 10, not 10+100
-            return SimpleNamespace(total=0, used=0, free=10**9)
+        captured: list[Requirement] = []
 
-        monkeypatch.setattr(gate.shutil, "disk_usage", fake_disk_usage_backup)
+        def capture_capacity(requirements: Sequence[Requirement]) -> CapacityCheck:
+            captured.extend(requirements)
+            return CapacityCheck(ok=True, filesystems=())
+
+        monkeypatch.setattr(gate, "check_capacity", capture_capacity)
         options = ApplyOptions(
             write=True, backup_root=backup_root, preserved_by=None, allow_no_backup=False
         )
@@ -371,7 +579,10 @@ class TestDiskPreflight:
             options=options,
             manifest_dir=tmp_path / "manifest",
         )
-        assert any(r.predicate == "disk-preflight" for r in refusals)
+        assert not any(r.predicate == "disk-preflight" for r in refusals)
+        [backup_requirement] = [item for item in captured if item.path == backup_root]
+        assert backup_requirement.inodes > 2
+        assert backup_requirement.bytes >= 110
 
         # Sub-case 2: single-action plan, free space covers the source size but
         # not the re-encode growth bound (source_size * 3).
@@ -382,12 +593,7 @@ class TestDiskPreflight:
         )
         growth_plan = make_plan([growth_action])
 
-        def fake_disk_usage_growth(path: Path) -> SimpleNamespace:
-            if Path(path) == source_root_2:
-                return SimpleNamespace(total=0, used=0, free=150)  # covers 100, not 300
-            return SimpleNamespace(total=0, used=0, free=10**9)
-
-        monkeypatch.setattr(gate.shutil, "disk_usage", fake_disk_usage_growth)
+        captured.clear()
         growth_options = ApplyOptions(
             write=True, backup_root=None, preserved_by=None, allow_no_backup=True
         )
@@ -398,7 +604,10 @@ class TestDiskPreflight:
             options=growth_options,
             manifest_dir=tmp_path / "manifest2",
         )
-        assert any(r.predicate == "disk-preflight" for r in growth_refusals)
+        assert not any(r.predicate == "disk-preflight" for r in growth_refusals)
+        [staging_requirement] = [item for item in captured if item.path == source_root_2]
+        assert staging_requirement.inodes == 1
+        assert staging_requirement.bytes >= 300
 
 
 class TestOverwritePreservation:

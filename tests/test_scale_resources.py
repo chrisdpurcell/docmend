@@ -1035,7 +1035,9 @@ class TestReferenceEnvironment:
 
         assert observed.environment.storage_class == "unknown"
 
-    def test_reference_observation__btrfs_member_churn_is_unknown(self, tmp_path: Path) -> None:
+    def test_reference_observation__btrfs_member_order_is_not_topology_churn(
+        self, tmp_path: Path
+    ) -> None:
         probes, devices = _anonymous_btrfs_probes(tmp_path)
         probes.directory_sequences[devices] = [
             ("dm-0", "dm-1"),
@@ -1044,9 +1046,71 @@ class TestReferenceEnvironment:
 
         observed = observe_reference_environment(tmp_path, probes=cast("ReferenceProbes", probes))
 
+        assert observed.environment.storage_class == "local-ssd"
+
+    def test_reference_observation__btrfs_member_churn_is_unknown(self, tmp_path: Path) -> None:
+        probes, devices = _anonymous_btrfs_probes(tmp_path)
+        replacement = devices / "dm-2"
+        leaf_name = "nvme2n1"
+        leaf = replacement / "slaves" / leaf_name
+        resolved_leaf = Path(f"/sys/devices/pci/block/{leaf_name}")
+        probes.resolved[replacement] = Path("/sys/devices/virtual/block/dm-2")
+        probes.directories[replacement / "slaves"] = (leaf_name,)
+        probes.resolved[leaf] = resolved_leaf
+        probes.directories[leaf / "slaves"] = ()
+        probes.text[resolved_leaf / "queue" / "rotational"] = "0\n"
+        probes.directory_sequences[devices] = [
+            ("dm-0", "dm-1"),
+            ("dm-0", "dm-2"),
+        ]
+
+        observed = observe_reference_environment(tmp_path, probes=cast("ReferenceProbes", probes))
+
         assert observed.environment.storage_class == "unknown"
 
-    def test_reference_observation__btrfs_leaf_churn_is_unknown(self, tmp_path: Path) -> None:
+    def test_reference_observation__btrfs_leaf_identity_churn_is_unknown(
+        self, tmp_path: Path
+    ) -> None:
+        probes, devices = _anonymous_btrfs_probes(tmp_path)
+        member = devices / "dm-0"
+        replacement_name = "nvme9n1"
+        replacement = member / "slaves" / replacement_name
+        resolved_replacement = Path(f"/sys/devices/pci/block/{replacement_name}")
+        probes.resolved[replacement] = resolved_replacement
+        probes.directories[replacement / "slaves"] = ()
+        probes.text[resolved_replacement / "queue" / "rotational"] = "0\n"
+        probes.directory_sequences[member / "slaves"] = [
+            ("nvme0n1",),
+            (replacement_name,),
+        ]
+
+        observed = observe_reference_environment(tmp_path, probes=cast("ReferenceProbes", probes))
+
+        assert observed.environment.storage_class == "unknown"
+
+    def test_reference_observation__btrfs_leaf_order_is_not_topology_churn(
+        self, tmp_path: Path
+    ) -> None:
+        probes, devices = _anonymous_btrfs_probes(tmp_path)
+        member = devices / "dm-0"
+        additional_name = "nvme2n1"
+        additional = member / "slaves" / additional_name
+        resolved_additional = Path(f"/sys/devices/pci/block/{additional_name}")
+        probes.resolved[additional] = resolved_additional
+        probes.directories[additional / "slaves"] = ()
+        probes.text[resolved_additional / "queue" / "rotational"] = "0\n"
+        probes.directory_sequences[member / "slaves"] = [
+            ("nvme0n1", additional_name),
+            (additional_name, "nvme0n1"),
+        ]
+
+        observed = observe_reference_environment(tmp_path, probes=cast("ReferenceProbes", probes))
+
+        assert observed.environment.storage_class == "local-ssd"
+
+    def test_reference_observation__btrfs_leaf_rotational_churn_is_unknown(
+        self, tmp_path: Path
+    ) -> None:
         probes, _devices = _anonymous_btrfs_probes(tmp_path)
         rotational = Path("/sys/devices/pci/block/nvme1n1/queue/rotational")
         probes.text_sequences[rotational] = ["0\n", "1\n"]

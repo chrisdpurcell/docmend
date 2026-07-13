@@ -810,13 +810,13 @@ def _ram_bytes(meminfo: str) -> int:
     return value
 
 
-def _leaf_rotational_values(
+def _leaf_rotational_snapshot(
     node: Path,
     probes: ReferenceProbes,
     *,
     visiting: frozenset[Path] = frozenset(),
-) -> tuple[int, ...]:
-    """Return one rotational bit per proven leaf in a block-device stack.
+) -> tuple[tuple[Path, int], ...]:
+    """Return resolved identity and rotational state for each proven leaf.
 
     Every branch must resolve: classifying a dm/LVM stack from only the
     readable leaves could publish an SSD/HDD assertion that the topology does
@@ -834,9 +834,9 @@ def _leaf_rotational_values(
             raise ResourcePreflightError("block-device topology is malformed")
         next_visiting = visiting | {resolved}
         return tuple(
-            value
+            observation
             for name in descendants
-            for value in _leaf_rotational_values(
+            for observation in _leaf_rotational_snapshot(
                 node / "slaves" / name,
                 probes,
                 visiting=next_visiting,
@@ -851,7 +851,19 @@ def _leaf_rotational_values(
         value = probes.read_text(resolved.parent / "queue" / "rotational").strip()
     if value not in {"0", "1"}:
         raise ResourcePreflightError("rotational telemetry is malformed")
-    return (int(value, 10),)
+    return ((resolved, int(value, 10)),)
+
+
+def _normalized_leaf_rotational_snapshot(
+    nodes: Iterable[Path], probes: ReferenceProbes
+) -> tuple[tuple[Path, int], ...]:
+    snapshot = tuple(
+        observation for node in nodes for observation in _leaf_rotational_snapshot(node, probes)
+    )
+    identities = tuple(identity for identity, _rotational in snapshot)
+    if len(set(identities)) != len(identities):
+        raise ResourcePreflightError("block-device leaf topology is incomplete or malformed")
+    return tuple(sorted(snapshot, key=lambda observation: observation[0].as_posix()))
 
 
 @dataclass(frozen=True, slots=True)
@@ -879,7 +891,9 @@ def _btrfs_device_snapshot(workspace: Path, probes: ReferenceProbes) -> _BtrfsDe
         raise ResourcePreflightError("btrfs filesystem identity is malformed")
 
     devices = Path("/sys/fs/btrfs") / str(identity) / "devices"
-    names = probes.list_directory(devices)
+    # sysfs readdir order is not stable topology identity; normalize the
+    # member set so a harmless order change cannot downgrade a binding host.
+    names = tuple(sorted(probes.list_directory(devices)))
     if (
         len(names) != num_devices
         or len(set(names)) != len(names)
@@ -924,19 +938,13 @@ def _storage_class(
             if btrfs_snapshot is not None
             else (Path(f"/sys/dev/block/{mount.device_major}:{mount.device_minor}"),)
         )
-        rotational_values = tuple(
-            value for node in nodes for value in _leaf_rotational_values(node, probes)
-        )
+        leaf_snapshot = _normalized_leaf_rotational_snapshot(nodes, probes)
         if btrfs_snapshot is not None:
             final_snapshot = _btrfs_device_snapshot(workspace, probes)
-            final_rotational_values = tuple(
-                value
-                for node in final_snapshot.nodes
-                for value in _leaf_rotational_values(node, probes)
-            )
-            if final_snapshot != btrfs_snapshot or final_rotational_values != rotational_values:
+            final_leaf_snapshot = _normalized_leaf_rotational_snapshot(final_snapshot.nodes, probes)
+            if final_snapshot != btrfs_snapshot or final_leaf_snapshot != leaf_snapshot:
                 raise ResourcePreflightError("btrfs device topology changed during observation")
-        rotational = frozenset(rotational_values)
+        rotational = frozenset(value for _identity, value in leaf_snapshot)
     except OSError, RuntimeError, ResourcePreflightError:
         return "unknown"
     if rotational == frozenset({0}):

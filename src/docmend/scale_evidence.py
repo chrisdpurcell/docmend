@@ -465,6 +465,10 @@ class ScaleEvidence(_StrictModel):
             if stage.completed and stage.exit_code != expected_exit:
                 trustworthy_failures.append("stage-exit")
                 break
+        if self.outcome_reason == "conservation-mismatch" and validated_stages:
+            trustworthy_failures.append("conservation-mismatch")
+        if self.outcome_reason == "finding-mismatch" and "verify" in validated_stages:
+            trustworthy_failures.append("finding-mismatch")
         plan_total = self.totals.actions + self.totals.clean_noops + self.totals.plan_skips
         apply_total = (
             self.totals.applied

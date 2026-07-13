@@ -752,6 +752,59 @@ class TestPublicContract:
         assert evidence.status == "failed"
         assert evidence.totals.scanned == 99_999
 
+    def test_failed_conservation__accepts_exact_reducer_verdict_with_validated_stage(
+        self,
+    ) -> None:
+        document = scale_evidence().model_dump()
+        document.update(status="failed", outcome_reason="conservation-mismatch")
+
+        evidence = ScaleEvidence.model_validate(document)
+
+        assert evidence.status == "failed"
+        assert evidence.outcome_reason == "conservation-mismatch"
+
+    def test_failed_finding__accepts_exact_reducer_verdict_with_validated_verify(
+        self,
+    ) -> None:
+        document = scale_evidence().model_dump()
+        document.update(status="failed", outcome_reason="finding-mismatch")
+
+        evidence = ScaleEvidence.model_validate(document)
+
+        assert evidence.status == "failed"
+        assert evidence.outcome_reason == "finding-mismatch"
+
+    @pytest.mark.parametrize(
+        ("reason", "stage_count"),
+        [("conservation-mismatch", 0), ("finding-mismatch", 3)],
+    )
+    def test_exact_reducer_failure__requires_supporting_validated_stage(
+        self, reason: str, stage_count: int
+    ) -> None:
+        document = scale_evidence(status="incomplete").model_dump()
+        document.update(status="failed", outcome_reason=reason)
+        stages = cast("list[dict[str, object]]", document["stages"])
+        document["stages"] = stages[:stage_count]
+        totals = cast("dict[str, object]", document["totals"])
+        if stage_count == 0:
+            totals.update(
+                scanned=0,
+                actions=0,
+                clean_noops=0,
+                plan_skips=0,
+                applied=0,
+                apply_skips=0,
+                failures=0,
+                not_attempted=0,
+                verified=0,
+                observed_findings=0,
+            )
+        else:
+            totals.update(verified=0, observed_findings=0)
+
+        with pytest.raises(ValidationError, match="trustworthy observed failure"):
+            ScaleEvidence.model_validate(document)
+
     def test_binding_evidence__forbids_private_fields(self) -> None:
         forbidden = {
             "hostname",

@@ -16,6 +16,14 @@ Three independent pre-implementation reviews found that the original four-file T
 
 Task 6 is split into 6A contract completion and 6B orchestration. Tasks 7-12 retain their approved order and scope. This amendment does not pull heartbeat integration, the pilot, workflow, file-size matrix, or accepted release evidence forward.
 
+### Task 6B Exact-Consumption Correction (2026-07-13)
+
+Adversarial implementation probes showed that a before/after pathname check cannot prove which wheel or exported-requirements bytes `uv` consumed when a name is replaced and restored during the installer command. OQ-041 already requires a hash-locked installed wheel. Task 6B therefore passes each captured installer instruction through a sealed inherited memory file: the runtime install reads the captured locked export, and the wheel install reads a one-line direct requirement containing the captured wheel URI and SHA-256 under `--require-hashes`. This corrects only the two installer-input arguments; it does not change the approved source, wheel, stage, evidence, or acceptance contracts.
+
+### Task 6B Runtime Path-Consumption Boundary (2026-07-13)
+
+The installed Python runtime is a pathname tree rather than one descriptor-bindable artifact. Task 6B snapshots and reconciles the candidate console script, virtual-environment interpreter binding and resolved target, and archived measurement wrapper before and after their consumers; it also rechecks the held workspace and clean source through publication. Binding qualification additionally requires the candidate repository, bound interpreter, complete qualification workspace (including installed `site-packages`), and publication destinations to remain quiescent from source inspection through acceptance: no concurrent process under the invoking UID may mutate them. Same-UID in-call swap-and-restore, open-inode mutation, ptrace, and process injection are outside the Task 6 threat model. Under this explicit assumption, “invokes only that wheel” means the hash-verified wheel installed and import-proven in the fresh venv. Closing the assumption would require a separate immutable-runtime sandbox design; partial Task 5 descriptor plumbing would not bind normal pathname-based imports.
+
 ## File Map
 
 | File | Responsibility |
@@ -758,7 +766,7 @@ git commit -m "feat(scale): complete qualification contracts"
 
 - [ ] **Step 1: Write failing parser, workspace, and exact-build tests**
 
-Cover fixed binding counts (pilot/scheduled 100,000; release 1,000,000), diagnostic-only count override, capture-reference exclusivity, threshold requirement, acceptance refusal for diagnostics, unsafe/preexisting/in-checkout workspaces, inside-checkout ordinary evidence output, dirty/unborn/moving HEAD, wrong uv version, archive source identity, multiple/symlink wheels, wheel metadata mismatch, lock export/hash-required install, `pip check`, import-origin escape, and cleanliness rechecks.
+Cover fixed binding counts (pilot/scheduled 100,000; release 1,000,000), pilot diagnostic-only count override, capture-reference exclusivity, threshold requirement, acceptance refusal for diagnostics, unsafe/preexisting/in-checkout workspaces, inside-checkout ordinary evidence output, dirty/unborn/moving HEAD, wrong uv version, archive source identity, multiple/symlink wheels, wheel metadata mismatch, permanent and restore-before-return installer-input substitution, lock export/hash-required install, `pip check`, import-origin escape, and cleanliness rechecks.
 
 ```python
 def test_binding_count__cannot_be_overridden() -> None:
@@ -791,14 +799,14 @@ requires = ["uv_build==0.11.6"]
 build-backend = "uv_build"
 ```
 
-In `scale_build.py` define `QUALIFICATION_UV_VERSION = "0.11.6"`, frozen `SourceProvenance`/`BuildRequest`/`CandidateBuild` models, `inspect_candidate_source()`, and `prepare_candidate()`. `inspect_candidate_source()` is read-only: require the exact uv version, capture `HEAD^{commit}` plus porcelain-v2 tracked/untracked cleanliness, read committed `pyproject.toml`/`uv.lock` through Git object access, and return commit, package/backend versions, and exact hashes. This is the pre-run provenance boundary. `prepare_candidate()` then requires an absent workspace outside the repository, creates it mode 0700 with retained/reconciled identity, archives exactly the inspected commit, safely extracts with the stdlib data filter, and verifies archived `pyproject.toml`/`uv.lock` against the inspected Git-object bytes. Run, without shell or discovered config:
+In `scale_build.py` define `QUALIFICATION_UV_VERSION = "0.11.6"`, frozen `SourceProvenance`/`BuildRequest`/`CandidateBuild` models, `inspect_candidate_source()`, and `prepare_candidate()`. `inspect_candidate_source()` is read-only: require the exact uv version, capture `HEAD^{commit}` plus porcelain-v2 tracked/untracked cleanliness, read committed `pyproject.toml`/`uv.lock` through Git object access, and return commit, package/backend versions, and exact hashes. This is the pre-run provenance boundary. `prepare_candidate()` then requires an absent workspace outside the repository, creates it mode 0700 with retained/reconciled identity, archives exactly the inspected commit, safely extracts with the stdlib data filter, and verifies archived `pyproject.toml`/`uv.lock` against the inspected Git-object bytes. Snapshot the exported requirements and expose those exact bytes through a sealed inherited memory file. Snapshot and validate the wheel, then expose a sealed one-line direct requirement containing its `file://` URI and captured SHA-256. Run, without shell or discovered config:
 
 ```text
 uv --no-config build --wheel --no-sources --force-pep517 --out-dir WHEEL_DIR SOURCE
 uv --no-config venv --no-project --python EXACT_PYTHON --no-python-downloads VENV
 uv --no-config export --project SOURCE --locked --no-dev --no-emit-project --no-sources --format requirements.txt --output-file RUNTIME
-uv --no-config pip install --python VENV_PYTHON --require-hashes --no-deps --only-binary :all: -r RUNTIME
-uv --no-config pip install --python VENV_PYTHON --no-index --no-deps WHEEL
+uv --no-config pip install --python VENV_PYTHON --require-hashes --no-deps --only-binary :all: -r /proc/self/fd/RUNTIME_REQUIREMENTS_FD
+uv --no-config pip install --python VENV_PYTHON --require-hashes --no-index --no-deps -r /proc/self/fd/WHEEL_REQUIREMENT_FD
 uv --no-config pip check --python VENV_PYTHON
 ```
 

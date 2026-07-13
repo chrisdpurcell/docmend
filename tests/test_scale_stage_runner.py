@@ -7,7 +7,7 @@ import os
 import stat
 import subprocess
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import IO, cast
 
@@ -1090,6 +1090,334 @@ class TestRunStage:
         assert result.completed is True
         assert result.vm_swap_peak_bytes == 3 * 1024
         assert sleeps == [POLL_INTERVAL_SECONDS]
+        assert process.wait_calls == 1
+
+    @pytest.mark.parametrize(
+        "initial_status",
+        ["State:\tR (running)\n", OSError("synthetic pre-exec status race")],
+    )
+    def test_run_stage__initial_missing_swap_retries_until_first_valid_sample(
+        self, tmp_path: Path, initial_status: str | OSError
+    ) -> None:
+        workspace = _private_workspace(tmp_path)
+        request = StageRequest.from_document(_request_document(cwd=str(workspace)))
+        process = _FakeProcess([None, 0], wait_result=0)
+        statuses: Iterator[str | OSError] = iter(
+            (initial_status, "State:\tR (running)\nVmSwap:\t3 kB\n")
+        )
+        sleeps: list[float] = []
+        clocks = iter([1.0, 1.25])
+
+        def popen(
+            argv: Sequence[str],
+            *,
+            shell: bool,
+            stdin: int,
+            close_fds: bool,
+            cwd: Path,
+            stdout: IO[bytes],
+            stderr: IO[bytes],
+            env: Mapping[str, str],
+        ) -> _FakeProcess:
+            _ = (argv, shell, stdin, close_fds, cwd, stdout, stderr, env)
+            return process
+
+        def read_status(_pid: int) -> str:
+            status = next(statuses)
+            if isinstance(status, OSError):
+                raise status
+            return status
+
+        result = run_stage(
+            request,
+            workspace=workspace,
+            popen=popen,
+            clock=lambda: next(clocks),
+            sleep=sleeps.append,
+            status_reader=read_status,
+            getrusage=lambda: 1,
+        )
+
+        assert result.completed is True
+        assert result.vm_swap_peak_bytes == 3 * 1024
+        assert sleeps == [POLL_INTERVAL_SECONDS]
+        assert process.wait_calls == 1
+
+    @pytest.mark.parametrize("terminal_state", ["Z (zombie)", "X (dead)"])
+    def test_run_stage__terminal_status_preserves_history_before_poll_observes_exit(
+        self, tmp_path: Path, terminal_state: str
+    ) -> None:
+        workspace = _private_workspace(tmp_path)
+        request = StageRequest.from_document(_request_document(cwd=str(workspace)))
+        process = _FakeProcess([None, None, 0], wait_result=0)
+        statuses = iter(("VmSwap:\t3 kB\n", f"State:\t{terminal_state}\n"))
+        sleeps: list[float] = []
+        clocks = iter([1.0, 1.25])
+
+        def popen(
+            argv: Sequence[str],
+            *,
+            shell: bool,
+            stdin: int,
+            close_fds: bool,
+            cwd: Path,
+            stdout: IO[bytes],
+            stderr: IO[bytes],
+            env: Mapping[str, str],
+        ) -> _FakeProcess:
+            _ = (argv, shell, stdin, close_fds, cwd, stdout, stderr, env)
+            return process
+
+        result = run_stage(
+            request,
+            workspace=workspace,
+            popen=popen,
+            clock=lambda: next(clocks),
+            sleep=sleeps.append,
+            status_reader=lambda _pid: next(statuses),
+            getrusage=lambda: 1,
+        )
+
+        assert result.completed is True
+        assert result.vm_swap_peak_bytes == 3 * 1024
+        assert sleeps == [POLL_INTERVAL_SECONDS]
+        assert process.wait_calls == 1
+
+    def test_run_stage__live_missing_swap_discards_valid_sample_history(
+        self, tmp_path: Path
+    ) -> None:
+        workspace = _private_workspace(tmp_path)
+        request = StageRequest.from_document(_request_document(cwd=str(workspace)))
+        process = _FakeProcess([None, 0], wait_result=0)
+        statuses = iter(("VmSwap:\t3 kB\n", "State:\tR (running)\n"))
+        sleeps: list[float] = []
+        clocks = iter([1.0, 1.25])
+
+        def popen(
+            argv: Sequence[str],
+            *,
+            shell: bool,
+            stdin: int,
+            close_fds: bool,
+            cwd: Path,
+            stdout: IO[bytes],
+            stderr: IO[bytes],
+            env: Mapping[str, str],
+        ) -> _FakeProcess:
+            _ = (argv, shell, stdin, close_fds, cwd, stdout, stderr, env)
+            return process
+
+        result = run_stage(
+            request,
+            workspace=workspace,
+            popen=popen,
+            clock=lambda: next(clocks),
+            sleep=sleeps.append,
+            status_reader=lambda _pid: next(statuses),
+            getrusage=lambda: 1,
+        )
+
+        assert result.completed is True
+        assert result.vm_swap_peak_bytes is None
+        assert sleeps == [POLL_INTERVAL_SECONDS]
+        assert process.wait_calls == 1
+
+    @pytest.mark.parametrize(
+        "live_failure",
+        ["State:\tR (running)\nVmSwap: malformed kB\n", OSError("synthetic live loss")],
+    )
+    def test_run_stage__post_sample_live_failure_cannot_recover(
+        self, tmp_path: Path, live_failure: str | OSError
+    ) -> None:
+        workspace = _private_workspace(tmp_path)
+        request = StageRequest.from_document(_request_document(cwd=str(workspace)))
+        process = _FakeProcess([None, None, None, 0], wait_result=0)
+        statuses: Iterator[str | OSError] = iter(
+            (
+                "State:\tR (running)\nVmSwap:\t1 kB\n",
+                live_failure,
+                "State:\tR (running)\nVmSwap:\t3 kB\n",
+            )
+        )
+        status_calls = 0
+        clocks = iter([1.0, 1.25])
+
+        def popen(
+            argv: Sequence[str],
+            *,
+            shell: bool,
+            stdin: int,
+            close_fds: bool,
+            cwd: Path,
+            stdout: IO[bytes],
+            stderr: IO[bytes],
+            env: Mapping[str, str],
+        ) -> _FakeProcess:
+            _ = (argv, shell, stdin, close_fds, cwd, stdout, stderr, env)
+            return process
+
+        def read_status(_pid: int) -> str:
+            nonlocal status_calls
+            status_calls += 1
+            status = next(statuses)
+            if isinstance(status, OSError):
+                raise status
+            return status
+
+        result = run_stage(
+            request,
+            workspace=workspace,
+            popen=popen,
+            clock=lambda: next(clocks),
+            sleep=lambda _seconds: None,
+            status_reader=read_status,
+            getrusage=lambda: 1,
+        )
+
+        assert result.completed is True
+        assert result.vm_swap_peak_bytes is None
+        assert status_calls == 2
+        assert process.wait_calls == 1
+
+    def test_run_stage__exec_gap_after_valid_sample_requires_later_valid_sample(
+        self, tmp_path: Path
+    ) -> None:
+        workspace = _private_workspace(tmp_path)
+        request = StageRequest.from_document(_request_document(cwd=str(workspace)))
+        process = _FakeProcess([None, None, 0], wait_result=0)
+        statuses = iter(
+            (
+                "State:\tR (running)\nVmSwap:\t1 kB\n",
+                "State:\tR (running)\n",
+                "State:\tR (running)\nVmSwap:\t3 kB\n",
+            )
+        )
+        sleeps: list[float] = []
+        clocks = iter([1.0, 1.25])
+
+        def popen(
+            argv: Sequence[str],
+            *,
+            shell: bool,
+            stdin: int,
+            close_fds: bool,
+            cwd: Path,
+            stdout: IO[bytes],
+            stderr: IO[bytes],
+            env: Mapping[str, str],
+        ) -> _FakeProcess:
+            _ = (argv, shell, stdin, close_fds, cwd, stdout, stderr, env)
+            return process
+
+        result = run_stage(
+            request,
+            workspace=workspace,
+            popen=popen,
+            clock=lambda: next(clocks),
+            sleep=sleeps.append,
+            status_reader=lambda _pid: next(statuses),
+            getrusage=lambda: 1,
+        )
+
+        assert result.completed is True
+        assert result.vm_swap_peak_bytes == 3 * 1024
+        assert sleeps == [POLL_INTERVAL_SECONDS, POLL_INTERVAL_SECONDS]
+        assert process.wait_calls == 1
+
+    @pytest.mark.parametrize("terminal_state", ["Z (zombie)", "X (dead)"])
+    def test_run_stage__no_swap_gap_followed_by_terminal_state_preserves_history(
+        self, tmp_path: Path, terminal_state: str
+    ) -> None:
+        workspace = _private_workspace(tmp_path)
+        request = StageRequest.from_document(_request_document(cwd=str(workspace)))
+        process = _FakeProcess([None, None, 0], wait_result=0)
+        statuses = iter(
+            (
+                "State:\tR (running)\nVmSwap:\t3 kB\n",
+                "State:\tR (running)\n",
+                f"State:\t{terminal_state}\n",
+            )
+        )
+        sleeps: list[float] = []
+        clocks = iter([1.0, 1.25])
+
+        def popen(
+            argv: Sequence[str],
+            *,
+            shell: bool,
+            stdin: int,
+            close_fds: bool,
+            cwd: Path,
+            stdout: IO[bytes],
+            stderr: IO[bytes],
+            env: Mapping[str, str],
+        ) -> _FakeProcess:
+            _ = (argv, shell, stdin, close_fds, cwd, stdout, stderr, env)
+            return process
+
+        result = run_stage(
+            request,
+            workspace=workspace,
+            popen=popen,
+            clock=lambda: next(clocks),
+            sleep=sleeps.append,
+            status_reader=lambda _pid: next(statuses),
+            getrusage=lambda: 1,
+        )
+
+        assert result.completed is True
+        assert result.vm_swap_peak_bytes == 3 * 1024
+        assert sleeps == [POLL_INTERVAL_SECONDS, POLL_INTERVAL_SECONDS]
+        assert process.wait_calls == 1
+
+    @pytest.mark.parametrize(
+        "terminal_status",
+        [
+            "State:\tZ (zombie)\nVmSwap: malformed kB\n",
+            "State:\tX (dead)\nVmSwap:\t1 kB\nVmSwap:\t2 kB\n",
+        ],
+    )
+    def test_run_stage__terminal_malformed_swap_after_gap_fails_closed(
+        self, tmp_path: Path, terminal_status: str
+    ) -> None:
+        workspace = _private_workspace(tmp_path)
+        request = StageRequest.from_document(_request_document(cwd=str(workspace)))
+        process = _FakeProcess([None, None, 0], wait_result=0)
+        statuses = iter(
+            (
+                "State:\tR (running)\nVmSwap:\t3 kB\n",
+                "State:\tR (running)\n",
+                terminal_status,
+            )
+        )
+        clocks = iter([1.0, 1.25])
+
+        def popen(
+            argv: Sequence[str],
+            *,
+            shell: bool,
+            stdin: int,
+            close_fds: bool,
+            cwd: Path,
+            stdout: IO[bytes],
+            stderr: IO[bytes],
+            env: Mapping[str, str],
+        ) -> _FakeProcess:
+            _ = (argv, shell, stdin, close_fds, cwd, stdout, stderr, env)
+            return process
+
+        result = run_stage(
+            request,
+            workspace=workspace,
+            popen=popen,
+            clock=lambda: next(clocks),
+            sleep=lambda _seconds: None,
+            status_reader=lambda _pid: next(statuses),
+            getrusage=lambda: 1,
+        )
+
+        assert result.completed is True
+        assert result.vm_swap_peak_bytes is None
         assert process.wait_calls == 1
 
     def test_run_stage__spawn_failure_is_strict_incomplete_without_wait_or_rusage(

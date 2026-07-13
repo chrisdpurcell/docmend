@@ -103,6 +103,7 @@ _BLOCKED_ENVIRONMENT_PREFIXES = (
 )
 _CREDENTIAL_ENVIRONMENT_MARKERS = ("CREDENTIAL", "PASSWORD", "SECRET", "TOKEN")
 _ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_PROCESS_STATE = re.compile(r"^State:[ \t]+([A-Za-z])(?:[ \t]|$)")
 _VM_SWAP = re.compile(r"^VmSwap:[ \t]+([0-9]+)[ \t]+kB$")
 _PYTHON_EXECUTABLE = re.compile(r"^python(?:[0-9]+(?:\.[0-9]+)*)?[a-z]*?(?:\.exe)?$")
 
@@ -784,6 +785,24 @@ def _parse_vm_swap(status_text: str) -> int:
     return int(match.group(1), 10) * 1024
 
 
+def _is_terminal_process_status(status_text: str) -> bool:
+    fields = [line for line in status_text.splitlines() if line.startswith("State:")]
+    if len(fields) != 1:
+        return False
+    match = _PROCESS_STATE.match(fields[0])
+    return match is not None and match.group(1) in {"X", "Z"}
+
+
+def _has_process_state_without_swap(status_text: str) -> bool:
+    state_fields = [line for line in status_text.splitlines() if line.startswith("State:")]
+    swap_fields = [line for line in status_text.splitlines() if line.startswith("VmSwap:")]
+    return (
+        len(state_fields) == 1
+        and _PROCESS_STATE.match(state_fields[0]) is not None
+        and not swap_fields
+    )
+
+
 def _clock_value(clock: Clock) -> float:
     value = clock()
     if type(value) not in {int, float}:
@@ -877,31 +896,58 @@ def _run_stage_at(
             swap_available = True
             swap_samples = 0
             swap_peak = 0
+            unresolved_status_gap = False
 
-            def sample_swap() -> None:
-                nonlocal swap_available, swap_peak, swap_samples
+            def sample_swap() -> bool:
+                nonlocal swap_available, swap_peak, swap_samples, unresolved_status_gap
                 if not swap_available:
-                    return
+                    return False
+                status_text: str | None = None
                 try:
-                    sample = _parse_vm_swap(status_reader(process.pid))
+                    status_text = status_reader(process.pid)
+                    sample = _parse_vm_swap(status_text)
                 except OSError, UnicodeError, StageContractError:
-                    # A Linux zombie has released its memory map and omits
-                    # VmSwap. Preserve prior samples only after poll confirms
-                    # exit; any telemetry failure while live remains unknown.
-                    if swap_samples > 0 and process.poll() is not None:
-                        return
+                    terminal_status = status_text is not None and _is_terminal_process_status(
+                        status_text
+                    )
+                    if terminal_status:
+                        # A structurally valid no-VmSwap gap followed by X/Z
+                        # proves the child released its memory map while
+                        # exiting. Prior valid samples remain authoritative.
+                        if status_text is None or not _has_process_state_without_swap(status_text):
+                            swap_available = False
+                        return True
+                    # During exec, /proc may expose a live process State before
+                    # the replacement memory map and VmSwap field exist. Keep
+                    # the gap recoverable only until a later valid sample; an
+                    # exit before recovery leaves telemetry unavailable.
+                    if status_text is not None and _has_process_state_without_swap(status_text):
+                        unresolved_status_gap = True
+                        return False
+                    # An unreadable first status can also precede exec. No peak
+                    # is published unless a later valid sample is obtained.
+                    if swap_samples == 0:
+                        return False
+                    if process.poll() is not None:
+                        if unresolved_status_gap:
+                            swap_available = False
+                        return True
                     swap_available = False
-                    return
+                    return False
                 swap_samples += 1
                 swap_peak = max(swap_peak, sample)
+                unresolved_status_gap = False
+                return False
 
             try:
-                sample_swap()
-                while True:
+                terminal_status = sample_swap()
+                while not terminal_status:
                     if process.poll() is not None:
+                        if unresolved_status_gap:
+                            swap_available = False
                         break
                     sleep(POLL_INTERVAL_SECONDS)
-                    sample_swap()
+                    terminal_status = sample_swap()
             except Exception:
                 # Sampling is deliberately best effort, but every launched
                 # child must still reach the one explicit wait below. Letting

@@ -18,8 +18,8 @@ None.
 ## Agent tasks
 
 - [ ] Finish the remaining v2.0.0 release work identified by the [comprehensive review synthesis](codex-reviews/2026-07-10-2034-comprehensive-review-synthesis.md) and approved [safety-core design](superpowers/specs/2026-07-10-safety-core-remediation-design.md).
-  - [ ] Complete DMR-08 scale qualification through Tasks 10–12 of the approved [million-file implementation plan](superpowers/plans/2026-07-11-million-file-scale-and-resource-contract.md).
-    - [ ] Add the scheduled/manual installed-wheel 100,000-file diagnostic workflow.
+  - [ ] Complete DMR-08 scale qualification through Tasks 11–12 of the approved [million-file implementation plan](superpowers/plans/2026-07-11-million-file-scale-and-resource-contract.md).
+    - [x] Add the scheduled/manual installed-wheel 100,000-file diagnostic workflow.
     - [ ] Qualify and accept the file-size envelope and one-million-file candidate evidence, including the 12-hour practicality bound.
     - [ ] Close DMR-08 by reconciling review findings, evidence, status, deployment, and handoff documentation.
   - [ ] Complete sub-projects 3–4: DMR-09 release work, remaining observability/documentation, and the v2.0.0 `dev`-to-`main` release PR.

@@ -15,7 +15,14 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, Never, Protocol, cast
 
-from docmend.artifacts import ArtifactError
+from docmend.artifacts import (
+    ArtifactError,
+    read_inventory,
+    read_plan_snapshot,
+    read_report_snapshot,
+    read_verify_report,
+)
+from docmend.config import DocmendConfig
 from docmend.scale_build import (
     BuildContractError,
     BuildRequest,
@@ -33,7 +40,10 @@ from docmend.scale_corpus import (
     summarize_scale_corpus,
 )
 from docmend.scale_evidence import (
+    FILE_SIZE_RSS_LIMIT_BYTES,
     ArtifactSizeName,
+    FileSizeCaseEvidence,
+    FileSizeStageEvidence,
     OutcomeReason,
     PreflightEvidence,
     QualificationTotals,
@@ -70,6 +80,7 @@ from docmend.scale_resources import (
     SUPERVISOR_PRIVATE_BYTES_PER_FILE,
     VERIFY_BYTES_PER_INPUT,
     CapacityPlacement,
+    Requirement,
     ResourcePreflightError,
     build_preflight_evidence,
     check_capacity,
@@ -85,11 +96,14 @@ from docmend.scale_stage import (
     load_stage_result,
     write_stage_request,
 )
+from docmend.writer.manifest import read_manifest_chain
 
-type BindingTier = Literal["pilot", "scheduled", "release"]
-_BINDING_COUNTS: Mapping[BindingTier, int] = MappingProxyType(
+type BindingTier = Literal["pilot", "scheduled", "release", "file-size"]
+type CardinalityTier = Literal["pilot", "scheduled", "release"]
+_BINDING_COUNTS: Mapping[CardinalityTier, int] = MappingProxyType(
     {"pilot": 100_000, "scheduled": 100_000, "release": 1_000_000}
 )
+_BINDING_TIERS: tuple[BindingTier, ...] = ("pilot", "scheduled", "release", "file-size")
 _STAGES = ("scan", "plan", "apply", "verify")
 
 
@@ -103,6 +117,53 @@ class ExecutionInterrupted(Exception):
     def __init__(self, checkpoint: ExecutionResult) -> None:
         super().__init__("qualification execution was interrupted")
         self.checkpoint = checkpoint
+
+
+@dataclass(frozen=True, slots=True)
+class FileSizeCase:
+    """One identifier-free private matrix recipe."""
+
+    size_mib: int
+    encoding: Literal["utf-8", "windows-1252"]
+    preservation: Literal["external", "tool"]
+
+
+def file_size_cases(max_file_size_mib: int) -> tuple[FileSizeCase, ...]:
+    """Derive the deterministic quartile matrix from the configured maximum.
+
+    Quartiles round upward so a non-divisible maximum never understates a
+    boundary. Duplicate sizes collapse for small configured maxima. Tool
+    backups are limited to the two maximum-sized encoding cases.
+    """
+
+    if type(max_file_size_mib) is not int or max_file_size_mib < 1:
+        raise ValueError("maximum file size must be a positive integer MiB value")
+    sizes = tuple(
+        sorted(
+            {
+                1,
+                *((max_file_size_mib * numerator + 3) // 4 for numerator in range(1, 5)),
+            }
+        )
+    )
+    encodings: tuple[Literal["utf-8", "windows-1252"], ...] = (
+        "utf-8",
+        "windows-1252",
+    )
+    external = tuple(
+        FileSizeCase(size_mib=size, encoding=encoding, preservation="external")
+        for size in sizes
+        for encoding in encodings
+    )
+    tool = tuple(
+        FileSizeCase(
+            size_mib=max_file_size_mib,
+            encoding=encoding,
+            preservation="tool",
+        )
+        for encoding in encodings
+    )
+    return tuple(dict.fromkeys((*external, *tool)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +203,7 @@ class ExecutionResult:
     python_version: str
     kernel_version: str
     corpus_bytes: int
+    file_size_cases: tuple[FileSizeCaseEvidence, ...] | None = None
     candidate: CandidateBuild | None = field(
         default=None,
         repr=False,
@@ -291,6 +353,23 @@ class CandidateBuilder(Protocol):
     ) -> CandidateBuild: ...
 
 
+@dataclass(frozen=True, slots=True)
+class FileSizeRunResult:
+    preflight: PreflightEvidence | None
+    cases: tuple[FileSizeCaseEvidence, ...]
+    reasons: tuple[OutcomeReason, ...]
+
+
+class FileSizeRuntime(Protocol):
+    def run_file_size_matrix(
+        self,
+        request: QualificationRequest,
+        candidate: CandidateBuild,
+        reference_environment: ReferenceEnvironment,
+        recipes: tuple[FileSizeCase, ...],
+    ) -> FileSizeRunResult: ...
+
+
 class QualificationServices(Protocol):
     """High-level seams around private IO used by the public lifecycle."""
 
@@ -401,7 +480,7 @@ class _ArgumentParser(argparse.ArgumentParser):
 def _parser() -> _ArgumentParser:
     parser = _ArgumentParser(prog="qualify_scale.py", allow_abbrev=False)
     parser.add_argument("--capture-reference", action="store_true")
-    parser.add_argument("--tier", choices=tuple(_BINDING_COUNTS))
+    parser.add_argument("--tier", choices=_BINDING_TIERS)
     parser.add_argument("--diagnostic", action="store_true")
     parser.add_argument("--count", type=int)
     parser.add_argument("--workspace", type=Path)
@@ -518,21 +597,37 @@ def parse_args(
     if values.evidence_out is None:
         raise QualificationInputError("qualification requires --evidence-out")
     tier = cast("BindingTier", values.tier)
-    if values.count is not None and not values.diagnostic:
-        raise QualificationInputError("binding tier count is fixed; --count requires --diagnostic")
-    if values.count is not None and tier != "pilot" and values.count != _BINDING_COUNTS[tier]:
-        raise QualificationInputError(
-            "--count override is supported only for pilot diagnostic qualification"
-        )
-    count = _BINDING_COUNTS[tier] if values.count is None else values.count
-    if type(count) is not int or not 1 <= count <= 1_000_000:
-        raise QualificationInputError("--count must be an integer from 1 to 1000000")
-    if tier in {"scheduled", "release"} and values.thresholds is None:
-        raise QualificationInputError(f"{tier} qualification requires --thresholds")
-    if tier == "pilot" and values.thresholds is not None:
-        raise QualificationInputError("pilot qualification does not accept --thresholds")
+    if tier == "file-size":
+        if values.count is not None:
+            raise QualificationInputError("file-size qualification derives its matrix from config")
+        if values.thresholds is not None:
+            raise QualificationInputError("file-size qualification does not accept --thresholds")
+        count = len(file_size_cases(DocmendConfig().limits.max_file_size_mib))
+    else:
+        cardinality_tier = tier
+        if values.count is not None and not values.diagnostic:
+            raise QualificationInputError(
+                "binding tier count is fixed; --count requires --diagnostic"
+            )
+        if (
+            values.count is not None
+            and cardinality_tier != "pilot"
+            and values.count != _BINDING_COUNTS[cardinality_tier]
+        ):
+            raise QualificationInputError(
+                "--count override is supported only for pilot diagnostic qualification"
+            )
+        count = _BINDING_COUNTS[cardinality_tier] if values.count is None else values.count
+        if type(count) is not int or not 1 <= count <= 1_000_000:
+            raise QualificationInputError("--count must be an integer from 1 to 1000000")
+        if cardinality_tier in {"scheduled", "release"} and values.thresholds is None:
+            raise QualificationInputError(f"{tier} qualification requires --thresholds")
+        if cardinality_tier == "pilot" and values.thresholds is not None:
+            raise QualificationInputError("pilot qualification does not accept --thresholds")
     if values.diagnostic and values.accept_to is not None:
         raise QualificationInputError("diagnostic qualification cannot accept evidence")
+    if tier == "file-size" and not values.diagnostic and values.accept_to is None:
+        raise QualificationInputError("binding file-size qualification requires --accept-to")
     accept_to = (
         _existing_directory(values.accept_to, label="accept-to")
         if values.accept_to is not None
@@ -624,6 +719,8 @@ def qualification_named_allowances(
 def accepted_evidence_name(commit: str, tier: BindingTier, count: int) -> str:
     if not len(commit) == 40 or any(character not in "0123456789abcdef" for character in commit):
         raise ValueError("candidate commit must be exactly 40 lowercase hex characters")
+    if tier == "file-size":
+        return f"{commit}-file-size.json"
     if tier not in _BINDING_COUNTS:
         raise ValueError("accepted evidence tier is unsupported")
     if type(count) is not int or count <= 0:
@@ -758,6 +855,174 @@ class _DefaultCandidateBuilder:
         )
 
 
+def _materialize_file_size_case(path: Path, recipe: FileSizeCase) -> int:
+    _mkdir_private(path)
+    target = path / "input.txt"
+    total = recipe.size_mib * 1024**2
+    pattern = (
+        "café résumé UTF-8\r\n".encode()
+        if recipe.encoding == "utf-8"
+        else "café déjà vu Windows\r\n".encode("windows-1252")
+    )
+    descriptor = os.open(
+        target,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o600,
+    )
+    try:
+
+        def write_all(data: bytes) -> None:
+            remaining_data = memoryview(data)
+            while remaining_data:
+                written = os.write(descriptor, remaining_data)
+                if written <= 0:
+                    raise OSError("file-size materialization made no progress")
+                remaining_data = remaining_data[written:]
+
+        chunk = pattern * max(1, (1024 * 1024) // len(pattern))
+        remaining = total
+        while remaining >= len(chunk):
+            write_all(chunk)
+            remaining -= len(chunk)
+        if remaining:
+            repeats, padding = divmod(remaining, len(pattern))
+            write_all(pattern * repeats + b"x" * padding)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return total
+
+
+def _file_size_stage_request(
+    stage: str,
+    candidate: CandidateBuild,
+    paths: QualificationWorkspacePaths,
+    recipe: FileSizeCase,
+    *,
+    private_workspace: Path,
+    manifest_path: Path | None,
+) -> StageRequest:
+    candidate.require_current_identity()
+    executable = str(candidate.executable)
+    if stage == "scan":
+        argv = (executable, "scan", str(paths.corpus), "--report", str(paths.inventory))
+    elif stage == "plan":
+        argv = (
+            executable,
+            "plan",
+            "--inventory",
+            str(paths.inventory),
+            "--out",
+            str(paths.plan),
+        )
+    elif stage == "apply":
+        preservation = (
+            ("--preserved-by", "external")
+            if recipe.preservation == "external"
+            else ("--backup-dir", str(paths.root / "backups"))
+        )
+        argv = (
+            executable,
+            "apply",
+            str(paths.plan),
+            "--write",
+            *preservation,
+            "--report",
+            str(paths.report),
+        )
+    elif stage == "verify":
+        if manifest_path is None:
+            raise ValueError("file-size verify requires a validated apply manifest")
+        argv = (
+            executable,
+            "verify",
+            str(paths.corpus),
+            "--plan",
+            str(paths.plan),
+            "--manifest",
+            str(manifest_path),
+            "--report",
+            str(paths.report),
+            "--out",
+            str(paths.verify_report),
+        )
+    else:
+        raise ValueError("unknown file-size stage")
+    return StageRequest(
+        stage=stage,
+        argv=argv,
+        cwd=paths.pipeline,
+        environment=_stage_private_environment(candidate, private_workspace),
+        stdout=f"{stage}.stdout",
+        stderr=f"{stage}.stderr",
+    )
+
+
+def _file_size_case_evidence(
+    recipe: FileSizeCase,
+    stages: Sequence[FileSizeStageEvidence],
+    *,
+    scanned_files: int,
+    scanned_bytes: int,
+    planned_actions: int,
+    applied_actions: int,
+    verified_actions: int,
+    expected_findings: int,
+    observed_findings: int,
+) -> FileSizeCaseEvidence:
+    stage_tuple = tuple(stages)
+    peak = max(
+        (stage.peak_rss_bytes or 0 for stage in stage_tuple),
+        default=0,
+    )
+    backup_bytes = sum(stage.backup_bytes for stage in stage_tuple)
+    rss_passed = peak < FILE_SIZE_RSS_LIMIT_BYTES
+    watchdog_passed = all(stage.timeout_outcome != "watchdog-timeout" for stage in stage_tuple)
+    source_bytes = recipe.size_mib * 1024**2
+    coverage_reconciled = (
+        scanned_files == planned_actions == applied_actions == verified_actions == 1
+        and scanned_bytes == source_bytes
+    )
+    findings_reconciled = expected_findings == observed_findings
+    complete = tuple(stage.stage for stage in stage_tuple) == _STAGES and all(
+        stage.completed
+        and stage.artifact_validated
+        and stage.exit_code == 0
+        and stage.vm_swap_peak_bytes == 0
+        for stage in stage_tuple
+    )
+    backup_ok = recipe.preservation == "external" or backup_bytes == source_bytes
+    return FileSizeCaseEvidence(
+        size_mib=recipe.size_mib,
+        encoding=recipe.encoding,
+        preservation=recipe.preservation,
+        source_bytes=source_bytes,
+        stages=stage_tuple,
+        backup_bytes=backup_bytes,
+        scanned_files=scanned_files,
+        scanned_bytes=scanned_bytes,
+        planned_actions=planned_actions,
+        applied_actions=applied_actions,
+        verified_actions=verified_actions,
+        expected_findings=expected_findings,
+        observed_findings=observed_findings,
+        peak_rss_bytes=peak,
+        rss_limit_bytes=FILE_SIZE_RSS_LIMIT_BYTES,
+        rss_passed=rss_passed,
+        watchdog_passed=watchdog_passed,
+        coverage_reconciled=coverage_reconciled,
+        findings_reconciled=findings_reconciled,
+        passed=(
+            complete
+            and backup_ok
+            and rss_passed
+            and watchdog_passed
+            and coverage_reconciled
+            and findings_reconciled
+        ),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class DefaultCandidateRuntime:
     """Real Linux resource, supervisor, artifact, and reconciliation service."""
@@ -798,6 +1063,312 @@ class DefaultCandidateRuntime:
             )
             capacity = check_capacity(requirements)
         return build_preflight_evidence(capacity, comparison)
+
+    def run_file_size_matrix(
+        self,
+        request: QualificationRequest,
+        candidate: CandidateBuild,
+        reference_environment: ReferenceEnvironment,
+        recipes: tuple[FileSizeCase, ...],
+    ) -> FileSizeRunResult:
+        candidate.require_current_identity()
+        matrix_root = request.workspace / "file-size"
+        _mkdir_private(matrix_root)
+        observation = observe_reference_environment(request.workspace)
+        comparison = compare_reference_environment(
+            observation.environment,
+            reference_environment,
+            mount_projection=observation.mount_projection,
+        )
+        source_bytes = sum(recipe.size_mib * 1024**2 for recipe in recipes)
+        tool_backup_bytes = sum(
+            recipe.size_mib * 1024**2 for recipe in recipes if recipe.preservation == "tool"
+        )
+        fragment_size = os.statvfs(request.workspace).f_frsize
+        with CapacityPlacement(
+            path=request.workspace,
+            fragment_size=fragment_size,
+        ) as placement:
+            capacity = check_capacity(
+                (
+                    Requirement(
+                        path=request.workspace,
+                        bytes=2 * source_bytes + tool_backup_bytes + 256 * 1024**2,
+                        inodes=32 * len(recipes) + 64,
+                        placement=placement,
+                    ),
+                )
+            )
+        preflight = build_preflight_evidence(capacity, comparison)
+        reasons: list[OutcomeReason] = []
+        capacity_ok = (
+            bool(preflight.filesystems)
+            and all(item.passed for item in preflight.filesystems)
+            and preflight.capacity_margin_met
+            and preflight.ram_requirement_met
+        )
+        if not capacity_ok:
+            return FileSizeRunResult(
+                preflight=preflight,
+                cases=tuple(_pending_file_size_case(recipe) for recipe in recipes),
+                reasons=("capacity-insufficient",),
+            )
+        if not preflight.reference_environment_match or not preflight.binding_filesystem:
+            reasons.append("reference-mismatch")
+
+        case_evidence: list[FileSizeCaseEvidence] = []
+        for index, recipe in enumerate(recipes):
+            try:
+                candidate.require_current_identity()
+            except BuildContractError:
+                case_evidence.extend(
+                    _pending_file_size_case(pending) for pending in recipes[index:]
+                )
+                reasons.append("provenance-changed")
+                break
+            case_root = matrix_root / f"case-{index:02d}"
+            try:
+                _mkdir_private(case_root)
+                paths = QualificationWorkspacePaths.beneath(case_root)
+                _mkdir_private(paths.pipeline)
+                _mkdir_private(paths.supervisor)
+                _materialize_file_size_case(paths.corpus, recipe)
+            except OSError:
+                case_evidence.append(_pending_file_size_case(recipe))
+                reasons.append("corpus-materialization-failed")
+                continue
+            stages: list[FileSizeStageEvidence] = []
+            scanned_files = 0
+            scanned_bytes = 0
+            planned_actions = 0
+            applied_actions = 0
+            verified_actions = 0
+            expected_findings = 0
+            observed_findings = 0
+            manifest_path: Path | None = None
+            case_failed = False
+            provenance_changed = False
+
+            for stage in _STAGES:
+                private_workspace = paths.supervisor / stage
+                try:
+                    _mkdir_private(private_workspace)
+                    stage_request = _file_size_stage_request(
+                        stage,
+                        candidate,
+                        paths,
+                        recipe,
+                        private_workspace=private_workspace,
+                        manifest_path=manifest_path,
+                    )
+                    launch = self.launch(
+                        candidate,
+                        stage_request,
+                        private_workspace=private_workspace,
+                        on_dispatch=lambda: None,
+                    )
+                except BuildContractError:
+                    stages.append(
+                        FileSizeStageEvidence(
+                            stage=stage,
+                            elapsed_seconds=0.0,
+                            peak_rss_bytes=None,
+                            vm_swap_peak_bytes=None,
+                            exit_code=None,
+                            completed=False,
+                            artifact_validated=False,
+                            timeout_outcome="not-measured",
+                            backup_bytes=0,
+                        )
+                    )
+                    reasons.append("provenance-changed")
+                    case_failed = True
+                    provenance_changed = True
+                    break
+                except OSError, RuntimeError, StageContractError, ValueError:
+                    stages.append(
+                        FileSizeStageEvidence(
+                            stage=stage,
+                            elapsed_seconds=0.0,
+                            peak_rss_bytes=None,
+                            vm_swap_peak_bytes=None,
+                            exit_code=None,
+                            completed=False,
+                            artifact_validated=False,
+                            timeout_outcome="not-measured",
+                            backup_bytes=0,
+                        )
+                    )
+                    reasons.append("supervisor-failed")
+                    case_failed = True
+                    break
+                result = launch.result
+                if launch.wrapper_exit_code != 0 or result is None or not result.completed:
+                    stages.append(
+                        FileSizeStageEvidence(
+                            stage=stage,
+                            elapsed_seconds=(result.elapsed_seconds if result is not None else 0.0),
+                            peak_rss_bytes=None,
+                            vm_swap_peak_bytes=None,
+                            exit_code=None,
+                            completed=False,
+                            artifact_validated=False,
+                            timeout_outcome="not-measured",
+                            backup_bytes=0,
+                        )
+                    )
+                    reasons.append("supervisor-failed")
+                    case_failed = True
+                    break
+                if (
+                    result.stage != stage
+                    or result.stdout != stage_request.stdout
+                    or result.stderr != stage_request.stderr
+                    or result.peak_rss_bytes is None
+                    or result.exit_code is None
+                ):
+                    stages.append(
+                        FileSizeStageEvidence(
+                            stage=stage,
+                            elapsed_seconds=result.elapsed_seconds,
+                            peak_rss_bytes=None,
+                            vm_swap_peak_bytes=None,
+                            exit_code=None,
+                            completed=False,
+                            artifact_validated=False,
+                            timeout_outcome="not-measured",
+                            backup_bytes=0,
+                        )
+                    )
+                    reasons.append("supervisor-failed")
+                    case_failed = True
+                    break
+
+                timeout_outcome: Literal[
+                    "within-budget", "watchdog-timeout", "not-applicable", "not-measured"
+                ] = "not-measured" if stage in {"scan", "plan"} else "not-applicable"
+                backup_bytes = 0
+                artifact_validated = False
+                try:
+                    if stage == "scan":
+                        inventory = read_inventory(paths.inventory)
+                        scanned_files = inventory.totals.files
+                        scanned_bytes = sum(item.size_bytes for item in inventory.files)
+                        timeout_outcome = (
+                            "watchdog-timeout"
+                            if inventory.totals.skipped_by_reason.timeout
+                            else "within-budget"
+                        )
+                        if (
+                            scanned_files != 1
+                            or inventory.totals.skipped != 0
+                            or len(inventory.files) != 1
+                            or scanned_bytes != recipe.size_mib * 1024**2
+                        ):
+                            reasons.append("conservation-mismatch")
+                            case_failed = True
+                    elif stage == "plan":
+                        plan, _plan_sha256 = read_plan_snapshot(paths.plan)
+                        planned_actions = plan.totals.actions
+                        timeout_outcome = (
+                            "watchdog-timeout"
+                            if any(skip.reason == "timeout" for skip in plan.skips)
+                            else "within-budget"
+                        )
+                        if planned_actions != 1 or plan.totals.skips != 0:
+                            reasons.append("conservation-mismatch")
+                            case_failed = True
+                    elif stage == "apply":
+                        report, _report_sha256 = read_report_snapshot(paths.report)
+                        applied_actions = report.totals.applied
+                        manifest_path = paths.manifest(report.run_id)
+                        chain = read_manifest_chain(
+                            (manifest_path,),
+                            check_backup_objects=recipe.preservation == "tool",
+                        )
+                        backup_paths = {
+                            record.backup_path
+                            for manifest_set in chain.sets
+                            for record in manifest_set.records
+                            if record.backup_path is not None
+                        }
+                        backup_bytes = sum(
+                            Path(path).stat(follow_symlinks=False).st_size for path in backup_paths
+                        )
+                        if (
+                            applied_actions != 1
+                            or report.totals.failed
+                            or report.totals.not_attempted
+                        ):
+                            reasons.append("conservation-mismatch")
+                            case_failed = True
+                    else:
+                        verify_report = read_verify_report(paths.verify_report)
+                        verified_actions = verify_report.checked_files
+                        observed_findings = len(verify_report.findings)
+                        if observed_findings != expected_findings:
+                            reasons.append("finding-mismatch")
+                            case_failed = True
+                    artifact_validated = True
+                except ArtifactError, OSError, ValueError:
+                    reasons.append("artifact-invalid")
+                    case_failed = True
+
+                stages.append(
+                    FileSizeStageEvidence(
+                        stage=stage,
+                        elapsed_seconds=result.elapsed_seconds,
+                        peak_rss_bytes=result.peak_rss_bytes,
+                        vm_swap_peak_bytes=result.vm_swap_peak_bytes,
+                        exit_code=result.exit_code,
+                        completed=True,
+                        artifact_validated=artifact_validated,
+                        timeout_outcome=timeout_outcome,
+                        backup_bytes=backup_bytes,
+                    )
+                )
+                if result.exit_code != 0:
+                    reasons.append("stage-exit")
+                    case_failed = True
+                if result.vm_swap_peak_bytes is None or result.vm_swap_peak_bytes != 0:
+                    reasons.append("telemetry-unavailable")
+                    case_failed = True
+                if timeout_outcome == "watchdog-timeout":
+                    reasons.append("threshold-exceeded")
+                    case_failed = True
+                if result.peak_rss_bytes >= FILE_SIZE_RSS_LIMIT_BYTES:
+                    reasons.append("threshold-exceeded")
+                    case_failed = True
+                if case_failed:
+                    break
+
+            case_evidence.append(
+                _file_size_case_evidence(
+                    recipe,
+                    stages,
+                    scanned_files=scanned_files,
+                    scanned_bytes=scanned_bytes,
+                    planned_actions=planned_actions,
+                    applied_actions=applied_actions,
+                    verified_actions=verified_actions,
+                    expected_findings=expected_findings,
+                    observed_findings=observed_findings,
+                )
+            )
+            if provenance_changed:
+                case_evidence.extend(
+                    _pending_file_size_case(pending) for pending in recipes[index + 1 :]
+                )
+                break
+        try:
+            candidate.require_current_identity()
+        except BuildContractError:
+            reasons.append("provenance-changed")
+        return FileSizeRunResult(
+            preflight=preflight,
+            cases=tuple(case_evidence),
+            reasons=tuple(dict.fromkeys(reasons)),
+        )
 
     def materialize(
         self,
@@ -946,7 +1517,7 @@ _DEFAULT_RUNTIME = DefaultCandidateRuntime()
 @dataclass(frozen=True, slots=True)
 class DefaultQualificationServices:
     builder: CandidateBuilder = field(default=_DEFAULT_BUILDER, repr=False)
-    runtime: CandidateRuntime = field(default=_DEFAULT_RUNTIME, repr=False)
+    runtime: CandidateRuntime | FileSizeRuntime = field(default=_DEFAULT_RUNTIME, repr=False)
 
     def inspect_source(self, repository: Path) -> SourceProvenance:
         return inspect_candidate_source(repository)
@@ -965,6 +1536,14 @@ class DefaultQualificationServices:
         reference_sha256: str,
         threshold_context: ThresholdContext | None,
     ) -> ExecutionResult:
+        if request.tier == "file-size":
+            return execute_file_size_lane(
+                request,
+                source,
+                reference,
+                builder=self.builder,
+                runtime=cast("FileSizeRuntime", self.runtime),
+            )
         return _execute_default(
             request,
             source,
@@ -972,7 +1551,7 @@ class DefaultQualificationServices:
             reference_sha256,
             threshold_context,
             builder=self.builder,
-            runtime=self.runtime,
+            runtime=cast("CandidateRuntime", self.runtime),
         )
 
     def recheck_source(self, source: SourceProvenance) -> None:
@@ -1013,6 +1592,126 @@ def _empty_totals(count: int) -> QualificationTotals:
     )
 
 
+def _zero_qualification_totals() -> QualificationTotals:
+    return QualificationTotals(
+        scanned=0,
+        actions=0,
+        clean_noops=0,
+        plan_skips=0,
+        applied=0,
+        apply_skips=0,
+        failures=0,
+        not_attempted=0,
+        verified=0,
+        expected_findings=0,
+        observed_findings=0,
+    )
+
+
+def _pending_file_size_case(recipe: FileSizeCase) -> FileSizeCaseEvidence:
+    return FileSizeCaseEvidence(
+        size_mib=recipe.size_mib,
+        encoding=recipe.encoding,
+        preservation=recipe.preservation,
+        source_bytes=recipe.size_mib * 1024**2,
+        stages=(),
+        backup_bytes=0,
+        scanned_files=0,
+        scanned_bytes=0,
+        planned_actions=0,
+        applied_actions=0,
+        verified_actions=0,
+        expected_findings=0,
+        observed_findings=0,
+        peak_rss_bytes=0,
+        rss_limit_bytes=FILE_SIZE_RSS_LIMIT_BYTES,
+        rss_passed=True,
+        watchdog_passed=True,
+        coverage_reconciled=False,
+        findings_reconciled=True,
+        passed=False,
+    )
+
+
+def execute_file_size_lane(
+    request: QualificationRequest,
+    source: SourceProvenance,
+    reference_environment: ReferenceEnvironment,
+    *,
+    builder: CandidateBuilder,
+    runtime: FileSizeRuntime,
+) -> ExecutionResult:
+    """Build the inspected candidate and execute its complete file-size matrix."""
+
+    if request.tier != "file-size":
+        raise ValueError("file-size execution requires the file-size tier")
+    started = datetime.now(UTC)
+    recipes = file_size_cases(DocmendConfig().limits.max_file_size_mib)
+    try:
+        candidate = builder.prepare(request, source)
+    except BuildContractError as exc:
+        reason: OutcomeReason
+        if exc.failure_kind == "build":
+            reason = "build-failed"
+        elif exc.failure_kind == "install":
+            reason = "install-failed"
+        else:
+            reason = "provenance-changed"
+        return ExecutionResult(
+            wheel_sha256=exc.wheel_sha256,
+            preflight=None,
+            stages=(),
+            totals=_zero_qualification_totals(),
+            thresholds=None,
+            workflow_runtime=None,
+            reasons=(reason,),
+            started_at=started,
+            completed_at=datetime.now(UTC),
+            python_version=platform.python_version(),
+            kernel_version=platform.release(),
+            corpus_bytes=sum(recipe.size_mib * 1024**2 for recipe in recipes),
+            file_size_cases=tuple(_pending_file_size_case(recipe) for recipe in recipes),
+            workspace_lease=exc.workspace_lease,
+        )
+    if candidate.commit != source.commit:
+        candidate.workspace_lease.close()
+        raise BuildContractError("candidate build commit disagrees with inspected HEAD")
+    result = runtime.run_file_size_matrix(
+        request,
+        candidate,
+        reference_environment,
+        recipes,
+    )
+    reasons = list(result.reasons)
+    if any(
+        stage.completed and stage.exit_code != 0 for case in result.cases for stage in case.stages
+    ):
+        reasons.append("stage-exit")
+    if any(case.has_trustworthy_conservation_failure() for case in result.cases):
+        reasons.append("conservation-mismatch")
+    if any(case.has_trustworthy_finding_failure() for case in result.cases):
+        reasons.append("finding-mismatch")
+    if any(not case.rss_passed or not case.watchdog_passed for case in result.cases):
+        reasons.append("threshold-exceeded")
+    return ExecutionResult(
+        wheel_sha256=candidate.wheel_sha256,
+        preflight=result.preflight,
+        stages=(),
+        totals=_zero_qualification_totals(),
+        thresholds=None,
+        workflow_runtime=None,
+        reasons=tuple(dict.fromkeys(reasons)),
+        started_at=started,
+        completed_at=datetime.now(UTC),
+        python_version=platform.python_version(),
+        kernel_version=platform.release(),
+        corpus_bytes=sum(case.source_bytes for case in result.cases),
+        file_size_cases=result.cases,
+        candidate=candidate,
+        workspace_lease=candidate.workspace_lease,
+    )
+
+
 def _execute_default(
     request: QualificationRequest,
     source: SourceProvenance,
@@ -1041,7 +1740,11 @@ def _execute_default(
             wheel_sha256=exc.wheel_sha256,
             preflight=None,
             stages=(),
-            totals=_empty_totals(request.count),
+            totals=(
+                _zero_qualification_totals()
+                if request.tier == "file-size"
+                else _empty_totals(request.count)
+            ),
             thresholds=None,
             workflow_runtime=None,
             reasons=(reason,),
@@ -1563,6 +2266,10 @@ def _evidence(
         totals=execution.totals,
         thresholds=execution.thresholds,
         workflow_runtime=execution.workflow_runtime,
+        file_size_cases=execution.file_size_cases,
+        configured_max_file_size_mib=(
+            DocmendConfig().limits.max_file_size_mib if request.tier == "file-size" else None
+        ),
     )
 
 
@@ -1677,7 +2384,17 @@ def _qualify_with_held_destinations(
         if workspace_key == evidence_target.key:
             raise QualificationInputError("workspace aliases a publication destination")
         fragment_size = os.statvfs(request.workspace.parent).f_frsize
-        early_summary = summarize_scale_corpus(request.count, fragment_size=fragment_size)
+        early_corpus_bytes = (
+            sum(
+                recipe.size_mib * 1024**2
+                for recipe in file_size_cases(DocmendConfig().limits.max_file_size_mib)
+            )
+            if request.tier == "file-size"
+            else summarize_scale_corpus(
+                request.count,
+                fragment_size=fragment_size,
+            ).file_bytes
+        )
         source = services.inspect_source(request.repository)
         reference, reference_sha256 = services.load_reference(request.reference_environment)
         threshold_context = (
@@ -1715,7 +2432,11 @@ def _qualify_with_held_destinations(
             wheel_sha256=None,
             preflight=None,
             stages=(),
-            totals=_empty_totals(request.count),
+            totals=(
+                _zero_qualification_totals()
+                if request.tier == "file-size"
+                else _empty_totals(request.count)
+            ),
             thresholds=None,
             workflow_runtime=None,
             reasons=("harness-error",),
@@ -1723,7 +2444,15 @@ def _qualify_with_held_destinations(
             completed_at=now,
             python_version=platform.python_version(),
             kernel_version=platform.release(),
-            corpus_bytes=early_summary.file_bytes,
+            corpus_bytes=early_corpus_bytes,
+            file_size_cases=(
+                tuple(
+                    _pending_file_size_case(recipe)
+                    for recipe in file_size_cases(DocmendConfig().limits.max_file_size_mib)
+                )
+                if request.tier == "file-size"
+                else None
+            ),
         )
     try:
         evidence_directory.require_current_identity()

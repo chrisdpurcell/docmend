@@ -1253,7 +1253,7 @@ class TestPublicContract:
 
     @pytest.mark.parametrize(
         ("status", "tier"),
-        [("passing", "pr"), ("passing", "file-size"), ("diagnostic", "pilot")],
+        [("passing", "pr"), ("diagnostic", "pilot")],
     )
     def test_complete_status_schema__requires_four_validated_stages(
         self, status: str, tier: str

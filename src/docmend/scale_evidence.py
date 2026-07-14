@@ -80,6 +80,9 @@ type OutcomeReason = Literal[
 ]
 type QualificationTier = Literal["pr", "pilot", "scheduled", "release", "file-size"]
 type StageName = Literal["scan", "plan", "apply", "verify"]
+type FileSizeEncoding = Literal["utf-8", "windows-1252"]
+type FileSizePreservation = Literal["external", "tool"]
+type TimeoutOutcome = Literal["within-budget", "watchdog-timeout", "not-applicable", "not-measured"]
 type CacheClassification = Literal["cold", "warm", "mixed"]
 type MemoryMeasurement = Literal["external-rss", "python-allocation"]
 type MountFlag = Literal[
@@ -101,6 +104,8 @@ type ArtifactSchemaName = Literal[
 ]
 type ArtifactSize = Annotated[int, Field(ge=0)]
 type ArtifactSchemaVersion = Annotated[str, Field(pattern=r"^\d+\.\d+$")]
+
+FILE_SIZE_RSS_LIMIT_BYTES = 2 * 1024**3
 
 _ARTIFACT_SCHEMA_NAMES: tuple[ArtifactSchemaName, ...] = (
     "inventory",
@@ -354,6 +359,166 @@ class WorkflowRuntimeVerdict(_StrictModel):
         return self
 
 
+class FileSizeStageEvidence(_StrictModel):
+    """One fresh-child measurement within a file-size case."""
+
+    stage: StageName
+    elapsed_seconds: Annotated[float, Field(ge=0)]
+    peak_rss_bytes: Annotated[int, Field(ge=0)] | None
+    vm_swap_peak_bytes: Annotated[int, Field(ge=0)] | None
+    exit_code: int | None
+    completed: bool
+    artifact_validated: bool
+    timeout_outcome: TimeoutOutcome
+    backup_bytes: Annotated[int, Field(ge=0)]
+
+    @model_validator(mode="after")
+    def _reconcile_measurement(self) -> Self:
+        if self.completed:
+            if self.peak_rss_bytes is None or self.exit_code is None:
+                raise ValueError("a completed stage requires RSS and exit-code measurements")
+            if (
+                self.artifact_validated
+                and self.stage in {"scan", "plan"}
+                and (self.timeout_outcome not in {"within-budget", "watchdog-timeout"})
+            ):
+                raise ValueError("a validated scan or plan requires a measured timeout outcome")
+            if (
+                not self.artifact_validated
+                and self.stage in {"scan", "plan"}
+                and (self.timeout_outcome != "not-measured")
+            ):
+                raise ValueError("an unvalidated scan or plan cannot claim a timeout outcome")
+            if self.stage not in {"scan", "plan"} and self.timeout_outcome != "not-applicable":
+                raise ValueError("a completed apply or verify stage has no watchdog outcome")
+        elif (
+            self.peak_rss_bytes is not None
+            or self.vm_swap_peak_bytes is not None
+            or self.exit_code is not None
+            or self.artifact_validated
+            or self.timeout_outcome != "not-measured"
+        ):
+            raise ValueError(
+                "an incomplete stage requires null measurements and not-measured timeout"
+            )
+        if self.stage not in {"scan", "plan"} and self.timeout_outcome not in {
+            "not-applicable",
+            "not-measured",
+        }:
+            raise ValueError("only scan and plan carry cooperative watchdog outcomes")
+        if self.stage != "apply" and self.backup_bytes != 0:
+            raise ValueError("only apply may account tool backup bytes")
+        return self
+
+
+class FileSizeCaseEvidence(_StrictModel):
+    """Aggregate-only outcome for one size, encoding, and preservation case."""
+
+    size_mib: Annotated[int, Field(gt=0)]
+    encoding: FileSizeEncoding
+    preservation: FileSizePreservation
+    source_bytes: Annotated[int, Field(gt=0)]
+    stages: tuple[FileSizeStageEvidence, ...]
+    backup_bytes: Annotated[int, Field(ge=0)]
+    scanned_files: Annotated[int, Field(ge=0)]
+    scanned_bytes: Annotated[int, Field(ge=0)]
+    planned_actions: Annotated[int, Field(ge=0)]
+    applied_actions: Annotated[int, Field(ge=0)]
+    verified_actions: Annotated[int, Field(ge=0)]
+    expected_findings: Annotated[int, Field(ge=0)]
+    observed_findings: Annotated[int, Field(ge=0)]
+    peak_rss_bytes: Annotated[int, Field(ge=0)]
+    rss_limit_bytes: Literal[2_147_483_648] = FILE_SIZE_RSS_LIMIT_BYTES
+    rss_passed: bool
+    watchdog_passed: bool
+    coverage_reconciled: bool
+    findings_reconciled: bool
+    passed: bool
+
+    @model_validator(mode="after")
+    def _reconcile_case(self) -> Self:
+        if self.source_bytes != self.size_mib * 1024**2:
+            raise ValueError("source bytes must equal the declared binary MiB size")
+        stage_names = tuple(stage.stage for stage in self.stages)
+        if stage_names != _STAGE_ORDER[: len(stage_names)]:
+            raise ValueError("file-size stages must be an ordered unique attempted prefix")
+        measured_peaks = tuple(
+            stage.peak_rss_bytes for stage in self.stages if stage.peak_rss_bytes is not None
+        )
+        expected_peak = max(measured_peaks, default=0)
+        if self.peak_rss_bytes != expected_peak:
+            raise ValueError("case peak RSS must equal the maximum measured stage RSS")
+        expected_backup = sum(stage.backup_bytes for stage in self.stages)
+        if self.backup_bytes != expected_backup:
+            raise ValueError("case backup bytes must equal per-stage backup accounting")
+        if self.preservation == "external" and self.backup_bytes != 0:
+            raise ValueError("external preservation cannot carry tool backup bytes")
+
+        expected_rss = self.peak_rss_bytes < self.rss_limit_bytes
+        if self.rss_passed != expected_rss:
+            raise ValueError("RSS verdict does not reconcile with the strict 2 GiB limit")
+        expected_watchdog = all(
+            stage.timeout_outcome != "watchdog-timeout" for stage in self.stages
+        )
+        if self.watchdog_passed != expected_watchdog:
+            raise ValueError("watchdog verdict does not reconcile with stage outcomes")
+        expected_coverage = (
+            self.scanned_files
+            == self.planned_actions
+            == self.applied_actions
+            == self.verified_actions
+            == 1
+            and self.scanned_bytes == self.source_bytes
+        )
+        if self.coverage_reconciled != expected_coverage:
+            raise ValueError("coverage verdict does not reconcile with action counts")
+        expected_findings = self.observed_findings == self.expected_findings
+        if self.findings_reconciled != expected_findings:
+            raise ValueError("finding verdict does not reconcile with finding counts")
+
+        complete = stage_names == _STAGE_ORDER and all(
+            stage.completed
+            and stage.artifact_validated
+            and stage.exit_code == 0
+            and stage.vm_swap_peak_bytes == 0
+            for stage in self.stages
+        )
+        tool_backup_ok = self.preservation == "external" or (self.backup_bytes == self.source_bytes)
+        expected_passed = (
+            complete
+            and tool_backup_ok
+            and self.rss_passed
+            and self.watchdog_passed
+            and self.coverage_reconciled
+            and self.findings_reconciled
+        )
+        if self.passed != expected_passed:
+            raise ValueError("case passing verdict does not reconcile")
+        return self
+
+    def has_trustworthy_conservation_failure(self) -> bool:
+        """Return whether a validated attempted phase proves a count/byte mismatch."""
+
+        validated = {stage.stage for stage in self.stages if stage.artifact_validated}
+        return (
+            (
+                "scan" in validated
+                and (self.scanned_files != 1 or self.scanned_bytes != self.source_bytes)
+            )
+            or ("plan" in validated and self.planned_actions != 1)
+            or ("apply" in validated and self.applied_actions != 1)
+            or ("verify" in validated and self.verified_actions != 1)
+        )
+
+    def has_trustworthy_finding_failure(self) -> bool:
+        """Return whether validated verification proves a finding mismatch."""
+
+        return (
+            any(stage.stage == "verify" and stage.artifact_validated for stage in self.stages)
+            and not self.findings_reconciled
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class EvidenceOutcome:
     status: EvidenceStatus
@@ -421,6 +586,83 @@ class ScaleEvidence(_StrictModel):
     totals: QualificationTotals
     thresholds: ThresholdVerdict | None
     workflow_runtime: WorkflowRuntimeVerdict | None
+    file_size_cases: tuple[FileSizeCaseEvidence, ...] | None = None
+    configured_max_file_size_mib: Annotated[int, Field(gt=0)] | None = None
+
+    def _reconcile_file_size_tier(self) -> Self:
+        cases = self.file_size_cases
+        if not cases:
+            raise ValueError("file-size evidence requires a nonempty exact matrix")
+        maximum = self.configured_max_file_size_mib
+        if maximum is None or max(case.size_mib for case in cases) != maximum:
+            raise ValueError("file-size evidence must reach its recorded configured maximum")
+        sizes = {
+            1,
+            *((maximum * numerator + 3) // 4 for numerator in range(1, 5)),
+        }
+        encodings: tuple[FileSizeEncoding, ...] = ("utf-8", "windows-1252")
+        expected = {(size, encoding, "external") for size in sizes for encoding in encodings} | {
+            (maximum, encoding, "tool") for encoding in encodings
+        }
+        actual = {(case.size_mib, case.encoding, case.preservation) for case in cases}
+        if actual != expected or len(actual) != len(cases):
+            raise ValueError("file-size evidence requires the exact derived matrix")
+        if self.file_count != len(cases):
+            raise ValueError("file-size file_count must equal the number of matrix cases")
+        if self.corpus_bytes != sum(case.source_bytes for case in cases):
+            raise ValueError("file-size corpus_bytes must equal the matrix source bytes")
+        if self.stages or any(self.totals.model_dump(mode="python").values()):
+            raise ValueError("file-size evidence uses case stages and zero aggregate totals")
+        if (
+            self.thresholds is not None
+            or self.threshold_baseline_sha256 is not None
+            or self.workflow_runtime is not None
+        ):
+            raise ValueError("file-size evidence cannot carry cardinality thresholds or runtime")
+        if self.memory_measurement != "external-rss":
+            raise ValueError("file-size evidence requires external RSS measurement")
+
+        trustworthy_failures: list[OutcomeReason] = []
+        if any(stage.completed and stage.exit_code != 0 for case in cases for stage in case.stages):
+            trustworthy_failures.append("stage-exit")
+        if any(case.has_trustworthy_conservation_failure() for case in cases):
+            trustworthy_failures.append("conservation-mismatch")
+        if any(case.has_trustworthy_finding_failure() for case in cases):
+            trustworthy_failures.append("finding-mismatch")
+        if any(not case.rss_passed or not case.watchdog_passed for case in cases):
+            trustworthy_failures.append("threshold-exceeded")
+        if trustworthy_failures:
+            selected = select_evidence_outcome(trustworthy_failures)
+            if self.status != selected.status or self.outcome_reason != selected.reason:
+                raise ValueError("file-size failure status/reason must follow the fixed precedence")
+        elif self.status == "failed":
+            raise ValueError("failed file-size evidence requires a trustworthy failure")
+
+        if self.status not in {"passing", "diagnostic"}:
+            return self
+        if not all(case.passed for case in cases):
+            raise ValueError("complete file-size evidence requires every case to pass")
+        if self.preflight is None:
+            raise ValueError("complete file-size evidence requires a preflight result")
+        if self.outcome_reason == "reference-mismatch":
+            if (
+                not self.preflight.filesystems
+                or not all(item.passed for item in self.preflight.filesystems)
+                or not self.preflight.capacity_margin_met
+                or not self.preflight.ram_requirement_met
+            ):
+                raise ValueError(
+                    "reference-mismatch diagnostics require all non-reference preflight checks"
+                )
+            if self.preflight.reference_environment_match and self.preflight.binding_filesystem:
+                raise ValueError(
+                    "reference-mismatch diagnostics require an actual reference mismatch"
+                )
+        elif not self.preflight.passed:
+            raise ValueError("passing or explicit diagnostic evidence requires a passing preflight")
+        if self.wheel_sha256 is None:
+            raise ValueError("complete file-size evidence requires installed-wheel provenance")
+        return self
 
     @model_validator(mode="after")
     def _reconcile_public_evidence(self) -> Self:
@@ -443,6 +685,13 @@ class ScaleEvidence(_StrictModel):
             }[self.status]
             if self.outcome_reason not in expected_reason_set:
                 raise ValueError("outcome reason does not match evidence status")
+
+        if self.tier == "file-size":
+            return self._reconcile_file_size_tier()
+        if self.file_size_cases is not None:
+            raise ValueError("only file-size evidence may carry file-size cases")
+        if self.configured_max_file_size_mib is not None:
+            raise ValueError("only file-size evidence may carry a configured maximum")
 
         stage_names = tuple(stage.stage for stage in self.stages)
         if stage_names != _STAGE_ORDER[: len(stage_names)]:

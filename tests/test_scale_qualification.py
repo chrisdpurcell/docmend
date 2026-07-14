@@ -216,7 +216,7 @@ def test_parse_args__threshold_diagnostic_may_repeat_fixed_count(
     assert request.count == int(fixed_count)
 
 
-@pytest.mark.parametrize("tier", ["pr", "file-size"])
+@pytest.mark.parametrize("tier", ["pr"])
 def test_parse_args__rejects_unimplemented_tiers(
     invocation_paths: dict[str, Path], tier: str
 ) -> None:

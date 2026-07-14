@@ -136,9 +136,43 @@
 		},
 		"workflow_runtime": {
 			"oneOf": [{ "type": "null" }, { "$ref": "#/$defs/workflow_runtime_verdict" }]
+		},
+		"file_size_cases": {
+			"oneOf": [
+				{ "type": "null" },
+				{ "type": "array", "items": { "$ref": "#/$defs/file_size_case_evidence" } }
+			]
+		},
+		"configured_max_file_size_mib": {
+			"oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 1 }]
 		}
 	},
 	"allOf": [
+		{
+			"if": {
+				"properties": { "tier": { "const": "file-size" } },
+				"required": ["tier"]
+			},
+			"then": {
+				"properties": {
+					"file_size_cases": {
+						"type": "array",
+						"minItems": 1,
+						"items": { "$ref": "#/$defs/file_size_case_evidence" }
+					},
+					"stages": { "maxItems": 0 },
+					"thresholds": { "type": "null" },
+					"workflow_runtime": { "type": "null" }
+				},
+				"required": ["file_size_cases", "configured_max_file_size_mib"]
+			},
+			"else": {
+				"properties": {
+					"file_size_cases": { "type": "null" },
+					"configured_max_file_size_mib": { "type": "null" }
+				}
+			}
+		},
 		{
 			"if": { "properties": { "stages": { "minItems": 2 } }, "required": ["stages"] },
 			"then": {
@@ -535,9 +569,10 @@
 			"if": {
 				"properties": {
 					"status": { "const": "failed" },
-					"outcome_reason": { "const": "stage-exit" }
+					"outcome_reason": { "const": "stage-exit" },
+					"tier": { "not": { "const": "file-size" } }
 				},
-				"required": ["status", "outcome_reason"]
+				"required": ["status", "outcome_reason", "tier"]
 			},
 			"then": {
 				"anyOf": [
@@ -601,9 +636,10 @@
 			"if": {
 				"properties": {
 					"status": { "const": "failed" },
-					"outcome_reason": { "const": "threshold-exceeded" }
+					"outcome_reason": { "const": "threshold-exceeded" },
+					"tier": { "not": { "const": "file-size" } }
 				},
-				"required": ["status", "outcome_reason"]
+				"required": ["status", "outcome_reason", "tier"]
 			},
 			"then": {
 				"properties": {
@@ -794,8 +830,11 @@
 		},
 		{
 			"if": {
-				"properties": { "status": { "enum": ["passing", "diagnostic"] } },
-				"required": ["status"]
+				"properties": {
+					"status": { "enum": ["passing", "diagnostic"] },
+					"tier": { "not": { "const": "file-size" } }
+				},
+				"required": ["status", "tier"]
 			},
 			"then": {
 				"properties": {
@@ -989,6 +1028,172 @@
 		}
 	],
 	"$defs": {
+		"file_size_stage_evidence": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": [
+				"stage",
+				"elapsed_seconds",
+				"peak_rss_bytes",
+				"vm_swap_peak_bytes",
+				"exit_code",
+				"completed",
+				"artifact_validated",
+				"timeout_outcome",
+				"backup_bytes"
+			],
+			"properties": {
+				"stage": { "enum": ["scan", "plan", "apply", "verify"] },
+				"elapsed_seconds": { "type": "number", "minimum": 0 },
+				"peak_rss_bytes": {
+					"oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 0 }]
+				},
+				"vm_swap_peak_bytes": {
+					"oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 0 }]
+				},
+				"exit_code": { "oneOf": [{ "type": "null" }, { "type": "integer" }] },
+				"completed": { "type": "boolean" },
+				"artifact_validated": { "type": "boolean" },
+				"timeout_outcome": {
+					"enum": [
+						"within-budget",
+						"watchdog-timeout",
+						"not-applicable",
+						"not-measured"
+					]
+				},
+				"backup_bytes": { "type": "integer", "minimum": 0 }
+			},
+			"allOf": [
+				{
+					"if": { "properties": { "completed": { "const": false } } },
+					"then": {
+						"properties": {
+							"peak_rss_bytes": { "type": "null" },
+							"vm_swap_peak_bytes": { "type": "null" },
+							"exit_code": { "type": "null" },
+							"artifact_validated": { "const": false },
+							"timeout_outcome": { "const": "not-measured" },
+							"backup_bytes": { "const": 0 }
+						}
+					}
+				},
+				{
+					"if": { "properties": { "artifact_validated": { "const": true } } },
+					"then": { "properties": { "completed": { "const": true } } }
+				},
+				{
+					"if": {
+						"properties": {
+							"stage": { "enum": ["scan", "plan"] },
+							"artifact_validated": { "const": true }
+						}
+					},
+					"then": {
+						"properties": {
+							"timeout_outcome": { "enum": ["within-budget", "watchdog-timeout"] }
+						}
+					}
+				},
+				{
+					"if": {
+						"properties": {
+							"stage": { "enum": ["apply", "verify"] },
+							"completed": { "const": true }
+						}
+					},
+					"then": { "properties": { "timeout_outcome": { "const": "not-applicable" } } }
+				},
+				{
+					"if": { "properties": { "stage": { "not": { "const": "apply" } } } },
+					"then": { "properties": { "backup_bytes": { "const": 0 } } }
+				}
+			]
+		},
+		"file_size_case_evidence": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": [
+				"size_mib",
+				"encoding",
+				"preservation",
+				"source_bytes",
+				"stages",
+				"backup_bytes",
+				"scanned_files",
+				"scanned_bytes",
+				"planned_actions",
+				"applied_actions",
+				"verified_actions",
+				"expected_findings",
+				"observed_findings",
+				"peak_rss_bytes",
+				"rss_limit_bytes",
+				"rss_passed",
+				"watchdog_passed",
+				"coverage_reconciled",
+				"findings_reconciled",
+				"passed"
+			],
+			"properties": {
+				"size_mib": { "type": "integer", "minimum": 1 },
+				"encoding": { "enum": ["utf-8", "windows-1252"] },
+				"preservation": { "enum": ["external", "tool"] },
+				"source_bytes": { "type": "integer", "minimum": 1 },
+				"stages": {
+					"type": "array",
+					"maxItems": 4,
+					"prefixItems": [
+						{
+							"allOf": [
+								{ "$ref": "#/$defs/file_size_stage_evidence" },
+								{ "properties": { "stage": { "const": "scan" } } }
+							]
+						},
+						{
+							"allOf": [
+								{ "$ref": "#/$defs/file_size_stage_evidence" },
+								{ "properties": { "stage": { "const": "plan" } } }
+							]
+						},
+						{
+							"allOf": [
+								{ "$ref": "#/$defs/file_size_stage_evidence" },
+								{ "properties": { "stage": { "const": "apply" } } }
+							]
+						},
+						{
+							"allOf": [
+								{ "$ref": "#/$defs/file_size_stage_evidence" },
+								{ "properties": { "stage": { "const": "verify" } } }
+							]
+						}
+					],
+					"items": { "$ref": "#/$defs/file_size_stage_evidence" }
+				},
+				"backup_bytes": { "type": "integer", "minimum": 0 },
+				"scanned_files": { "type": "integer", "minimum": 0 },
+				"scanned_bytes": { "type": "integer", "minimum": 0 },
+				"planned_actions": { "type": "integer", "minimum": 0 },
+				"applied_actions": { "type": "integer", "minimum": 0 },
+				"verified_actions": { "type": "integer", "minimum": 0 },
+				"expected_findings": { "type": "integer", "minimum": 0 },
+				"observed_findings": { "type": "integer", "minimum": 0 },
+				"peak_rss_bytes": { "type": "integer", "minimum": 0 },
+				"rss_limit_bytes": { "const": 2147483648 },
+				"rss_passed": { "type": "boolean" },
+				"watchdog_passed": { "type": "boolean" },
+				"coverage_reconciled": { "type": "boolean" },
+				"findings_reconciled": { "type": "boolean" },
+				"passed": { "type": "boolean" }
+			},
+			"allOf": [
+				{
+					"if": { "properties": { "preservation": { "const": "external" } } },
+					"then": { "properties": { "backup_bytes": { "const": 0 } } }
+				}
+			]
+		},
 		"sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
 		"public_label": {
 			"type": "string",

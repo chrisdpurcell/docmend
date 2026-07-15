@@ -17,6 +17,17 @@ None.
 
 ## Agent tasks
 
+### Autonomous session log — 2026-07-14/15
+
+- [x] Resumed from clean `dev` at `f75e02b`; confirmed `origin/dev` parity and a green baseline gate (1,684 tests, 90% coverage, Ruff/BasedPyright clean, no known dependency vulnerabilities).
+- [x] Confirmed the binding host has 3.2 TiB available on Btrfs, 62 GiB RAM, zero active swap, and absent Task 11 workspaces/evidence outputs.
+- [x] Resolved the reserved `file-size` evidence-tier gap as an additive schema/model extension that preserves existing scale-evidence 3.0 documents; case records are required only for the file-size tier.
+- [x] Implemented the test-first file-size qualification lane as `48d148c`; its adversarial pre-commit review exposed and closed phase-truth, schema-order, watchdog, configured-maximum provenance, setup-fault, and direct-runtime coverage gaps. Final gate: 1,709 passed, 89% coverage.
+- [ ] Complete the final independent specification/code-quality approval; the first post-commit reviewer attempt was interrupted by model capacity, not a technical finding.
+- [ ] Run, validate, and accept the file-size matrix from a clean candidate commit.
+- [ ] Run, validate, and accept the installed-wheel one-million-file release qualification from the next clean candidate commit.
+- [ ] Synchronize NFR-001 evidence/documentation and complete Task 11 verification and handoff.
+
 - [ ] Finish the remaining v2.0.0 release work identified by the [comprehensive review synthesis](codex-reviews/2026-07-10-2034-comprehensive-review-synthesis.md) and approved [safety-core design](superpowers/specs/2026-07-10-safety-core-remediation-design.md).
   - [ ] Complete DMR-08 scale qualification through Tasks 11–12 of the approved [million-file implementation plan](superpowers/plans/2026-07-11-million-file-scale-and-resource-contract.md).
     - [x] Add the scheduled/manual installed-wheel 100,000-file diagnostic workflow.

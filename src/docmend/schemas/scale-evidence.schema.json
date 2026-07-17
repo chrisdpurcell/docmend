@@ -1066,6 +1066,15 @@
 			},
 			"allOf": [
 				{
+					"if": { "properties": { "completed": { "const": true } } },
+					"then": {
+						"properties": {
+							"peak_rss_bytes": { "type": "integer", "minimum": 0 },
+							"exit_code": { "type": "integer" }
+						}
+					}
+				},
+				{
 					"if": { "properties": { "completed": { "const": false } } },
 					"then": {
 						"properties": {
@@ -1094,6 +1103,15 @@
 							"timeout_outcome": { "enum": ["within-budget", "watchdog-timeout"] }
 						}
 					}
+				},
+				{
+					"if": {
+						"properties": {
+							"stage": { "enum": ["scan", "plan"] },
+							"artifact_validated": { "const": false }
+						}
+					},
+					"then": { "properties": { "timeout_outcome": { "const": "not-measured" } } }
 				},
 				{
 					"if": {

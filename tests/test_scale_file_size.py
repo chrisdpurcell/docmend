@@ -1,18 +1,21 @@
 """File-size qualification contracts independent of corpus cardinality."""
 
+import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Literal, cast
 
 import pytest
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
 from pydantic import ValidationError
 
 import docmend.scale_qualification as scale_qualification
+from docmend.artifacts import read_report_snapshot, read_verify_report
 from docmend.config import DocmendConfig
 from docmend.scale_build import CandidateBuild, SourceProvenance
 from docmend.scale_evidence import (
@@ -33,6 +36,8 @@ from docmend.scale_evidence import (
 )
 from docmend.scale_qualification import (
     DefaultCandidateRuntime,
+    ExecutionInterrupted,
+    ExecutionResult,
     FileSizeCase,
     FileSizeRunResult,
     QualificationInputError,
@@ -45,6 +50,7 @@ from docmend.scale_qualification import (
 )
 from docmend.scale_resources import observe_reference_environment
 from docmend.scale_stage import StageRequest, StageResult
+from docmend.writer.manifest import read_manifest_chain
 
 
 def _stage(
@@ -207,14 +213,30 @@ def test_file_size_matrix__bounds_tool_backups_to_maximum_cases() -> None:
 
 
 @given(st.integers(min_value=1, max_value=10_000))
+@example(1)
+@example(2)
+@example(3)
+@example(4)
+@example(5)
+@example(100)
 def test_file_size_matrix__any_configured_maximum_is_exact_and_unique(
     maximum: int,
 ) -> None:
     cases = file_size_cases(maximum)
+    expected_sizes = {
+        1,
+        *((maximum * numerator + 3) // 4 for numerator in range(1, 5)),
+    }
+    external = {(case.size_mib, case.encoding) for case in cases if case.preservation == "external"}
+    tool = {(case.size_mib, case.encoding) for case in cases if case.preservation == "tool"}
 
     assert max(case.size_mib for case in cases) == maximum
     assert len(cases) == len({(case.size_mib, case.encoding, case.preservation) for case in cases})
     assert all(1 <= case.size_mib <= maximum for case in cases)
+    assert external == {
+        (size, encoding) for size in expected_sizes for encoding in ("utf-8", "windows-1252")
+    }
+    assert tool == {(maximum, "utf-8"), (maximum, "windows-1252")}
 
 
 def test_file_size_case__reconciles_peak_backup_watchdog_and_coverage() -> None:
@@ -246,12 +268,18 @@ def test_file_size_case__rejects_false_passing_verdicts(
         FileSizeCaseEvidence.model_validate(payload)
 
 
-def test_file_size_stage__requires_fresh_child_measurement() -> None:
+@pytest.mark.parametrize("field", ["peak_rss_bytes", "exit_code"])
+def test_file_size_stage__requires_fresh_child_measurement(field: str) -> None:
     payload = _stage("plan").model_dump(mode="python")
-    payload["peak_rss_bytes"] = None
+    payload[field] = None
 
     with pytest.raises(ValidationError, match="completed stage"):
         FileSizeStageEvidence.model_validate(payload)
+
+    document = _file_size_evidence().model_dump(mode="json", by_alias=True)
+    document["file_size_cases"][0]["stages"][1][field] = None
+    with pytest.raises(ScaleEvidenceError):
+        validate_qualification_document("scale-evidence", document)
 
 
 def test_file_size_stage__distinguishes_child_completion_from_artifact_validation() -> None:
@@ -270,6 +298,26 @@ def test_file_size_stage__validated_watchdog_stage_requires_measured_outcome() -
 
     with pytest.raises(ValidationError, match="measured timeout"):
         FileSizeStageEvidence.model_validate(payload)
+
+
+@pytest.mark.parametrize("stage", ["scan", "plan"])
+def test_file_size_stage__unvalidated_watchdog_stage_rejects_measured_outcome(
+    stage: Literal["scan", "plan"],
+) -> None:
+    payload = _stage(stage).model_dump(mode="python")
+    payload.update(artifact_validated=False, timeout_outcome="within-budget")
+
+    with pytest.raises(ValidationError, match="cannot claim a timeout"):
+        FileSizeStageEvidence.model_validate(payload)
+
+    document = _file_size_evidence().model_dump(mode="json", by_alias=True)
+    stage_index = 0 if stage == "scan" else 1
+    document["file_size_cases"][0]["stages"][stage_index].update(
+        artifact_validated=False,
+        timeout_outcome="within-budget",
+    )
+    with pytest.raises(ScaleEvidenceError):
+        validate_qualification_document("scale-evidence", document)
 
 
 def test_file_size_evidence__artifact_invalid_is_not_promoted_to_conservation_failure() -> None:
@@ -627,6 +675,140 @@ def test_file_size_lane__builds_and_runs_the_exact_inspected_head(tmp_path: Path
     assert result.file_size_cases is not None
     assert all(case.peak_rss_bytes < FILE_SIZE_RSS_LIMIT_BYTES for case in result.file_size_cases)
 
+    future_started = datetime(2100, 1, 1, tzinfo=UTC)
+
+    class InterruptingRuntime:
+        def run_file_size_matrix(
+            self,
+            request: QualificationRequest,
+            candidate: CandidateBuild,
+            reference_environment: ReferenceEnvironment,
+            recipes: tuple[FileSizeCase, ...],
+        ) -> FileSizeRunResult:
+            del request, reference_environment
+            cases = tuple(
+                _case(
+                    size_mib=recipe.size_mib,
+                    encoding=recipe.encoding,
+                    preservation=recipe.preservation,
+                )
+                for recipe in recipes
+            )
+            raise ExecutionInterrupted(
+                ExecutionResult(
+                    wheel_sha256=candidate.wheel_sha256,
+                    preflight=_passing_preflight(),
+                    stages=(),
+                    totals=_zero_totals(),
+                    thresholds=None,
+                    workflow_runtime=None,
+                    reasons=(),
+                    started_at=future_started,
+                    completed_at=future_started,
+                    python_version="3.14.6",
+                    kernel_version="test",
+                    corpus_bytes=sum(case.source_bytes for case in cases),
+                    file_size_cases=cases,
+                    candidate=candidate,
+                )
+            )
+
+    with pytest.raises(ExecutionInterrupted) as caught:
+        execute_file_size_lane(
+            request,
+            source,
+            _reference(),
+            builder=builder,
+            runtime=InterruptingRuntime(),
+        )
+
+    assert caught.value.checkpoint.started_at < future_started
+
+
+@pytest.mark.parametrize(
+    ("encoding", "preservation"),
+    [
+        pytest.param("utf-8", "external", id="utf8-external"),
+        pytest.param("windows-1252", "external", id="windows1252-external"),
+        pytest.param("utf-8", "tool", id="utf8-tool-backup"),
+    ],
+)
+def test_file_size_stage_commands__one_mib_real_subprocess_pipeline(
+    tmp_path: Path,
+    encoding: Literal["utf-8", "windows-1252"],
+    preservation: Literal["external", "tool"],
+) -> None:
+    pipeline = tmp_path / "pipeline"
+    corpus = pipeline / "corpus"
+    corpus.mkdir(parents=True)
+    source = corpus / "document.txt"
+    seed = "legacy café line  \r\n".encode(encoding)
+    source_bytes = 1024**2
+    source.write_bytes((seed * (source_bytes // len(seed) + 1))[:source_bytes])
+
+    executable = Path(sys.executable).with_name("docmend")
+    inventory = pipeline / "inventory.json"
+    plan = pipeline / "plan.json"
+    report_path = pipeline / "report.json"
+    verify_path = pipeline / "verify.json"
+
+    def run(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(executable), *args],
+            cwd=pipeline,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    scanned = run("scan", str(corpus), "--report", str(inventory))
+    assert scanned.returncode == 0, scanned.stderr
+    planned = run("plan", "--inventory", str(inventory), "--out", str(plan))
+    assert planned.returncode == 0, planned.stderr
+
+    apply_args = ["apply", str(plan), "--write", "--report", str(report_path)]
+    backup_root = pipeline / "backups"
+    if preservation == "tool":
+        apply_args.extend(("--backup-dir", str(backup_root)))
+    else:
+        apply_args.extend(("--preserved-by", "external"))
+    applied = run(*apply_args)
+    assert applied.returncode == 0, applied.stderr
+
+    report, _report_sha256 = read_report_snapshot(report_path)
+    manifest = pipeline / ".docmend" / f"docmend-{report.run_id}-manifest.jsonl"
+    verified = run(
+        "verify",
+        str(corpus),
+        "--plan",
+        str(plan),
+        "--manifest",
+        str(manifest),
+        "--report",
+        str(report_path),
+        "--out",
+        str(verify_path),
+    )
+    assert verified.returncode == 0, verified.stderr
+    verify_report = read_verify_report(verify_path)
+    assert verify_report.checked_files == 1
+    assert not verify_report.findings
+
+    chain = read_manifest_chain(
+        (manifest,),
+        check_backup_objects=preservation == "tool",
+    )
+    backup_paths = {
+        record.backup_path
+        for manifest_set in chain.sets
+        for record in manifest_set.records
+        if record.backup_path is not None
+    }
+    if preservation == "tool":
+        assert sum(Path(path).stat().st_size for path in backup_paths) == source_bytes
+    else:
+        assert backup_paths == set()
+
 
 def test_default_file_size_runtime__dispatches_four_fresh_measured_children(
     tmp_path: Path,
@@ -841,3 +1023,101 @@ def test_default_file_size_runtime__dispatches_four_fresh_measured_children(
     assert fault.file_size_cases[0].stages[0].artifact_validated is True
     assert fault.file_size_cases[0].stages[1].completed is False
     assert fault.workspace_lease is workspace_lease
+
+    unexpected_workspace = tmp_path / "unexpected-workspace"
+    unexpected_workspace.mkdir()
+    unexpected_request = replace(
+        request,
+        workspace=unexpected_workspace,
+        evidence_out=tmp_path / "unexpected-evidence.json",
+    )
+    unexpected_reference = observe_reference_environment(unexpected_workspace).environment
+    monkeypatch.setattr("docmend.scale_qualification._mkdir_private", real_mkdir_private)
+
+    def two_cases(_maximum: int) -> tuple[FileSizeCase, ...]:
+        return (
+            FileSizeCase(size_mib=1, encoding="utf-8", preservation="external"),
+            FileSizeCase(size_mib=1, encoding="windows-1252", preservation="external"),
+        )
+
+    monkeypatch.setattr(
+        scale_qualification,
+        "file_size_cases",
+        two_cases,
+    )
+    plan_reads = 0
+
+    def crash_during_second_plan(_path: Path) -> object:
+        nonlocal plan_reads
+        plan_reads += 1
+        if plan_reads == 2:
+            raise AssertionError("injected unexpected artifact-reader failure")
+        return fake_plan(_path)
+
+    monkeypatch.setattr(
+        "docmend.scale_qualification.read_plan_snapshot",
+        crash_during_second_plan,
+    )
+
+    with pytest.raises(ExecutionInterrupted) as caught:
+        execute_file_size_lane(
+            unexpected_request,
+            source,
+            unexpected_reference,
+            builder=Builder(),
+            runtime=RecordingRuntime(),
+        )
+
+    checkpoint = caught.value.checkpoint
+    assert checkpoint.wheel_sha256 == candidate.wheel_sha256
+    assert checkpoint.preflight is not None
+    assert checkpoint.file_size_cases is not None
+    assert checkpoint.file_size_cases[0].passed is True
+    assert [stage.stage for stage in checkpoint.file_size_cases[1].stages] == ["scan", "plan"]
+    assert checkpoint.file_size_cases[1].stages[1].completed is True
+    assert checkpoint.file_size_cases[1].stages[1].artifact_validated is False
+    assert checkpoint.candidate is candidate
+    assert checkpoint.workspace_lease is workspace_lease
+
+    construction_workspace = tmp_path / "construction-workspace"
+    construction_workspace.mkdir()
+    construction_request = replace(
+        request,
+        workspace=construction_workspace,
+        evidence_out=tmp_path / "construction-evidence.json",
+    )
+    construction_reference = observe_reference_environment(construction_workspace).environment
+    monkeypatch.setattr("docmend.scale_qualification.read_plan_snapshot", fake_plan)
+    real_case_evidence = cast(
+        "Callable[..., FileSizeCaseEvidence]",
+        vars(scale_qualification)["_file_size_case_evidence"],
+    )
+    case_constructions = 0
+
+    def crash_during_second_case(*args: object, **kwargs: object) -> FileSizeCaseEvidence:
+        nonlocal case_constructions
+        case_constructions += 1
+        if case_constructions == 2:
+            raise AssertionError("injected unexpected case-construction failure")
+        return real_case_evidence(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "docmend.scale_qualification._file_size_case_evidence",
+        crash_during_second_case,
+    )
+
+    with pytest.raises(ExecutionInterrupted) as caught:
+        execute_file_size_lane(
+            construction_request,
+            source,
+            construction_reference,
+            builder=Builder(),
+            runtime=RecordingRuntime(),
+        )
+
+    checkpoint = caught.value.checkpoint
+    assert checkpoint.preflight is not None
+    assert checkpoint.file_size_cases is not None
+    assert checkpoint.file_size_cases[0].passed is True
+    assert checkpoint.file_size_cases[1].stages == ()
+    assert checkpoint.candidate is candidate

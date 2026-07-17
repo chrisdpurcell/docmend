@@ -1071,6 +1071,7 @@ class DefaultCandidateRuntime:
         reference_environment: ReferenceEnvironment,
         recipes: tuple[FileSizeCase, ...],
     ) -> FileSizeRunResult:
+        checkpoint_started = datetime.now(UTC)
         candidate.require_current_identity()
         matrix_root = request.workspace / "file-size"
         _mkdir_private(matrix_root)
@@ -1117,6 +1118,38 @@ class DefaultCandidateRuntime:
             reasons.append("reference-mismatch")
 
         case_evidence: list[FileSizeCaseEvidence] = []
+
+        def interrupt(
+            exc: Exception,
+            *,
+            current_case: FileSizeCaseEvidence | None,
+            next_recipe_index: int,
+        ) -> Never:
+            cases = (
+                *case_evidence,
+                *((current_case,) if current_case is not None else ()),
+                *(_pending_file_size_case(recipe) for recipe in recipes[next_recipe_index:]),
+            )
+            raise ExecutionInterrupted(
+                ExecutionResult(
+                    wheel_sha256=candidate.wheel_sha256,
+                    preflight=preflight,
+                    stages=(),
+                    totals=_zero_qualification_totals(),
+                    thresholds=None,
+                    workflow_runtime=None,
+                    reasons=tuple(dict.fromkeys(reasons)),
+                    started_at=checkpoint_started,
+                    completed_at=max(checkpoint_started, datetime.now(UTC)),
+                    python_version=platform.python_version(),
+                    kernel_version=platform.release(),
+                    corpus_bytes=sum(case.source_bytes for case in cases),
+                    file_size_cases=cases,
+                    candidate=candidate,
+                    workspace_lease=candidate.workspace_lease,
+                )
+            ) from exc
+
         for index, recipe in enumerate(recipes):
             try:
                 candidate.require_current_identity()
@@ -1137,6 +1170,8 @@ class DefaultCandidateRuntime:
                 case_evidence.append(_pending_file_size_case(recipe))
                 reasons.append("corpus-materialization-failed")
                 continue
+            except Exception as exc:
+                interrupt(exc, current_case=None, next_recipe_index=index)
             stages: list[FileSizeStageEvidence] = []
             scanned_files = 0
             scanned_bytes = 0
@@ -1202,6 +1237,36 @@ class DefaultCandidateRuntime:
                     reasons.append("supervisor-failed")
                     case_failed = True
                     break
+                except Exception as exc:
+                    stages.append(
+                        FileSizeStageEvidence(
+                            stage=stage,
+                            elapsed_seconds=0.0,
+                            peak_rss_bytes=None,
+                            vm_swap_peak_bytes=None,
+                            exit_code=None,
+                            completed=False,
+                            artifact_validated=False,
+                            timeout_outcome="not-measured",
+                            backup_bytes=0,
+                        )
+                    )
+                    current_case = _file_size_case_evidence(
+                        recipe,
+                        stages,
+                        scanned_files=scanned_files,
+                        scanned_bytes=scanned_bytes,
+                        planned_actions=planned_actions,
+                        applied_actions=applied_actions,
+                        verified_actions=verified_actions,
+                        expected_findings=expected_findings,
+                        observed_findings=observed_findings,
+                    )
+                    interrupt(
+                        exc,
+                        current_case=current_case,
+                        next_recipe_index=index + 1,
+                    )
                 result = launch.result
                 if launch.wrapper_exit_code != 0 or result is None or not result.completed:
                     stages.append(
@@ -1313,6 +1378,38 @@ class DefaultCandidateRuntime:
                 except ArtifactError, OSError, ValueError:
                     reasons.append("artifact-invalid")
                     case_failed = True
+                except Exception as exc:
+                    stages.append(
+                        FileSizeStageEvidence(
+                            stage=stage,
+                            elapsed_seconds=result.elapsed_seconds,
+                            peak_rss_bytes=result.peak_rss_bytes,
+                            vm_swap_peak_bytes=result.vm_swap_peak_bytes,
+                            exit_code=result.exit_code,
+                            completed=True,
+                            artifact_validated=False,
+                            timeout_outcome=(
+                                "not-measured" if stage in {"scan", "plan"} else "not-applicable"
+                            ),
+                            backup_bytes=0,
+                        )
+                    )
+                    current_case = _file_size_case_evidence(
+                        recipe,
+                        stages,
+                        scanned_files=scanned_files,
+                        scanned_bytes=scanned_bytes,
+                        planned_actions=planned_actions,
+                        applied_actions=applied_actions,
+                        verified_actions=verified_actions,
+                        expected_findings=expected_findings,
+                        observed_findings=observed_findings,
+                    )
+                    interrupt(
+                        exc,
+                        current_case=current_case,
+                        next_recipe_index=index + 1,
+                    )
 
                 stages.append(
                     FileSizeStageEvidence(
@@ -1342,8 +1439,8 @@ class DefaultCandidateRuntime:
                 if case_failed:
                     break
 
-            case_evidence.append(
-                _file_size_case_evidence(
+            try:
+                completed_case = _file_size_case_evidence(
                     recipe,
                     stages,
                     scanned_files=scanned_files,
@@ -1354,7 +1451,9 @@ class DefaultCandidateRuntime:
                     expected_findings=expected_findings,
                     observed_findings=observed_findings,
                 )
-            )
+            except Exception as exc:
+                interrupt(exc, current_case=None, next_recipe_index=index)
+            case_evidence.append(completed_case)
             if provenance_changed:
                 case_evidence.extend(
                     _pending_file_size_case(pending) for pending in recipes[index + 1 :]
@@ -1364,6 +1463,8 @@ class DefaultCandidateRuntime:
             candidate.require_current_identity()
         except BuildContractError:
             reasons.append("provenance-changed")
+        except Exception as exc:
+            interrupt(exc, current_case=None, next_recipe_index=len(recipes))
         return FileSizeRunResult(
             preflight=preflight,
             cases=tuple(case_evidence),
@@ -1676,12 +1777,36 @@ def execute_file_size_lane(
     if candidate.commit != source.commit:
         candidate.workspace_lease.close()
         raise BuildContractError("candidate build commit disagrees with inspected HEAD")
-    result = runtime.run_file_size_matrix(
-        request,
-        candidate,
-        reference_environment,
-        recipes,
-    )
+    try:
+        result = runtime.run_file_size_matrix(
+            request,
+            candidate,
+            reference_environment,
+            recipes,
+        )
+    except ExecutionInterrupted as exc:
+        raise ExecutionInterrupted(replace(exc.checkpoint, started_at=started)) from exc
+    except Exception as exc:
+        pending = tuple(_pending_file_size_case(recipe) for recipe in recipes)
+        raise ExecutionInterrupted(
+            ExecutionResult(
+                wheel_sha256=candidate.wheel_sha256,
+                preflight=None,
+                stages=(),
+                totals=_zero_qualification_totals(),
+                thresholds=None,
+                workflow_runtime=None,
+                reasons=(),
+                started_at=started,
+                completed_at=max(started, datetime.now(UTC)),
+                python_version=platform.python_version(),
+                kernel_version=platform.release(),
+                corpus_bytes=sum(case.source_bytes for case in pending),
+                file_size_cases=pending,
+                candidate=candidate,
+                workspace_lease=candidate.workspace_lease,
+            )
+        ) from exc
     reasons = list(result.reasons)
     if any(
         stage.completed and stage.exit_code != 0 for case in result.cases for stage in case.stages

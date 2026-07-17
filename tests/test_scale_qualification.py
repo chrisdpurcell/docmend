@@ -10,6 +10,8 @@ from types import MappingProxyType
 from typing import Literal, cast
 
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from docmend.artifacts import ArtifactError
 from docmend.scale_build import (
@@ -759,6 +761,37 @@ def test_named_allowances__derive_every_stage_from_summary() -> None:
     assert allowances["plan"]["plan"] == 41 * 4_096
     assert allowances["apply"]["manifest"] == recipe_counts(41).actions * 8_192
     assert allowances["verify"]["verify-report"] == 41 * 1_024
+
+
+def test_named_allowances__million_file_verify_stdout__covers_retained_output() -> None:
+    class Summary:
+        count = 1_000_000
+        recipe_counts = recipe_counts(1_000_000)
+
+    retained_stdout_bytes = 2_100_046
+    allowances = qualification_named_allowances(Summary())
+
+    assert retained_stdout_bytes > 2 * 1024 * 1024
+    assert allowances["verify"]["stdout-log"] >= retained_stdout_bytes
+
+
+@given(st.integers(min_value=1, max_value=1_000_000))
+@example(1_000_000)
+def test_named_allowances__supported_count__covers_deterministic_verify_stdout(
+    count: int,
+) -> None:
+    class Summary:
+        def __init__(self, file_count: int) -> None:
+            self.count = file_count
+            self.recipe_counts = recipe_counts(file_count)
+
+    summary = Summary(count)
+    findings = summary.recipe_counts.skips
+    expected_bytes = 84 * findings + len(
+        f"verify: {count} files checked, {findings} findings\n".encode()
+    )
+
+    assert qualification_named_allowances(summary)["verify"]["stdout-log"] >= expected_bytes
 
 
 class FakeBuilder:

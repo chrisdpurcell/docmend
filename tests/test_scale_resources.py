@@ -585,6 +585,34 @@ class TestCapacity:
         )
         assert artifact.bytes == expected
 
+    def test_qualification_requirements__million_file_verify_stdout__is_budgeted(
+        self, tmp_path: Path
+    ) -> None:
+        paths = tuple(tmp_path / name for name in ("workspace", "corpus", "artifact", "supervisor"))
+        for path in paths:
+            path.mkdir()
+        fragment_size = os.statvfs(paths[0]).f_frsize
+        placements = tuple(
+            CapacityPlacement(path=path, fragment_size=fragment_size) for path in paths
+        )
+        summary = _qualification_summary(1_000_000, fragment_size=fragment_size)
+
+        supervisor = qualification_requirements(
+            workspace=placements[0],
+            corpus=placements[1],
+            artifact=placements[2],
+            supervisor=placements[3],
+            summary=summary,
+        )[2]
+
+        verify_stdout = max(
+            SUPERVISOR_PRIVATE_BYTES_PER_FILE,
+            summary.recipe_counts.skips * 128,
+        )
+        expected = 15 * allocated_bytes(SUPERVISOR_PRIVATE_BYTES_PER_FILE, fragment_size)
+        expected += allocated_bytes(verify_stdout, fragment_size)
+        assert supervisor.bytes == expected
+
     def test_qualification_requirements__shared_filesystem_gets_one_exact_margin(
         self, tmp_path: Path
     ) -> None:

@@ -87,6 +87,7 @@ from docmend.scale_resources import (
     compare_reference_environment,
     observe_reference_environment,
     qualification_requirements,
+    qualification_verify_stdout_allowance,
 )
 from docmend.scale_stage import (
     StageContractError,
@@ -678,6 +679,9 @@ def qualification_named_allowances(
     action_count = summary.recipe_counts.actions
     structured = STRUCTURED_LOG_BYTES_PER_INPUT_STAGE * summary.count
     private_output = SUPERVISOR_PRIVATE_BYTES_PER_FILE
+    verify_stdout = qualification_verify_stdout_allowance(
+        expected_findings=summary.recipe_counts.skips
+    )
     values: dict[str, Mapping[str, int]] = {
         "scan": MappingProxyType(
             {
@@ -708,7 +712,7 @@ def qualification_named_allowances(
             {
                 "verify-report": VERIFY_BYTES_PER_INPUT * summary.count,
                 "structured-log": structured,
-                "stdout-log": private_output,
+                "stdout-log": verify_stdout,
                 "stderr-log": private_output,
             }
         ),

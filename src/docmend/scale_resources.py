@@ -54,6 +54,10 @@ VERIFY_BYTES_PER_INPUT = 1_024
 STRUCTURED_LOG_BYTES_PER_INPUT_STAGE = 4_096
 SUPERVISOR_PRIVATE_BYTES_PER_FILE = 2 * 1024 * 1024
 SUPERVISOR_PRIVATE_FILES_PER_STAGE = 4
+# A synthetic verify finding currently occupies 84 bytes. The next power-of-two
+# coefficient keeps the capacity contract derived from the expected-finding
+# count while leaving bounded room for public wording changes.
+VERIFY_STDOUT_BYTES_PER_FINDING = 128
 QUALIFICATION_NONCORPUS_INODES = 64
 _QUALIFICATION_STAGE_COUNT = 4
 
@@ -468,8 +472,15 @@ def qualification_requirements(
     )
     artifact_bytes = sum(allocated_bytes(size, artifact.fragment_size) for size in artifact_sizes)
     supervisor_file_count = _QUALIFICATION_STAGE_COUNT * SUPERVISOR_PRIVATE_FILES_PER_STAGE
-    supervisor_bytes = supervisor_file_count * allocated_bytes(
-        SUPERVISOR_PRIVATE_BYTES_PER_FILE, supervisor.fragment_size
+    verify_stdout_size = qualification_verify_stdout_allowance(
+        expected_findings=summary.recipe_counts.skips
+    )
+    supervisor_sizes = (
+        *(SUPERVISOR_PRIVATE_BYTES_PER_FILE for _ in range(supervisor_file_count - 1)),
+        verify_stdout_size,
+    )
+    supervisor_bytes = sum(
+        allocated_bytes(size, supervisor.fragment_size) for size in supervisor_sizes
     )
     workspace_bytes = allocated_bytes(QUALIFICATION_BASE_BYTES, workspace.fragment_size)
 
@@ -498,6 +509,14 @@ def qualification_requirements(
             inodes=QUALIFICATION_NONCORPUS_INODES,
             placement=workspace,
         ),
+    )
+
+
+def qualification_verify_stdout_allowance(*, expected_findings: int) -> int:
+    """Return the private verify-stdout ceiling for a deterministic corpus."""
+    return max(
+        SUPERVISOR_PRIVATE_BYTES_PER_FILE,
+        expected_findings * VERIFY_STDOUT_BYTES_PER_FINDING,
     )
 
 

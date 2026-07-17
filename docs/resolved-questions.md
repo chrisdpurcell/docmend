@@ -425,6 +425,8 @@ Scale-evidence 3.0, threshold 2.0, phase-truthful partial evidence, finite outco
 
 Reference storage classification is derived conservatively; cache class is warm. The named preflight coefficients plus exact 25% margin remain accepted because the pilot did not exceed them; they may be raised only by later approved change control and never lowered automatically. Release runtime is monotonic from scan dispatch through the final validated result, with 43,200 seconds passing and any greater value failing. Evidence and acceptance publication are deterministic, identical-byte, and no-clobber. Invalid pre-provenance inputs exit 2 without evidence; post-provenance passing or successful explicit diagnostics exit 0; failed, incomplete, or reference-mismatched binding requests exit 1 after evidence publication where possible.
 
+Revision 0.43 amends the private-output coefficient after the first clean-HEAD 1M attempt completed every stage but produced 2,100,046 bytes of deterministic verify stdout, 2,894 bytes above the fixed 2 MiB ceiling. Private request, result, stderr, and non-verify stdout files retain 2 MiB each. Verify stdout is now `max(2 MiB, 128 bytes × recipe-derived expected findings)`, and capacity preflight uses that same derived size with independent fragment rounding. The 128-byte coefficient rounds the observed 84-byte synthetic finding record upward while preserving a recipe-count source of truth; it does not reclassify or accept the incomplete attempt.
+
 #### My Comments
 
 (none yet — owner block, agent does not edit)

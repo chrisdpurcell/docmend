@@ -42,6 +42,9 @@ REJECTED_NETWORK_FILESYSTEMS = frozenset(
     {"9p", "ceph", "cifs", "fuse.sshfs", "glusterfs", "nfs", "nfs4", "smb3"}
 )
 MIN_BINDING_RAM_BYTES = 16 * 1024**3
+# Linux MemTotal is usable RAM after kernel reservations, so it can vary by one
+# base page without a machine-capacity change. Wider deltas remain mismatches.
+_RAM_EQUIVALENCE_BYTES = os.sysconf("SC_PAGE_SIZE")
 QUALIFICATION_BASE_BYTES = 256 * 1024 * 1024
 INVENTORY_BYTES_PER_INPUT = 2_048
 PLAN_BYTES_PER_INPUT = 4_096
@@ -1054,19 +1057,33 @@ def _reference_value(environment: ReferenceEnvironment, field: ReferenceField) -
     return getattr(environment, field)
 
 
+def _reference_field_matches(
+    observed: ReferenceEnvironment,
+    accepted: ReferenceEnvironment,
+    field: ReferenceField,
+) -> bool:
+    if field == "ram_bytes":
+        return abs(observed.ram_bytes - accepted.ram_bytes) <= _RAM_EQUIVALENCE_BYTES
+    return _reference_value(observed, field) == _reference_value(accepted, field)
+
+
 def compare_reference_environment(
     observed: ReferenceEnvironment,
     accepted: ReferenceEnvironment,
     *,
     mount_projection: MountFlagProjection,
 ) -> ReferenceComparison:
-    """Compare exact public class identity, then enforce fixed binding eligibility."""
+    """Compare public reference-class equivalence, then enforce binding eligibility.
+
+    ``exact_match`` means no mismatch under the field-specific equivalence rules;
+    it does not require byte-identical RAM telemetry.
+    """
     mismatches = cast(
         "tuple[ReferenceField, ...]",
         tuple(
             field
             for field in _REFERENCE_FIELDS
-            if _reference_value(observed, field) != _reference_value(accepted, field)
+            if not _reference_field_matches(observed, accepted, field)
         ),
     )
     exact_match = not mismatches

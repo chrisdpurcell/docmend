@@ -395,11 +395,11 @@ Revision two accepts candidate `14f3118e4f57c992b9d5088b9cb4f35fb3658686`. The 1
 
 ### RQ-039 — qualification resource-preflight semantics
 
-**Resolved:** 2026-07-13 **Source question:** OQ-039 **Decision owner:** owner **Canonical references:** spec §§9, 14, 17.2, and §21 OQ-039 (Status: Resolved); revision 0.39 dynamic-Btrfs amendment and revision 0.40 pilot settlement.
+**Resolved:** 2026-07-13; RAM equivalence amended 2026-07-17 **Source question:** OQ-039 **Decision owner:** owner **Canonical references:** spec §§9, 14, 17.2, and §21 OQ-039 (Status: Resolved); revision 0.39 dynamic-Btrfs amendment, revision 0.40 pilot settlement, and revision 0.41 RAM-equivalence correction.
 
 Capacity rounds each file's logical size to its destination fragment size before grouping by followed `st_dev`, then applies one exact 25% upward-rounded byte/inode margin per filesystem. Finite statvfs inode pools use numeric availability. Only a positively identified Btrfs filesystem with the exact all-zero inode triplet may use null `dynamic-metadata`; its byte comparison stays binding, and successful corpus materialization plus all stage/artifact writes provide the runtime capacity proof. Every other zero, unreadable, malformed, ambiguous, or unclassified inode observation fails closed.
 
-One mountinfo snapshot governs a preflight. Reference comparison is exact except mount-flag order; binding additionally requires Linux, at least 16 GiB RAM, local SSD, eligible ext4/XFS/Btrfs storage, passing capacity, and zero child swap. Only finite value-free field-6 mount flags may be public; superblock options remain private and non-classifying. Unavailable binding child-swap telemetry makes qualification incomplete, while global swap counters remain diagnostic only.
+One mountinfo snapshot governs a preflight. Reference comparison is exact except mount-flag order and `ram_bytes`: an absolute RAM delta of at most one current Linux base page remains the same reference class because `MemTotal` reports usable RAM after kernel reservations rather than immutable installed capacity. Wider RAM deltas are mismatches. Binding separately requires the observed environment to provide at least 16 GiB RAM, plus Linux, local SSD, eligible ext4/XFS/Btrfs storage, passing capacity, and zero child swap. Only finite value-free field-6 mount flags may be public; superblock options remain private and non-classifying. Unavailable binding child-swap telemetry makes qualification incomplete, while global swap counters remain diagnostic only.
 
 #### My Comments
 

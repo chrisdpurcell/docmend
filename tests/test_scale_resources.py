@@ -1494,6 +1494,48 @@ class TestReferenceEnvironment:
         assert comparison.mismatched_fields == ()
 
     @pytest.mark.parametrize(
+        "delta",
+        [
+            pytest.param(-os.sysconf("SC_PAGE_SIZE"), id="observed-lower"),
+            pytest.param(os.sysconf("SC_PAGE_SIZE"), id="observed-higher"),
+        ],
+    )
+    def test_reference_comparison__ram_differs_by_one_base_page__remains_binding(
+        self, delta: int
+    ) -> None:
+        accepted = _reference_environment()
+        observed = _reference_environment(ram_bytes=accepted.ram_bytes + delta)
+
+        comparison = compare_reference_environment(
+            observed, accepted, mount_projection=_binding_projection()
+        )
+
+        assert comparison.binding is True
+        assert comparison.exact_match is True
+        assert comparison.mismatched_fields == ()
+
+    @pytest.mark.parametrize(
+        "delta",
+        [
+            pytest.param(-os.sysconf("SC_PAGE_SIZE") - 1, id="observed-lower"),
+            pytest.param(os.sysconf("SC_PAGE_SIZE") + 1, id="observed-higher"),
+        ],
+    )
+    def test_reference_comparison__ram_differs_beyond_one_base_page__reports_mismatch(
+        self, delta: int
+    ) -> None:
+        accepted = _reference_environment()
+        observed = _reference_environment(ram_bytes=accepted.ram_bytes + delta)
+
+        comparison = compare_reference_environment(
+            observed, accepted, mount_projection=_binding_projection()
+        )
+
+        assert comparison.binding is False
+        assert comparison.exact_match is False
+        assert comparison.mismatched_fields == ("ram_bytes",)
+
+    @pytest.mark.parametrize(
         ("field", "value"),
         [
             ("cpu_architecture", "aarch64"),

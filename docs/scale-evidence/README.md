@@ -30,7 +30,7 @@ uv run python scripts/qualify_scale.py --capture-reference \
   --output "$tmp/reference-environment.json"
 ```
 
-Capture records only the strict public reference model: Linux architecture and CPU label, logical CPU count, RAM, storage and filesystem classes, approved mount flags, and Python and kernel versions. The qualification snapshots and hashes those immutable bytes before evidence begins.
+Capture records only the strict public reference model: Linux architecture and CPU label, logical CPU count, RAM, storage and filesystem classes, approved mount flags, and Python and kernel versions. The qualification snapshots and hashes those immutable bytes before evidence begins. Comparison is exact except that mount-flag order is immaterial and `ram_bytes` may differ by at most one current Linux base page because `MemTotal` reports usable rather than immutable installed RAM; wider RAM deltas remain mismatches, and the observed host must independently satisfy the 16 GiB minimum.
 
 If the observed host differs from the reference, the pipeline still runs for diagnostic value. A binding request then publishes `diagnostic` evidence and exits nonzero; an explicitly diagnostic request exits zero when otherwise correct.
 
@@ -89,6 +89,8 @@ The three installed-workflow names use the full lowercase candidate commit and f
 ```
 
 The separately implemented file-size lane uses `<commit>-file-size.json`. Accepted filenames are deterministic; do not rename evidence to make a failed, diagnostic, different-host, or different-commit run appear binding.
+
+The accepted file-size settlement is `accepted/f050e0aa8e2d4cf05abae09d6834e88a74a00193-file-size.json` (`sha256:4db8276907201dc45366c29053e6da574443197defcc1f2969237fb4523d647e`). Its 12 UTF-8/Windows-1252 cases cover 1, 25, 50, 75, and 100 MiB under external preservation plus both 100 MiB tool-backup cases. All cases passed with zero child swap and a maximum measured stage RSS of 1,894,080,512 bytes, retaining the configured 100 MiB default under the 2 GiB limit.
 
 ## Public-data rules
 

@@ -2,7 +2,7 @@
 
 Python tool to normalize, fix, convert, manage, and maintain large libraries of text and markdown documents.
 
-> **Status:** [v1.0.2 released](https://github.com/chrisdpurcell/docmend/releases/tag/v1.0.2) (2026-07-07; see [CHANGELOG.md](CHANGELOG.md)). The design is complete (see [`docs/specs/docmend.md`](docs/specs/docmend.md)) and the whole pipeline is live: `docmend scan` inventories a file or directory tree read-only, `docmend plan` turns that inventory into a reviewable plan, `docmend apply` executes a reviewed plan (dry-run by default, gated writes, atomic mutation, a reversible manifest) and survives interruption — `apply --resume-run-id`/`--resume-manifest` completes an interrupted run without redoing finished work — `docmend restore` undoes an apply run, and `docmend verify` checks converted output read-only. Re-runs are idempotent. The historical 100,000-file test is being replaced by the binding v2 scale qualification; million-file qualification has not yet been claimed.
+> **Status:** [v1.0.2 released](https://github.com/chrisdpurcell/docmend/releases/tag/v1.0.2) (2026-07-07; see [CHANGELOG.md](CHANGELOG.md)). The design is complete (see [`docs/specs/docmend.md`](docs/specs/docmend.md)) and the whole pipeline is live: `docmend scan` inventories a file or directory tree read-only, `docmend plan` turns that inventory into a reviewable plan, `docmend apply` executes a reviewed plan (dry-run by default, gated writes, atomic mutation, a reversible manifest) and survives interruption — `apply --resume-run-id`/`--resume-manifest` completes an interrupted run without redoing finished work — `docmend restore` undoes an apply run, and `docmend verify` checks converted output read-only. Re-runs are idempotent. The configured 100 MiB file-size envelope now has accepted installed-wheel qualification evidence; million-file qualification has not yet been claimed.
 
 ## Commands
 
@@ -62,7 +62,7 @@ The full reference with rationale is [spec §18.2](docs/specs/docmend.md); the s
 | `write.backup_dir` | unset | Backup destination; enables the tool-backup preservation strategy. |
 | `write.atomic` | `true` | Atomic replace writes. |
 | `limits.per_file_timeout` | `60` | Seconds per file across discovery/detection/transform. |
-| `limits.max_file_size_mib` | `100` | Plan-time size guard; larger files are skipped with reason. |
+| `limits.max_file_size_mib` | `100` | Qualified plan-time size guard; larger files are skipped with reason. |
 | `safety.shrink_ratio` | `0.50` | Output/input floor for future content-touching transforms (v1's never-lose-non-whitespace invariant is separate and not configurable). |
 
 ## Safety model

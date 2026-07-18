@@ -814,6 +814,8 @@ def test_default_file_size_runtime__dispatches_four_fresh_measured_children(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Resource-floor behavior has dedicated coverage; this unit isolates stage dispatch.
+    monkeypatch.setattr("docmend.scale_resources.MIN_BINDING_RAM_BYTES", 0)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     request = QualificationRequest(

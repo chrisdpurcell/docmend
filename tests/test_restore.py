@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 import structlog
+from tests.helpers import replace_with_new_inode
 from tests.helpers.manifest2 import header_doc, read_records, write_set
 from tests.helpers.writectx import restore_safety
 from typer.testing import CliRunner
@@ -1212,8 +1213,7 @@ class TestRestoreCommitBoundary:
 
         def swap(step: str, path: Path) -> None:
             if step == "publish":
-                target.unlink()
-                target.write_bytes(applied)
+                replace_with_new_inode(target, applied)
 
         restore_out = tmp_path / "restore-manifest.jsonl"
         outcomes = run_restore(
@@ -1407,8 +1407,7 @@ class TestRestoreCommitBoundary:
         )
         original = root / "legacy.txt"
         same_bytes = original.read_bytes()
-        original.unlink()
-        original.write_bytes(same_bytes)  # identical bytes, different inode
+        replace_with_new_inode(original, same_bytes)
 
         outcomes = _rerun(apply_manifest, restore_manifest, tmp_path / "rerun-manifest.jsonl")
 

@@ -12,6 +12,7 @@ from collections import Counter
 from pathlib import Path
 
 import pytest
+from tests.helpers import replace_with_new_inode
 from tests.helpers.manifest2 import read_records
 from tests.helpers.writectx import apply_safety, restore_safety
 
@@ -573,8 +574,7 @@ class TestCommitBoundaryRaces:
         def swap(step: str, path: Path) -> None:
             if step == "publish":
                 payload = source.read_bytes()
-                source.unlink()
-                source.write_bytes(payload)
+                replace_with_new_inode(source, payload)
 
         report = _execute(
             plan,
@@ -599,8 +599,7 @@ class TestCommitBoundaryRaces:
             if step == "publish":
                 for staged_name in source.parent.glob(f".{source.name}.*.docmend-tmp"):
                     content = staged_name.read_bytes()
-                    staged_name.unlink()
-                    staged_name.write_bytes(content)
+                    replace_with_new_inode(staged_name, content)
 
         report = _execute(
             plan,
@@ -693,8 +692,7 @@ class TestCommitBoundaryRaces:
         def swap(step: str, path: Path) -> None:
             if step == "replace-target":
                 content = target.read_bytes()
-                target.unlink()
-                target.write_bytes(content)
+                replace_with_new_inode(target, content)
 
         report = _execute(
             plan,
@@ -748,8 +746,7 @@ class TestCommitBoundaryRaces:
 
         def swap(step: str, path: Path) -> None:
             if step == "unlink":
-                source.unlink()
-                source.write_bytes(b"interloper")
+                replace_with_new_inode(source, b"interloper")
 
         report = _execute(
             plan,
@@ -778,8 +775,7 @@ class TestCommitBoundaryRaces:
 
         def swap(step: str, path: Path) -> None:
             if step == "unlink":
-                target.unlink()
-                target.write_bytes(b"interloper")
+                replace_with_new_inode(target, b"interloper")
 
         report = _execute(
             plan,
@@ -903,8 +899,7 @@ class TestCommitBoundaryRaces:
         def swap(step: str, path: Path) -> None:
             if step == "publish":
                 content = target.read_bytes()
-                target.unlink()
-                target.write_bytes(content)
+                replace_with_new_inode(target, content)
 
         report = _execute(
             plan,

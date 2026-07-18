@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 
 import pytest
+from tests.helpers import replace_with_new_inode
 
 from docmend.writer import atomic
 
@@ -292,8 +293,7 @@ class TestStagedWriteApi:
         """A publication failure must not delete an object swapped onto the temp name."""
         target = tmp_path / "doc.md"
         staged = atomic.stage_bytes(target, b"payload")
-        staged.tmp.unlink()
-        staged.tmp.write_bytes(b"interloper")
+        replace_with_new_inode(staged.tmp, b"interloper")
         target.write_bytes(b"occupied")
         with pytest.raises(FileExistsError):
             atomic.publish_staged(staged, target, clobber=False)
@@ -350,8 +350,7 @@ class TestAbortStagedIdentity:
     def test_raced_staged_temp__not_unlinked(self, tmp_path: Path) -> None:
         """Abort never deletes an object swapped onto the staged pathname."""
         staged = atomic.stage_bytes(tmp_path / "doc.md", b"payload")
-        staged.tmp.unlink()
-        staged.tmp.write_bytes(b"interloper")
+        replace_with_new_inode(staged.tmp, b"interloper")
         atomic.abort_staged(staged)
         assert staged.tmp.read_bytes() == b"interloper"
 

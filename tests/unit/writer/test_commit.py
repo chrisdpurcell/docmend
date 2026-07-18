@@ -11,6 +11,7 @@ from typing import cast
 import pytest
 from allpairspy import AllPairs  # pyright: ignore[reportMissingTypeStubs]
 from pydantic import ValidationError
+from tests.helpers import replace_with_new_inode
 from tests.helpers.manifest2 import header_doc, record_doc, write_set
 from tests.test_plan_artifact import sample_plan
 
@@ -254,8 +255,7 @@ class TestCheckBound:
         file = tmp_path / "doc.txt"
         file.write_bytes(b"x")
         identity = bind_file(file).identity
-        file.unlink()
-        file.write_bytes(b"x")
+        replace_with_new_inode(file, b"x")
         with pytest.raises(InterferenceError, match="changed before commit"):
             check_bound(file, identity, root_resolved=tmp_path.resolve())
 
@@ -317,8 +317,7 @@ class TestCheckBound:
         if mutate == "unlink":
             file.unlink()
         elif mutate == "swap-inode":
-            file.unlink()
-            file.write_bytes(b"x")
+            replace_with_new_inode(file, b"x")
         elif mutate == "symlink":
             other = tmp_path / "other.txt"
             other.write_bytes(b"x")
@@ -381,8 +380,7 @@ class TestGuardedRenameNoClobber:
 
         def swap(step: str, path: Path) -> None:
             if step == "publish":
-                source.unlink()
-                source.write_bytes(b"content")
+                replace_with_new_inode(source, b"content")
 
         with pytest.raises(InterferenceError) as exc_info:
             guarded_rename_no_clobber(
@@ -601,8 +599,7 @@ class TestGuardedReplace:
 
         def swap(step: str, path: Path) -> None:
             if step == "replace-target":
-                file.unlink()
-                file.write_bytes(b"interloper")
+                replace_with_new_inode(file, b"interloper")
 
         with pytest.raises(InterferenceError):
             guarded_replace(

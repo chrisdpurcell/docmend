@@ -1189,7 +1189,13 @@ class TestRunStage:
         workspace = _private_workspace(tmp_path)
         request = StageRequest.from_document(_request_document(cwd=str(workspace)))
         process = _FakeProcess([None, 0], wait_result=0)
-        statuses = iter(("VmSwap:\t3 kB\n", "State:\tR (running)\n"))
+        statuses: Iterator[str | OSError] = iter(
+            (
+                "VmSwap:\t3 kB\n",
+                "State:\tR (running)\n",
+                OSError("synthetic terminal status loss"),
+            )
+        )
         sleeps: list[float] = []
         clocks = iter([1.0, 1.25])
 
@@ -1207,19 +1213,26 @@ class TestRunStage:
             _ = (argv, shell, stdin, close_fds, cwd, stdout, stderr, env)
             return process
 
+        def read_status(_pid: int) -> str:
+            status = next(statuses)
+            if isinstance(status, OSError):
+                raise status
+            return status
+
         result = run_stage(
             request,
             workspace=workspace,
             popen=popen,
             clock=lambda: next(clocks),
             sleep=sleeps.append,
-            status_reader=lambda _pid: next(statuses),
+            status_reader=read_status,
             getrusage=lambda: 1,
         )
 
         assert result.completed is True
         assert result.vm_swap_peak_bytes is None
-        assert sleeps == [POLL_INTERVAL_SECONDS]
+        assert sleeps == [POLL_INTERVAL_SECONDS, POLL_INTERVAL_SECONDS]
+        assert process.poll_calls == 2
         assert process.wait_calls == 1
 
     @pytest.mark.parametrize(
@@ -1279,12 +1292,69 @@ class TestRunStage:
         assert status_calls == 2
         assert process.wait_calls == 1
 
+    @pytest.mark.parametrize(
+        "invalid_status",
+        [
+            pytest.param(OSError("synthetic status loss"), id="unreadable"),
+            pytest.param("Name:\tdocmend\n", id="missing-state-and-swap"),
+            pytest.param(
+                "State:\tR (running)\nState:\tS (sleeping)\n",
+                id="duplicate-state",
+            ),
+        ],
+    )
+    def test_run_stage__invalid_post_sample_status_at_exit__fails_closed(
+        self, tmp_path: Path, invalid_status: str | OSError
+    ) -> None:
+        workspace = _private_workspace(tmp_path)
+        request = StageRequest.from_document(_request_document(cwd=str(workspace)))
+        process = _FakeProcess([None, 0], wait_result=0)
+        statuses: Iterator[str | OSError] = iter(
+            ("State:\tR (running)\nVmSwap:\t3 kB\n", invalid_status)
+        )
+        clocks = iter([1.0, 1.25])
+
+        def popen(
+            argv: Sequence[str],
+            *,
+            shell: bool,
+            stdin: int,
+            close_fds: bool,
+            cwd: Path,
+            stdout: IO[bytes],
+            stderr: IO[bytes],
+            env: Mapping[str, str],
+        ) -> _FakeProcess:
+            _ = (argv, shell, stdin, close_fds, cwd, stdout, stderr, env)
+            return process
+
+        def read_status(_pid: int) -> str:
+            status = next(statuses)
+            if isinstance(status, OSError):
+                raise status
+            return status
+
+        result = run_stage(
+            request,
+            workspace=workspace,
+            popen=popen,
+            clock=lambda: next(clocks),
+            sleep=lambda _seconds: None,
+            status_reader=read_status,
+            getrusage=lambda: 1,
+        )
+
+        assert result.completed is True
+        assert result.vm_swap_peak_bytes is None
+        assert process.poll_calls == 2
+        assert process.wait_calls == 1
+
     def test_run_stage__exec_gap_after_valid_sample_requires_later_valid_sample(
         self, tmp_path: Path
     ) -> None:
         workspace = _private_workspace(tmp_path)
         request = StageRequest.from_document(_request_document(cwd=str(workspace)))
-        process = _FakeProcess([None, None, 0], wait_result=0)
+        process = _FakeProcess([None, 0], wait_result=0)
         statuses = iter(
             (
                 "State:\tR (running)\nVmSwap:\t1 kB\n",
@@ -1368,6 +1438,52 @@ class TestRunStage:
         assert result.completed is True
         assert result.vm_swap_peak_bytes == 3 * 1024
         assert sleeps == [POLL_INTERVAL_SECONDS, POLL_INTERVAL_SECONDS]
+        assert process.wait_calls == 1
+
+    def test_run_stage__exit_after_no_swap_gap__samples_terminal_state_before_poll(
+        self, tmp_path: Path
+    ) -> None:
+        workspace = _private_workspace(tmp_path)
+        request = StageRequest.from_document(_request_document(cwd=str(workspace)))
+        process = _FakeProcess([None, 0], wait_result=0)
+        statuses = iter(
+            (
+                "State:\tR (running)\nVmSwap:\t3 kB\n",
+                "State:\tR (running)\n",
+                "State:\tZ (zombie)\n",
+            )
+        )
+        sleeps: list[float] = []
+        clocks = iter([1.0, 1.25])
+
+        def popen(
+            argv: Sequence[str],
+            *,
+            shell: bool,
+            stdin: int,
+            close_fds: bool,
+            cwd: Path,
+            stdout: IO[bytes],
+            stderr: IO[bytes],
+            env: Mapping[str, str],
+        ) -> _FakeProcess:
+            _ = (argv, shell, stdin, close_fds, cwd, stdout, stderr, env)
+            return process
+
+        result = run_stage(
+            request,
+            workspace=workspace,
+            popen=popen,
+            clock=lambda: next(clocks),
+            sleep=sleeps.append,
+            status_reader=lambda _pid: next(statuses),
+            getrusage=lambda: 1,
+        )
+
+        assert result.completed is True
+        assert result.vm_swap_peak_bytes == 3 * 1024
+        assert sleeps == [POLL_INTERVAL_SECONDS, POLL_INTERVAL_SECONDS]
+        assert process.poll_calls == 1
         assert process.wait_calls == 1
 
     @pytest.mark.parametrize(

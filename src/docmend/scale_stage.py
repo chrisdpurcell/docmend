@@ -929,8 +929,7 @@ def _run_stage_at(
                     if swap_samples == 0:
                         return False
                     if process.poll() is not None:
-                        if unresolved_status_gap:
-                            swap_available = False
+                        swap_available = False
                         return True
                     swap_available = False
                     return False
@@ -942,6 +941,17 @@ def _run_stage_at(
             try:
                 terminal_status = sample_swap()
                 while not terminal_status:
+                    if unresolved_status_gap and swap_available and swap_samples > 0:
+                        # poll() may reap an exited child and remove the X/Z
+                        # /proc status that proves a live no-VmSwap gap was an
+                        # exit transition. Sample that window before polling;
+                        # an unreadable or still-unresolved gap remains null.
+                        sleep(POLL_INTERVAL_SECONDS)
+                        terminal_status = sample_swap()
+                        if terminal_status:
+                            continue
+                        if unresolved_status_gap and swap_available:
+                            continue
                     if process.poll() is not None:
                         if unresolved_status_gap:
                             swap_available = False

@@ -92,6 +92,8 @@ The separately implemented file-size lane uses `<commit>-file-size.json`. Accept
 
 The accepted file-size settlement is `accepted/f050e0aa8e2d4cf05abae09d6834e88a74a00193-file-size.json` (`sha256:4db8276907201dc45366c29053e6da574443197defcc1f2969237fb4523d647e`). Its 12 UTF-8/Windows-1252 cases cover 1, 25, 50, 75, and 100 MiB under external preservation plus both 100 MiB tool-backup cases. All cases passed with zero child swap and a maximum measured stage RSS of 1,894,080,512 bytes, retaining the configured 100 MiB default under the 2 GiB limit.
 
+The accepted one-million-file release settlement is `accepted/ae3a28677390da7c823846c32af2c84b746ae861-release-1000000.json` (`sha256:c5253a874159e938768d0d7cd42e8742cc8464b0044888997cf61bfca13fb7e6`). Candidate `ae3a28677390da7c823846c32af2c84b746ae861` completed all four installed-wheel stages in 25,629.225 seconds with 1,000,000 scanned, 875,000 applied, no apply skips or failures, and the exact 25,000 expected/observed verify findings. All artifacts validated, child swap remained zero, maximum stage RSS was 20,825,497,600 bytes, and the frozen absolute, incremental-slope, linearity, reference-environment, and 43,200-second runtime verdicts passed.
+
 ## Public-data rules
 
 Public models and JSON Schemas reject unknown fields and private identifiers. Evidence may contain aggregate counts, timings, rates, byte sizes, version labels, hashes, threshold verdicts, and sanitized reference classes. It must not contain hostnames, usernames, absolute paths, serial or device identifiers, credential material, document bodies, per-file logs, or unknown or value-bearing mount options. Record credential references only; never record secret values.

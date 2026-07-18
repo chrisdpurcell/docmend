@@ -6,6 +6,16 @@ All notable changes to docmend are recorded here. The format follows [Keep a Cha
 
 Safety-core remediation, plans A–D (spec revs 0.26–0.29; 2026-07-10 comprehensive review findings DMR-01..07; ADRs 0019–0021). Targets the eventual v2.0.0.
 
+### Changed — bounded-linear scale contract (DMR-08)
+
+- Removed the unimplemented `parallel.*` configuration surface and advanced plan artifacts to schema 2.0, rejecting legacy configuration and plans before operational side effects.
+- Added the always-on 1,000-file source-tree guard, installed-wheel qualification and strict public evidence contracts, aggregate stage liveness, filesystem-aware capacity preflight, and the weekly/manual 100,000-file diagnostic workflow.
+- Accepted the 100,000-file pilot, the 12-case file-size matrix through 100 MiB, and the clean-HEAD one-million-file release qualification. The final release run completed in 25,629.225 seconds with zero child swap, exact corpus/finding conservation, a 20,825,497,600-byte maximum stage RSS, and passing absolute, slope, linearity, reference, and 12-hour runtime verdicts.
+
+### Fixed — scale telemetry
+
+- Stage supervision now samples a recoverable post-sample `/proc/<pid>/status` gap before polling the child, preserving terminal zombie `VmSwap` evidence that `Popen.poll()` could otherwise reap. Invalid or unreadable post-sample telemetry coinciding with exit fails closed instead of retaining an earlier peak as complete evidence.
+
 ### Changed — plan-aware verification (plan D)
 
 - `verify --plan` now certifies exactly-once plan coverage across repeatable `--manifest`, `--report`, and `--run-id` evidence, ordering report-only, manifest-only, resumed, and restore attempts from durable lineage instead of argument order.

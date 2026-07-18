@@ -27,7 +27,7 @@ from pathspec.patterns.gitignore.spec import GitIgnoreSpecPattern
 from docmend import __version__
 from docmend.config import DocmendConfig
 from docmend.inventory import FileRecord, Inventory
-from docmend.observability import get_logger
+from docmend.observability import ProgressHeartbeat, get_logger
 from docmend.plan import (
     PLAN_SCHEMA_VERSION,
     ActionProvenance,
@@ -176,6 +176,7 @@ def build_plan(
     generated_at: str,
     inventory_ref: ArtifactRef,
     mint_id: Callable[[], uuid.UUID] = uuid.uuid7,
+    heartbeat: ProgressHeartbeat | None = None,
 ) -> Plan:
     log = get_logger(__name__)
     include = PathSpec.from_lines(GitIgnoreSpecPattern, config.paths.include)
@@ -188,6 +189,14 @@ def build_plan(
 
     actions: list[PlanAction] = []
     skips: list[SkipDecision] = []
+    processed = 0
+
+    def advance() -> None:
+        nonlocal processed
+        processed += 1
+        if heartbeat is not None:
+            heartbeat.advance(processed=processed, skipped=len(skips), failed=0)
+
     for link in inventory.symlinks:
         # A plan-time exclude added after the scan can cover a symlink the
         # inventory already recorded; the more specific "excluded" reason
@@ -202,6 +211,7 @@ def build_plan(
             )
         else:
             skips.append(SkipDecision(path=link.path, reason="symlink", detail=f"-> {link.target}"))
+        advance()
     pending: list[FileRecord] = []
     for record in inventory.files:
         decision = _fact_skip(
@@ -210,23 +220,33 @@ def build_plan(
         if decision is not None:
             skips.append(decision)
             log.debug("planned skip", path=record.path, reason=decision.reason)
+            advance()
         else:
             pending.append(record)
+            if heartbeat is not None:
+                heartbeat.advance(processed=processed, skipped=len(skips), failed=0)
 
     # Part 2: turn `pending` into actions, content-derived skips, or no-ops
     # (FR-017's third state — a file that needs nothing is in neither list).
-    # `claimed_targets` guards against two renames in *this run* landing on
-    # the same target. This does happen within one directory listing: suffix
-    # matching is case-insensitive (`record.suffix.lower() == ".txt"`), so
-    # `a.TXT` and `a.txt` can coexist on a case-sensitive filesystem and both
-    # target `a.md`. `pending` is processed in the globally sorted order set
-    # by `discovery.py`, so the lexicographically first source claims the
-    # target and every later collider is skipped via this set.
-    claimed_targets: set[str] = set()
+    # Output ledger (rev 0.26, DMR-01): EVERY emitted action claims its
+    # effective output path — target_path for renames, the file's own path for
+    # in-place rewrites — so no two actions in one plan can share an output
+    # (and therefore no two backups can share a key). The old set tracked only
+    # rename targets, which let an in-place rewrite of a.md and a.txt -> a.md
+    # both claim a.md's bytes. `pending` is processed in the globally sorted
+    # order set by discovery.py, so the lexicographically first claimant wins
+    # deterministically; never policy-overridable — `overwrite` licenses
+    # clobbering a pre-existing target (AW-002), not another planned action's
+    # output (G-005). Values are the claiming source path, for skip details.
+    claimed_outputs: dict[str, str] = {}
     inventory_paths = {f.path for f in inventory.files}
     source_root = Path(inventory.source_root)
     seq = 0
+    pending_started = 0
     for record in pending:
+        if pending_started:
+            advance()
+        pending_started += 1
         # FR-019: the content pass — verified read + decode + transform
         # prediction — is this layer's unbounded per-file work; catastrophic
         # regex backtracking in an FR-009 transform (R-007) surfaces here. The
@@ -315,20 +335,14 @@ def build_plan(
                     and config.rename.txt_to_md
                 ):
                     candidate = record.path[: -len(record.suffix)] + ".md"
-                    if candidate in claimed_targets:
-                        # Plan-internal conflict: an earlier action in this run
-                        # already claims the target. Never policy-overridable —
-                        # `overwrite` licenses clobbering a pre-existing target
-                        # (AW-002), not silently losing another planned action's
-                        # output (G-005). Reason stays "collision" so the CLI's
-                        # `fail`-policy accounting still counts it toward exit 1.
+                    if candidate in claimed_outputs:
                         skips.append(
                             SkipDecision(
                                 path=record.path,
                                 reason="collision",
                                 detail=(
                                     f"target {candidate} already claimed by an "
-                                    f"earlier action this run"
+                                    f"earlier action this run ({claimed_outputs[candidate]})"
                                 ),
                             )
                         )
@@ -352,8 +366,24 @@ def build_plan(
                     ops.append("rename")
                 if not ops:
                     continue  # no-op: neither action nor skip (FR-017 plan half)
-                if target is not None:
-                    claimed_targets.add(target)
+                effective_output = target if target is not None else record.path
+                if effective_output in claimed_outputs:
+                    # In-place rewrite whose own path an earlier rename claimed
+                    # (the rename is about to replace these bytes; executing
+                    # both is the DMR-01 double-claim).
+                    skips.append(
+                        SkipDecision(
+                            path=record.path,
+                            reason="collision",
+                            detail=(
+                                f"output path {effective_output} already claimed by an "
+                                f"earlier action this run ({claimed_outputs[effective_output]})"
+                            ),
+                        )
+                    )
+                    log.debug("planned skip", path=record.path, reason="collision")
+                    continue
+                claimed_outputs[effective_output] = record.path
                 seq += 1
                 actions.append(
                     PlanAction(
@@ -388,6 +418,9 @@ def build_plan(
                 err="ERR-009",
             )
             continue
+
+    if pending_started:
+        advance()
 
     skips.sort(key=lambda s: s.path)
     if config.write.backup_dir is not None and not config.write.backup_dir.is_absolute():

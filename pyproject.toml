@@ -1,6 +1,6 @@
 [project]
 name = "docmend"
-version = "1.0.2"
+version = "2.0.0"
 description = "Normalize, repair, and convert large libraries of legacy .txt/.html documents into clean, well-structured Markdown."
 readme = "README.md"
 requires-python = ">=3.14"
@@ -42,7 +42,7 @@ dev = [
 ]
 
 [build-system]
-requires = ["uv_build>=0.11,<0.12"]
+requires = ["uv_build==0.11.6"]
 build-backend = "uv_build"
 
 [tool.ruff]
@@ -66,6 +66,12 @@ docstring-code-format = true
 
 [tool.basedpyright]
 include = ["src", "tests"]
+# "." so `tests.helpers.*` (the shared fixture builders) resolves as a
+# namespace package, matching pytest's pythonpath below. "src" must then be
+# listed explicitly: any extraPaths value disables pyright's automatic ./src
+# search path, and without it `docmend` resolves to the INSTALLED py.typed
+# copy — whose strict re-export rules flag every transitive import.
+extraPaths = [".", "src"]
 typeCheckingMode = "strict"
 pythonVersion = "3.14"
 pythonPlatform = "All"
@@ -74,6 +80,10 @@ failOnWarnings = true
 [tool.pytest.ini_options]
 minversion = "9.0"
 testpaths = ["tests"]
+# Repo root on sys.path so shared fixture builders import as tests.helpers.*
+# (plain importable helpers, not conftest fixtures — they build the adversarial
+# raw manifest documents the strict models would refuse to construct).
+pythonpath = ["."]
 addopts = ["-ra", "--strict-markers", "--strict-config"]
 markers = [
     "slow: opt-in long-running tests (NFR-001 scale run; also gated on DOCMEND_SCALE=1)",

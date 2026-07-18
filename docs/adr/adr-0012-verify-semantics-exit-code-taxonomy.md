@@ -6,7 +6,7 @@ description: 'verify is a read-only command that validates corpus state and arti
 doc_type: 'adr'
 status: 'accepted'
 created: '2026-07-05'
-updated: '2026-07-05'
+updated: '2026-07-10'
 reviewed: null
 owner: 'chrisdpurcell'
 consumer: 'agent'
@@ -81,6 +81,7 @@ Confirmed by: exit-code assertions in the CLI test suite for each of scan/plan/a
 
 ## More Information
 
+- **Amendment (2026-07-10, comprehensive review / safety-core design):** the 2026-07-10 review confirmed multiple false-clean verify outcomes (DMR-05), so verify's check set and the taxonomy's classifications are recontracted for v2 (spec rev 0.26). **Verify inputs**: Plan, Report(s), the validated ManifestChain, and the BackupStore, bound by plan hash and run identity (`adr-0019`); the Report is required for plan coverage because ordinary skips and post-abort actions never reach the manifest. **New findings**: missing/corrupt backup bytes (both roles), zero checked files while inputs exist, discovery `unreadable`/`timeout` skips, wrong-root manifests, dangling intents, uncertified dry-run-only coverage, and `coverage unprovable` for a missing report after mutation. **`verify --plan`** becomes the binding coverage interface: every plan action maps to exactly one terminal outcome (`applied`/`failed`/`skipped`/`not-attempted`), with the ManifestChain as mutation authority and `already-applied` a nonterminal confirmation. **Taxonomy classifications** (codes unchanged): artifact destination guard refusal → 3 (`adr-0021`); malformed/lifecycle-invalid manifest input → 2; manifest containment violation → 3 in restore/resume but a finding (1) in read-only verify; commit-time interference → per-action skip toward 1; scan/plan runs containing `timeout` skips → 1, no longer 0.
 - Spec: §7.1 FR-014, §18.5, IR-004.
 - Research: `restore-from-manifest-design` (restic exit-code precedent).
 - Decision owner: owner (RQ-006, 2026-07-05). The taxonomy's `3` bucket is the observable signal of the ADR-0004 safety gate; `verify`'s reconciliation checks consume the ADR-0005 artifact schemas and the ADR-0006 manifest/report.

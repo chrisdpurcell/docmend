@@ -16,8 +16,10 @@ import pytest
 import structlog
 from typer.testing import CliRunner
 
+import docmend.cli as cli_module
 from docmend import lock
 from docmend.cli import app
+from docmend.report import Report
 
 runner = CliRunner()
 
@@ -96,6 +98,39 @@ class TestApplyDryRunDefault:
         assert document["dry_run"] is True
         assert "would-apply" in result.output
 
+    def test_apply_plan_1_x__exit_2_before_lock_report_or_mutation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        make_corpus(corpus)
+        plan_path = _make_plan(corpus)
+        document = json.loads(plan_path.read_text(encoding="utf-8"))
+        document["schema_version"] = "1.2"
+        document["config"]["parallel"] = {
+            "enabled": False,
+            "model": "process",
+            "workers": "auto",
+            "start_method": "forkserver",
+            "chunksize": "auto",
+            "maxtasksperchild": None,
+        }
+        plan_path.write_text(json.dumps(document), encoding="utf-8")
+        before = _hashes(corpus)
+
+        def lock_should_not_run(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("legacy plan reached the run lock")
+
+        monkeypatch.setattr(cli_module, "_acquire_run_lock_strict", lock_should_not_run)
+        result = runner.invoke(app, ["apply", str(plan_path)])
+
+        assert result.exit_code == 2, result.output
+        assert "plan schema 1.2" in result.output
+        assert "regenerate" in result.output
+        assert _hashes(corpus) == before
+        assert not list((tmp_path / ".docmend").glob("*-report.json"))
+        assert not list((tmp_path / ".docmend").glob("*-manifest.jsonl"))
+
     def test_apply_dry_run_overwrite_with_configured_backup_dir__no_backup_written(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -173,7 +208,10 @@ class TestApplyGate:
             "would_apply": 0,
             "skipped": 0,
             "failed": 0,
+            "not_attempted": 0,
         }
+        assert document["prior_attempt"] is None
+        assert document["manifest_sha256"] is None  # refused: nothing mutated
 
     def test_apply_locked_target__exit_3(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -372,6 +410,49 @@ class TestApplyLogContent:
         assert {"a.txt", "c.txt"} <= {record["path"] for record in outcomes}
         assert all(record["level"] == "INFO" for record in outcomes)
         assert {record["status"] for record in outcomes} == {"applied"}
+        stage_events = [
+            record for record in records if str(record.get("event", "")).startswith("stage.")
+        ]
+        assert [record["event"] for record in stage_events] == [
+            "stage.start",
+            "stage.complete",
+        ]
+        assert {record["stage"] for record in stage_events} == {"apply"}
+        assert all("path" not in record for record in stage_events)
+
+    def test_apply_abort__terminal_event_accounts_for_not_attempted_actions(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "a.txt").write_text("clean a\n", encoding="utf-8")
+        (corpus / "z.txt").write_text("clean z\n", encoding="utf-8")
+        config_path = tmp_path / "fail.toml"
+        config_path.write_text('[rename]\non_collision = "fail"\n', encoding="utf-8")
+        plan_path = tmp_path / "plan.json"
+        planned = runner.invoke(
+            app,
+            ["plan", str(corpus), "--config", str(config_path), "--out", str(plan_path)],
+        )
+        assert planned.exit_code == 0, planned.output
+        (corpus / "a.md").write_text("appeared after planning\n", encoding="utf-8")
+
+        applied = runner.invoke(
+            app,
+            ["apply", str(plan_path), "--write", "--preserved-by", "external"],
+        )
+        assert applied.exit_code == 1, applied.output
+        [report_path] = (tmp_path / ".docmend").glob("docmend-*-report.json")
+        run_id = report_path.name.removeprefix("docmend-").removesuffix("-report.json")
+        log_path = tmp_path / ".docmend" / f"docmend-{run_id}.jsonl"
+        events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+        [terminal] = [event for event in events if event.get("event") == "stage.complete"]
+
+        assert terminal["stage"] == "apply"
+        assert terminal["total"] == 2
+        assert terminal["processed"] == 1
+        assert terminal["not_attempted"] == 1
 
 
 class TestPartialUndoWarning:
@@ -437,3 +518,166 @@ class TestPartialUndoWarning:
 
         assert result.exit_code == 0, result.output
         assert "pure renames" not in result.output
+
+
+class TestApplyArtifactGuard:
+    """rev 0.26 IR-007 / adr-0021 / DMR-02: apply's report path is guarded
+    before the gate, and the report finalizes while the run lock is held."""
+
+    def test_report_inside_corpus__refused_exit_3_before_gate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`apply --report <corpus file>` used to clobber the file even on a
+        dry run and even when the write was later refused (DMR-02 repro)."""
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        make_corpus(corpus)
+        plan_path = _make_plan(corpus)
+        victim = corpus / "b.md"
+        before = victim.read_bytes()
+        result = runner.invoke(app, ["apply", str(plan_path), "--report", str(victim)])
+        assert result.exit_code == 3
+        assert "artifact-destination" in result.output
+        assert victim.read_bytes() == before
+
+    def test_resume_run_id_derived_manifest__aliases_as_input_refused_exit_3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The manifest path --resume-run-id derives
+        (.docmend/docmend-<ID>-manifest.jsonl) must count as an input artifact
+        for the DMR-02 guard, same as an explicit --resume-manifest path —
+        otherwise --report could be pointed at it and clobber the very
+        manifest apply is about to reconcile against.
+
+        guard_artifact_destination's alias check itself compares resolved
+        paths only and does not require the input artifact to exist. But
+        `_read_resume_records` (adr-0006) runs BEFORE the guard in apply's own
+        pipeline and hard-requires the manifest to be readable (ERR-006, exit
+        2) — so an EMPTY (but present) manifest file is created here to reach
+        the guard at all; a --resume-run-id naming a manifest that has never
+        been written yet is not a reachable state through the CLI.
+        """
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        make_corpus(corpus)
+        plan_path = _make_plan(corpus)
+        derived_manifest = Path(".docmend") / "docmend-X-manifest.jsonl"
+        derived_manifest.parent.mkdir(parents=True, exist_ok=True)
+        # 2.0: a readable manifest starts with its header; a header-only file
+        # (valid empty set) with the matching root reaches the guard.
+        from tests.helpers.manifest2 import header_doc, write_set
+
+        write_set(
+            derived_manifest,
+            header_doc(
+                source_root=str(corpus.resolve()),
+                plan_sha256=f"sha256:{hashlib.sha256(plan_path.read_bytes()).hexdigest()}",
+            ),
+        )
+        result = runner.invoke(
+            app,
+            [
+                "apply",
+                str(plan_path),
+                "--resume-run-id",
+                "X",
+                "--report",
+                str(derived_manifest),
+            ],
+        )
+        assert result.exit_code == 3, result.output
+        assert "artifact-destination" in result.output
+
+    def test_dry_run_existing_report__no_clobber_exit_2(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        make_corpus(corpus)
+        plan_path = _make_plan(corpus)
+        report = tmp_path / "existing-report.json"
+        report.write_bytes(b"pre-existing\n")
+
+        result = runner.invoke(app, ["apply", str(plan_path), "--report", str(report)])
+
+        assert result.exit_code == 2, result.output
+        assert "dry runs leave prior artifacts untouched" in result.output
+        assert report.read_bytes() == b"pre-existing\n"
+
+    def test_gate_refusal_existing_report__no_clobber_exit_3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        make_corpus(corpus)
+        plan_path = _make_plan(corpus)
+        report = tmp_path / "existing-report.json"
+        report.write_bytes(b"pre-existing\n")
+
+        result = runner.invoke(app, ["apply", str(plan_path), "--write", "--report", str(report)])
+
+        assert result.exit_code == 3, result.output
+        assert "pre-existing artifact preserved" in result.output
+        assert report.read_bytes() == b"pre-existing\n"
+
+    def test_write__report_published_inside_run_lock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """rev 0.26: report finalization happens while the run lock is held,
+        so a run's artifacts and corpus effects commit under one coordination
+        boundary. Spies are installed AFTER plan creation (plan takes its own
+        lock) and the event list starts empty for the apply invocation."""
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        make_corpus(corpus)
+        plan_path = _make_plan(corpus)
+
+        events: list[str] = []
+        real_release = lock.RunLock.release
+        real_write_report = cli_module.artifacts.write_report
+
+        def spy_release(self: lock.RunLock) -> None:
+            events.append("lock-released")
+            real_release(self)
+
+        def spy_write_report(report: Report, path: Path) -> None:
+            events.append("report-written")
+            real_write_report(report, path)
+
+        monkeypatch.setattr(lock.RunLock, "release", spy_release)
+        monkeypatch.setattr(cli_module.artifacts, "write_report", spy_write_report)
+
+        result = runner.invoke(
+            app,
+            ["apply", str(plan_path), "--write", "--backup-dir", str(tmp_path / "bk")],
+        )
+        assert result.exit_code == 0, result.output
+        assert "report-written" in events and "lock-released" in events
+        assert events.index("report-written") < events.index("lock-released")
+
+
+class TestReportLineage:
+    def test_write_apply_report__carries_closed_manifest_hash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Report 2.0 (adr-0019): the report's manifest_sha256 is the hash of
+        this attempt's CLOSED manifest — the redundant lineage anchor a
+        successor attempt links against."""
+        import hashlib as _hashlib
+
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        make_corpus(corpus)
+        plan_path = _make_plan(corpus)
+
+        result = runner.invoke(
+            app, ["apply", str(plan_path), "--write", "--preserved-by", "external"]
+        )
+
+        assert result.exit_code == 0, result.output
+        [report_path] = (tmp_path / ".docmend").glob("docmend-*-report.json")
+        [manifest_path] = (tmp_path / ".docmend").glob("docmend-*-manifest.jsonl")
+        document = json.loads(report_path.read_text())
+        expected = f"sha256:{_hashlib.sha256(manifest_path.read_bytes()).hexdigest()}"
+        assert document["manifest_sha256"] == expected
+        assert document["prior_attempt"] is None  # first attempt

@@ -1,0 +1,28 @@
+{
+	"canonical_prompt": "perform an async workflow review",
+	"completed_at": "2026-07-10T21:11:04.600423+00:00",
+	"error": null,
+	"follow_on_reviews": [],
+	"last_heartbeat_at": "2026-07-10T21:11:04.600423+00:00",
+	"last_message_path": null,
+	"last_progress_message": "Child review completed successfully. Elapsed: 11m23s. Saved report: docs/codex-reviews/2026-07-10-2034-background-jobs-and-async-workflow-review-report.md",
+	"latest_existing_report": "docs/codex-reviews/2026-07-10-2034-codex-review-live-status.md",
+	"queue_position": 9,
+	"repo_name": "docmend",
+	"repo_root": ".",
+	"residual_risk_summary": [
+		"Even after protocol fixes, local POSIX atomic rename and fsync behavior varies by filesystem/mount; power-loss durability must be stated against the supported matrix and tested where practical.",
+		"Hashes detect drift but do not authenticate a manifest or backup when an attacker can rewrite both. Add signatures/MACs only if the threat model requires tamper authenticity; containment/version/run validation is required regardless.",
+		"External writers are not coordinated by docmend's `flock`; apply-time hashes reduce but cannot eliminate every pathname/identity race in a mutable tree."
+	],
+	"review_manifest_path": "./docs/codex-reviews/2026-07-10-2034-background-jobs-and-async-workflow-review-execution.json",
+	"review_skill": "background-jobs-and-async-workflow-review",
+	"save_dir": "docs/codex-reviews/",
+	"saved_report_path": "docs/codex-reviews/2026-07-10-2034-background-jobs-and-async-workflow-review-report.md",
+	"shared_research_path": "docs/codex-reviews/2026-07-10-2034-codex-review-shared-research.md",
+	"shared_research_status": "completed",
+	"started_at": "2026-07-10T20:59:41.176647+00:00",
+	"status": "completed",
+	"sweep_started_at": "2026-07-10-2034",
+	"top_findings_summary": []
+}

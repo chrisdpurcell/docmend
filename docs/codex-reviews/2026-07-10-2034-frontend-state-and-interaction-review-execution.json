@@ -1,0 +1,28 @@
+{
+	"canonical_prompt": "perform a frontend state review",
+	"completed_at": "2026-07-10T21:15:55.183894+00:00",
+	"error": null,
+	"follow_on_reviews": [],
+	"last_heartbeat_at": "2026-07-10T21:15:55.183894+00:00",
+	"last_message_path": null,
+	"last_progress_message": "Child review completed successfully. Elapsed: 14m52s. Saved report: docs/codex-reviews/2026-07-10-2034-frontend-state-and-interaction-review-report.md",
+	"latest_existing_report": "docs/codex-reviews/2026-07-10-2034-codex-review-live-status.md",
+	"queue_position": 11,
+	"repo_name": "docmend",
+	"repo_root": ".",
+	"residual_risk_summary": [
+		"overall: `high until ISSUE-001 through ISSUE-003 are resolved or explicitly accepted`",
+		"directly_verified: `source code, tests, approved spec, conventions, shared research, v1.0.2 baseline, full non-scale test suite, and four isolated CLI reproductions`",
+		"inferred: `automation and rollout-gate impact based on documented exit-code semantics and the project's unattended-operation goals`"
+	],
+	"review_manifest_path": "./docs/codex-reviews/2026-07-10-2034-frontend-state-and-interaction-review-execution.json",
+	"review_skill": "frontend-state-and-interaction-review",
+	"save_dir": "docs/codex-reviews/",
+	"saved_report_path": "docs/codex-reviews/2026-07-10-2034-frontend-state-and-interaction-review-report.md",
+	"shared_research_path": "docs/codex-reviews/2026-07-10-2034-codex-review-shared-research.md",
+	"shared_research_status": "completed",
+	"started_at": "2026-07-10T21:01:02.428994+00:00",
+	"status": "completed",
+	"sweep_started_at": "2026-07-10-2034",
+	"top_findings_summary": ["ISSUE-001", "ISSUE-002", "ISSUE-003"]
+}

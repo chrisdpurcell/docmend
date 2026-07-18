@@ -20,6 +20,7 @@ from typing import Any, cast
 
 import pytest
 from jsonschema import Draft202012Validator
+from pydantic import BaseModel
 
 from docmend.artifacts import (
     ARTIFACT_KINDS,
@@ -29,10 +30,20 @@ from docmend.artifacts import (
     validate_artifact,
 )
 from docmend.config import DocmendConfig
+from docmend.frontmatter import FRONTMATTER_SCHEMA_VERSION
 from docmend.inventory import Inventory
 from docmend.plan import Plan, PlanSkipReason
 from docmend.report import Report
+from docmend.scale_evidence import (
+    QUALIFICATION_SCHEMA_KINDS,
+    QualificationSchemaKind,
+    ReferenceEnvironment,
+    ScaleEvidence,
+    ThresholdBaseline,
+    load_qualification_schema,
+)
 from docmend.transform.dispatch import Operation
+from docmend.verify_report import VerifyReport
 from docmend.writer.manifest import ManifestRecord
 
 RUN_ID = "run_20260706T000000Z_abc123"
@@ -92,6 +103,49 @@ class TestSchemaFiles:
         assert "pattern" in docmend_ns["properties"]["schema_version"]
         assert {"id", "schema_version"} <= set(docmend_ns["required"])
 
+    def test_frontmatter_schema__version_constant_is_code_owned(self) -> None:
+        assert FRONTMATTER_SCHEMA_VERSION == "1.0"
+
+
+class TestQualificationSchemaFiles:
+    @pytest.mark.parametrize("kind", QUALIFICATION_SCHEMA_KINDS)
+    def test_schema__is_valid_draft_2020_12(self, kind: QualificationSchemaKind) -> None:
+        _check_schema(load_qualification_schema(kind))
+
+    @pytest.mark.parametrize("kind", QUALIFICATION_SCHEMA_KINDS)
+    def test_schema__records_are_strict_and_maps_have_finite_keys(
+        self, kind: QualificationSchemaKind
+    ) -> None:
+        offenders: list[str] = []
+
+        def walk(node: object, path: str) -> None:
+            if isinstance(node, dict):
+                typed = cast("dict[str, object]", node)
+                if typed.get("type") == "object":
+                    properties = typed.get("properties")
+                    if isinstance(properties, dict):
+                        if typed.get("additionalProperties") is not False:
+                            offenders.append(path or "(root)")
+                    else:
+                        property_names = typed.get("propertyNames")
+                        value_schema = typed.get("additionalProperties")
+                        finite = isinstance(property_names, dict) and isinstance(
+                            cast("dict[str, object]", property_names).get("enum"), list
+                        )
+                        constrained_values = isinstance(value_schema, dict) and bool(
+                            cast("dict[str, object]", value_schema)
+                        )
+                        if not finite or not constrained_values:
+                            offenders.append(path or "(root map)")
+                for key, value in typed.items():
+                    walk(value, f"{path}/{key}")
+            elif isinstance(node, list):
+                for index, value in enumerate(cast("list[object]", node)):
+                    walk(value, f"{path}[{index}]")
+
+        walk(load_qualification_schema(kind), "")
+        assert not offenders, f"loose qualification objects in {kind}: {offenders}"
+
 
 class TestEnumDriftGuard:
     """adr-0005: the Python vocabularies and the plan schema's enums must not drift apart.
@@ -118,7 +172,7 @@ class TestEnumDriftGuard:
 def _minimal_plan() -> dict[str, object]:
     return {
         "schema": "docmend/plan",
-        "schema_version": "1.1",
+        "schema_version": "2.0",
         "run_id": RUN_ID,
         "generated_at": TIMESTAMP,
         "generated_by": "docmend 0.1.0",
@@ -153,7 +207,7 @@ def _minimal_plan() -> dict[str, object]:
 def _minimal_report() -> dict[str, object]:
     return {
         "schema": "docmend/report",
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "run_id": RUN_ID,
         "generated_by": "docmend 0.1.0",
         "plan_ref": {"path": "plan.json", "run_id": RUN_ID, "sha256": SHA},
@@ -171,14 +225,46 @@ def _minimal_report() -> dict[str, object]:
                 "error": None,
             }
         ],
-        "totals": {"applied": 0, "would_apply": 1, "skipped": 0, "failed": 0},
+        "totals": {
+            "applied": 0,
+            "would_apply": 1,
+            "skipped": 0,
+            "failed": 0,
+            "not_attempted": 0,
+        },
+        "prior_attempt": None,
+        "manifest_sha256": None,
+    }
+
+
+def _minimal_verify_report() -> dict[str, object]:
+    return {
+        "schema": "docmend/verify-report",
+        "schema_version": "1.0",
+        "run_id": RUN_ID,
+        "generated_by": "docmend 0.1.0",
+        "verified_path": "synthetic",
+        "source_root": "/synthetic",
+        "started_at": TIMESTAMP,
+        "completed_at": TIMESTAMP,
+        "inputs": [
+            {
+                "kind": "plan",
+                "path": "plan.json",
+                "run_id": RUN_ID,
+                "sha256": SHA,
+            }
+        ],
+        "checked_files": 1,
+        "findings": [{"path": "synthetic/doc.md", "check": "hash", "detail": "mismatch"}],
+        "clean": False,
     }
 
 
 def _minimal_manifest_record() -> dict[str, object]:
     return {
         "schema": "docmend/manifest-record",
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "run_id": RUN_ID,
         "action_id": ACTION_ID,
         "docmend_id": str(uuid.uuid7()),
@@ -192,6 +278,11 @@ def _minimal_manifest_record() -> dict[str, object]:
         "after_sha256": SHA,
         "result": "applied",
         "error": None,
+        "undoes_action_id": None,
+        "undoes_run_id": None,
+        "source_identity": None,
+        "target_identity": None,
+        "expected_published_identity": None,
     }
 
 
@@ -201,8 +292,20 @@ class TestSchemaSatisfiability:
     def test_plan_schema__accepts_minimal_instance_and_default_config(self) -> None:
         validate_artifact("plan", _minimal_plan())
 
+    def test_plan_schema__excludes_legacy_parallel_snapshot(self) -> None:
+        schema = load_schema("plan")
+        defs = cast("dict[str, dict[str, object]]", schema["$defs"])
+        config = defs["config_snapshot"]
+        properties = cast("dict[str, object]", config["properties"])
+        required = cast("list[str]", config["required"])
+        assert "parallel" not in properties
+        assert "parallel" not in required
+
     def test_report_schema__accepts_minimal_instance(self) -> None:
         validate_artifact("report", _minimal_report())
+
+    def test_verify_report_schema__accepts_minimal_instance(self) -> None:
+        validate_artifact("verify-report", _minimal_verify_report())
 
     def test_manifest_schema__accepts_minimal_record(self) -> None:
         validate_artifact("manifest", _minimal_manifest_record())
@@ -248,6 +351,10 @@ def _object_shapes(
         items = branch.get("items")
         if isinstance(items, dict):
             _object_shapes(cast("dict[str, object]", items), root, f"{path}[]", out)
+        prefix_items = branch.get("prefixItems")
+        if isinstance(prefix_items, list):
+            for item in cast("list[dict[str, object]]", prefix_items):
+                _object_shapes(item, root, f"{path}[]", out)
 
 
 class TestPydanticCrossCheck:
@@ -313,6 +420,45 @@ class TestPydanticCrossCheck:
         _object_shapes(load_schema("report"), load_schema("report"), "", hand)
 
         emitted = cast("dict[str, object]", Report.model_json_schema(by_alias=True))
+        model: dict[str, tuple[set[str], set[str]]] = {}
+        _object_shapes(emitted, emitted, "", model)
+
+        assert set(hand) == set(model), "object paths differ between schema and model"
+        for path, (hand_props, hand_required) in hand.items():
+            model_props, model_required = model[path]
+            assert hand_props == model_props, f"property names differ at {path!r}"
+            assert model_required <= hand_required, f"model over-requires at {path!r}"
+
+    def test_verify_report_model__matches_hand_authored_schema(self) -> None:
+        hand: dict[str, tuple[set[str], set[str]]] = {}
+        _object_shapes(load_schema("verify-report"), load_schema("verify-report"), "", hand)
+
+        emitted = cast("dict[str, object]", VerifyReport.model_json_schema(by_alias=True))
+        model: dict[str, tuple[set[str], set[str]]] = {}
+        _object_shapes(emitted, emitted, "", model)
+
+        assert set(hand) == set(model), "object paths differ between schema and model"
+        for path, (hand_props, hand_required) in hand.items():
+            model_props, model_required = model[path]
+            assert hand_props == model_props, f"property names differ at {path!r}"
+            assert model_required <= hand_required, f"model over-requires at {path!r}"
+
+    @pytest.mark.parametrize(
+        ("kind", "model_class"),
+        [
+            ("scale-evidence", ScaleEvidence),
+            ("reference-environment", ReferenceEnvironment),
+            ("scale-thresholds", ThresholdBaseline),
+        ],
+    )
+    def test_qualification_model__matches_hand_authored_schema(
+        self, kind: QualificationSchemaKind, model_class: type[BaseModel]
+    ) -> None:
+        hand_schema = load_qualification_schema(kind)
+        hand: dict[str, tuple[set[str], set[str]]] = {}
+        _object_shapes(hand_schema, hand_schema, "", hand)
+
+        emitted = cast("dict[str, object]", model_class.model_json_schema(by_alias=True))
         model: dict[str, tuple[set[str], set[str]]] = {}
         _object_shapes(emitted, emitted, "", model)
 

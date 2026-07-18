@@ -1,0 +1,28 @@
+{
+	"canonical_prompt": "perform a CI review",
+	"completed_at": "2026-07-10T21:12:20.002789+00:00",
+	"error": null,
+	"follow_on_reviews": [],
+	"last_heartbeat_at": "2026-07-10T21:12:20.002789+00:00",
+	"last_message_path": null,
+	"last_progress_message": "Child review completed successfully. Elapsed: 11m01s. Saved report: docs/codex-reviews/2026-07-10-2034-ci-cd-review-report.md",
+	"latest_existing_report": "docs/codex-reviews/2026-07-10-2034-codex-review-live-status.md",
+	"queue_position": 12,
+	"repo_name": "docmend",
+	"repo_root": ".",
+	"residual_risk_summary": [
+		"highest_residual_risk: `official release creation trusts a matching tag and mutable automation more than the documented governance contract permits`",
+		"external_control_risk: `several conclusions depend on unauthenticated GitHub settings that repository files cannot prove`",
+		"artifact_risk: `source tests are strong, but published sdist/wheel and their provenance are not fully established`"
+	],
+	"review_manifest_path": "./docs/codex-reviews/2026-07-10-2034-ci-cd-review-execution.json",
+	"review_skill": "ci-cd-review",
+	"save_dir": "docs/codex-reviews/",
+	"saved_report_path": "docs/codex-reviews/2026-07-10-2034-ci-cd-review-report.md",
+	"shared_research_path": "docs/codex-reviews/2026-07-10-2034-codex-review-shared-research.md",
+	"shared_research_status": "completed",
+	"started_at": "2026-07-10T21:01:18.860136+00:00",
+	"status": "completed",
+	"sweep_started_at": "2026-07-10-2034",
+	"top_findings_summary": []
+}

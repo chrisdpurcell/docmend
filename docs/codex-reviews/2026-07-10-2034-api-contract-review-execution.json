@@ -1,0 +1,28 @@
+{
+	"canonical_prompt": "perform an API contract review",
+	"completed_at": "2026-07-10T21:04:35.932538+00:00",
+	"error": null,
+	"follow_on_reviews": [],
+	"last_heartbeat_at": "2026-07-10T21:04:35.932538+00:00",
+	"last_message_path": null,
+	"last_progress_message": "Child review completed successfully. Elapsed: 12m52s. Saved report: docs/codex-reviews/2026-07-10-2034-api-contract-review-report.md",
+	"latest_existing_report": "docs/codex-reviews/2026-07-10-2034-codex-review-live-status.md",
+	"queue_position": 8,
+	"repo_name": "docmend",
+	"repo_root": ".",
+	"residual_risk_summary": [
+		"high: Until ISSUE-001 and ISSUE-002 are fixed, restore safety depends on every manifest being authentic, internally coherent, and produced by the current writer despite the schema and CLI presenting manifests as durable external inputs.",
+		"medium: External wrappers and historical artifacts were not available, so actual compatibility breakage may be broader than the in-repo evidence.",
+		"medium: This review did not execute destructive hostile-manifest tests; it established the reachable code path and schema acceptance without mutating a target."
+	],
+	"review_manifest_path": "./docs/codex-reviews/2026-07-10-2034-api-contract-review-execution.json",
+	"review_skill": "api-contract-review",
+	"save_dir": "docs/codex-reviews/",
+	"saved_report_path": "docs/codex-reviews/2026-07-10-2034-api-contract-review-report.md",
+	"shared_research_path": "docs/codex-reviews/2026-07-10-2034-codex-review-shared-research.md",
+	"shared_research_status": "completed",
+	"started_at": "2026-07-10T20:51:43.735601+00:00",
+	"status": "completed",
+	"sweep_started_at": "2026-07-10-2034",
+	"top_findings_summary": []
+}

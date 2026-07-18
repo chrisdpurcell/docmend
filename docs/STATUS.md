@@ -1,0 +1,13 @@
+# Project Status
+
+## Current snapshot
+
+- docmend v2.0.0 is released with the complete scan, plan, apply, restore, resume, and verify pipeline.
+- The approved SPEC-VHHB revision 0.44 and ADRs 0001-0022 govern landed post-v1 changes (adr-0006 superseded by adr-0019; adr-0007 superseded by adr-0022). DMR-08 is closed: plan schema 2.0/config migration, the 1,000-file guard, aggregate liveness, capacity preflight, the 100,000-file pilot/diagnostic workflow, the 100 MiB file-size matrix, and the accepted million-file release qualification implement the sequential bounded-linear contract.
+- The current `dev` baseline is 1,726 passing tests with no skips, 89% branch coverage, and no known dependency vulnerabilities.
+- The repository workflow is `dev` to pull request to protected `main`; releases are signed `vX.Y.Z` tags with sdist and wheel artifacts. The v2.0.0 safety-core release ships all four remediation plans.
+- Safety-core Plans A-D are implemented: output/backup ownership and artifact guards (DMR-01/02); manifest/report 2.0 lineage, journaled recovery, and shared lifecycle adjudication (DMR-03/04); descriptor-bound commit authority and action-time overwrite preservation (DMR-06/07); and plan-aware verification with complete false-clean findings, guarded verify reports, and same-root read locking (DMR-05).
+- Plan D was implemented as eight green commits (`39784b0..f906e9e`) after three audit rounds approved the [plan](superpowers/plans/2026-07-11-safety-core-d-verify-redesign.md), then fast-forward merged into `dev` and pushed to `origin/dev`. `verify --plan` now certifies repeatable attempt lineage and exactly-once outcomes; restore evidence is lifecycle-only and never requires an apply report.
+- NFR-001 is Complete. Accepted [million-file evidence](scale-evidence/accepted/ae3a28677390da7c823846c32af2c84b746ae861-release-1000000.json) for clean candidate `ae3a286` records 1,000,000 scanned, 875,000 applied, and the exact 25,000 expected/observed findings; all four artifacts validated, child swap stayed zero, the maximum stage RSS was 20,825,497,600 bytes, and the 25,902,581,760-byte absolute, 25,804-byte/file slope, 20% linearity, reference, and 43,200-second runtime limits passed. The workflow completed in 25,629.225 seconds. Evidence SHA-256: `c5253a874159e938768d0d7cd42e8742cc8464b0044888997cf61bfca13fb7e6`.
+- The owner's staged real-library write rollout is the next project task under the spec section 18.4 safeguards.
+- Agent Handoff v3 provides the shared repo-local session-state and durable-fact layout for the dual Claude/Codex profile.

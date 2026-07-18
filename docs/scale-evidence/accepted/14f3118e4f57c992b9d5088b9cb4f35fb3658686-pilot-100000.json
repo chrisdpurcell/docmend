@@ -1,0 +1,143 @@
+{
+  "schema": "docmend/scale-evidence",
+  "schema_version": "3.0",
+  "status": "passing",
+  "tier": "pilot",
+  "candidate_commit": "14f3118e4f57c992b9d5088b9cb4f35fb3658686",
+  "package_version": "1.0.2",
+  "build_frontend_version": "0.11.6",
+  "build_backend_version": "0.11.6",
+  "wheel_sha256": "sha256:76ca9f8dac3c04132f3c98075fd797e5c0b19987c5a4753be9316908f2c5973c",
+  "lock_sha256": "sha256:53c099ddb5bd0dbbc4cecc92dd11c7d8627ed1705fb6ed9a3c37f70f9bbd89e8",
+  "reference_environment_sha256": "sha256:458b51662c05290784130cf02be812919063121e0ecb33086f5a6373a85f1d55",
+  "threshold_baseline_sha256": null,
+  "artifact_schema_versions": {
+    "inventory": "1.2",
+    "plan": "2.0",
+    "report": "2.0",
+    "manifest": "2.0",
+    "verify-report": "1.0",
+    "frontmatter": "1.0"
+  },
+  "python_version": "3.14.6",
+  "kernel_version": "7.1.3-200.fc44.x86_64",
+  "memory_measurement": "external-rss",
+  "cache_classification": "warm",
+  "started_at": "2026-07-13T21:09:54.317255Z",
+  "completed_at": "2026-07-13T21:58:48.435604Z",
+  "preflight": {
+    "filesystems": [
+      {
+        "required_bytes": 5465492480,
+        "available_bytes": 3440645681152,
+        "required_inodes": 127899,
+        "inode_capacity_mode": "dynamic-metadata",
+        "available_inodes": null,
+        "margin_fraction": 0.25,
+        "passed": true
+      }
+    ],
+    "capacity_margin_met": true,
+    "reference_environment_match": true,
+    "binding_filesystem": true,
+    "ram_requirement_met": true,
+    "passed": true
+  },
+  "outcome_reason": null,
+  "file_count": 100000,
+  "corpus_bytes": 11451386,
+  "stages": [
+    {
+      "stage": "scan",
+      "run_id": "run_20260713T211016Z_c9b760",
+      "elapsed_seconds": 59.374872014002904,
+      "files_per_second": 1684.2141567297376,
+      "bytes_per_second": 192865.86415376724,
+      "peak_rss_bytes": 393216000,
+      "python_allocation_peak_bytes": null,
+      "vm_swap_peak_bytes": 0,
+      "exit_code": 0,
+      "completed": true,
+      "artifact_validated": true,
+      "artifact_bytes": {
+        "stdout-log": 161,
+        "stderr-log": 0,
+        "inventory": 56176432,
+        "structured-log": 25201296
+      }
+    },
+    {
+      "stage": "plan",
+      "run_id": "run_20260713T211143Z_ed1271",
+      "elapsed_seconds": 66.71640528300122,
+      "files_per_second": 1498.8817154613569,
+      "bytes_per_second": 171642.73092090164,
+      "peak_rss_bytes": 706932736,
+      "python_allocation_peak_bytes": null,
+      "vm_swap_peak_bytes": 0,
+      "exit_code": 0,
+      "completed": true,
+      "artifact_validated": true,
+      "artifact_bytes": {
+        "stdout-log": 111,
+        "stderr-log": 0,
+        "plan": 52550955,
+        "structured-log": 22008305
+      }
+    },
+    {
+      "stage": "apply",
+      "run_id": "run_20260713T211347Z_e48421",
+      "elapsed_seconds": 2040.7552261399978,
+      "files_per_second": 42.8762836812637,
+      "bytes_per_second": 5611.347139196018,
+      "peak_rss_bytes": 1528246272,
+      "python_allocation_peak_bytes": null,
+      "vm_swap_peak_bytes": 0,
+      "exit_code": 0,
+      "completed": true,
+      "artifact_validated": true,
+      "artifact_bytes": {
+        "stdout-log": 181,
+        "stderr-log": 176,
+        "report": 33234636,
+        "manifest": 167269992,
+        "structured-log": 22929053
+      }
+    },
+    {
+      "stage": "verify",
+      "run_id": "run_20260713T214956Z_217328",
+      "elapsed_seconds": 125.80743524300124,
+      "files_per_second": 695.5073826200403,
+      "bytes_per_second": 91023.12576264882,
+      "peak_rss_bytes": 2143305728,
+      "python_allocation_peak_bytes": null,
+      "vm_swap_peak_bytes": 0,
+      "exit_code": 1,
+      "completed": true,
+      "artifact_validated": true,
+      "artifact_bytes": {
+        "stdout-log": 210044,
+        "stderr-log": 0,
+        "verify-report": 348730,
+        "structured-log": 24194403
+      }
+    }
+  ],
+  "totals": {
+    "scanned": 100000,
+    "actions": 87500,
+    "clean_noops": 10000,
+    "plan_skips": 2500,
+    "applied": 87500,
+    "apply_skips": 0,
+    "failures": 0,
+    "not_attempted": 0,
+    "verified": 87500,
+    "expected_findings": 2500,
+    "observed_findings": 2500
+  },
+  "thresholds": null,
+  "workflow_runtime": null
+}

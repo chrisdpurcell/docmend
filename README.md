@@ -2,7 +2,7 @@
 
 Python tool to normalize, fix, convert, manage, and maintain large libraries of text and markdown documents.
 
-> **Status:** [v1.0.2 released](https://github.com/chrisdpurcell/docmend/releases/tag/v1.0.2) (2026-07-07; see [CHANGELOG.md](CHANGELOG.md)). The design is complete (see [`docs/specs/docmend.md`](docs/specs/docmend.md)) and the whole pipeline is live: `docmend scan` inventories a file or directory tree read-only, `docmend plan` turns that inventory into a reviewable plan, `docmend apply` executes a reviewed plan (dry-run by default, gated writes, atomic mutation, a reversible manifest) and survives interruption — `apply --resume-run-id`/`--resume-manifest` completes an interrupted run without redoing finished work — `docmend restore` undoes an apply run, and `docmend verify` checks converted output read-only. Re-runs are idempotent, and the pipeline is scale-tested against a 100,000-file synthetic corpus within a bounded memory ceiling.
+> **Status:** [v2.0.0 released](https://github.com/chrisdpurcell/docmend/releases/tag/v2.0.0) (2026-07-18; see [CHANGELOG.md](CHANGELOG.md)). The design is complete (see [`docs/specs/docmend.md`](docs/specs/docmend.md)) and the whole pipeline is live: `docmend scan` inventories a file or directory tree read-only, `docmend plan` turns that inventory into a reviewable plan, `docmend apply` executes a reviewed plan (dry-run by default, gated writes, atomic mutation, a reversible manifest) and survives interruption — `apply --resume-run-id`/`--resume-manifest` completes an interrupted run without redoing finished work — `docmend restore` undoes an apply run, and `docmend verify` checks converted output read-only. Re-runs are idempotent. The configured 100 MiB file-size envelope and the sequential million-file workflow have accepted installed-wheel qualification evidence.
 
 ## Commands
 
@@ -38,6 +38,8 @@ Check converted output read-only: UTF-8 decodability, LF-only line endings, and 
 
 Configuration is a TOML file. When `--config` is omitted, `./docmend.toml` is auto-discovered; absent that, built-in defaults apply. Precedence is **CLI flags > config file > built-in defaults**: scalar flags override their key, and list-valued flags (`--include`/`--exclude`) **replace** the config list entirely, never append. Configuration alone can never enable real writes — `apply --write` is the only opt-in. Unknown keys, wrong types, and out-of-range values are rejected with a clear error.
 
+v2 is sequential-only and no longer accepts the inert `parallel.*` namespace. Any legacy `[parallel]` table exits with code 2 before scanning and instructs the operator to remove the entire section.
+
 The full reference with rationale is [spec §18.2](docs/specs/docmend.md); the shipped defaults:
 
 | Key | Default | Meaning |
@@ -59,9 +61,8 @@ The full reference with rationale is [spec §18.2](docs/specs/docmend.md); the s
 | `write.dry_run_default` | `true` | Apply defaults to dry-run. |
 | `write.backup_dir` | unset | Backup destination; enables the tool-backup preservation strategy. |
 | `write.atomic` | `true` | Atomic replace writes. |
-| `parallel.*` | `enabled = false` | v1 runs sequentially; the process-pool switches (`model`, `workers`, `start_method`, `chunksize`, `maxtasksperchild`) are pinned but off by default. |
 | `limits.per_file_timeout` | `60` | Seconds per file across discovery/detection/transform. |
-| `limits.max_file_size_mib` | `100` | Plan-time size guard; larger files are skipped with reason. |
+| `limits.max_file_size_mib` | `100` | Qualified plan-time size guard; larger files are skipped with reason. |
 | `safety.shrink_ratio` | `0.50` | Output/input floor for future content-touching transforms (v1's never-lose-non-whitespace invariant is separate and not configurable). |
 
 ## Safety model

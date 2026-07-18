@@ -34,6 +34,12 @@
     - [RQ-023 — deferred-review-artifact content-exposure policy (WH-002/WH-005)](#rq-023--deferred-review-artifact-content-exposure-policy-wh-002wh-005)
     - [RQ-024 — scale-flexibility is binding: tool-first reframing (amends RQ-010)](#rq-024--scale-flexibility-is-binding-tool-first-reframing-amends-rq-010)
     - [RQ-025..033 — gap-register Batch B decisions (2026-07-06)](#rq-025033--gap-register-batch-b-decisions-2026-07-06)
+    - [RQ-034 / RQ-035 / RQ-036 — post-release owner sign-off](#rq-034--rq-035--rq-036--post-release-owner-sign-off-on-the-three-implementation-assumption-questions)
+    - [RQ-037 — million-file scale and execution contract for v2.0.0](#rq-037--million-file-scale-and-execution-contract-for-v200)
+    - [RQ-038 — qualification evidence and revision-two thresholds](#rq-038--qualification-evidence-and-revision-two-thresholds)
+    - [RQ-039 — qualification resource-preflight semantics](#rq-039--qualification-resource-preflight-semantics)
+    - [RQ-040 — streamed corpus and stage-supervisor contract](#rq-040--streamed-corpus-and-stage-supervisor-contract)
+    - [RQ-041 — qualification orchestration completion contract](#rq-041--qualification-orchestration-completion-contract)
   - [How to use this document](#how-to-use-this-document)
 
 ## Resolved questions
@@ -360,6 +366,70 @@ All three proceeded through v1.0.0 on their recorded assumptions (spec Appendix 
 #### My Comments
 
 _Owner sign-off, 2026-07-07: all three confirmed as implemented (same review approved Deviations Log entries DEV-001 and DEV-002)._
+
+### RQ-037 — million-file scale and execution contract for v2.0.0
+
+**Resolved:** 2026-07-11 **Source question:** OQ-037 **Decision owner:** owner **Canonical references:** [approved design](superpowers/specs/2026-07-11-million-file-scale-and-resource-design.md); spec G-006, NFR-001, IR-006, DR-002, FR-019, §§3.1, 8.1, 8.5, 9, 14, 17.2, 17.3, 18.2, 18.5, 19, 20, and 21 OQ-037; [ADR-0022](adr/adr-0022-sequential-million-file-scale-contract.md); amended [ADR-0005](adr/adr-0005-durable-artifact-schema-contract.md).
+
+docmend v2.0.0 supports one through 1,000,000 files. Whole-run inventory, plan, report, manifest, and verification metadata may grow linearly with file count, but per-file body content may not accumulate. The complete installed `scan -> plan -> apply --write -> verify --plan` workflow must qualify at 1,000,000 files on the accepted reference environment and complete within 12 hours.
+
+v2.0.0 is sequential-only and removes `parallel.*`; any legacy table is an exit-2 migration error before scanning. Plan schema 2.0 removes the legacy parallel snapshot, and v2 rejects 1.x plans before gate evaluation or mutation with regeneration guidance while preserving supported inventory reuse. Binding numeric RSS ceilings, fitted incremental slope, and linearity thresholds are frozen only after the approved external, uninstrumented 100,000-file pilot and a second SPEC-VHHB revision. Process concurrency may return only through ADR-0022's evidence and approval gates.
+
+This decision supersedes RQ-009's performance-target deferral for v2, RQ-016's unimplemented process-pool selection, RQ-027's worker-side concurrency premise (the run lock remains binding), and RQ-028's process-level watchdog premise. Those historical entries remain unchanged; ADR-0022 is the current concurrency and scale authority.
+
+#### My Comments
+
+_Owner decision, 2026-07-11: approved the million-file, bounded-linear, sequential v2.0.0 design and its two-revision threshold settlement._
+
+### RQ-038 — qualification evidence and revision-two thresholds
+
+**Resolved:** 2026-07-13 **Source question:** OQ-038 **Decision owner:** owner **Canonical references:** spec NFR-001, §§9, 14, 17.2, 17.3, and §21 OQ-038 (Status: Resolved); `docs/scale-evidence/thresholds.json` and its referenced pilot points.
+
+The strict aggregate-only scale-evidence 3.0 and threshold 2.0 contracts are adopted as implemented: finite public vocabularies, mutually exclusive external-RSS/allocation-diagnostic fields, identifier-free preflight and totals, exact-byte SHA-256 evidence identities, immutable stage-aligned 10k/100k points, exact rational projection/evaluation, upward-only public rounding, exact installed-wheel provenance, four artifact-validated stages for passing evidence, and a separate reference-comparison verdict.
+
+Revision two accepts candidate `14f3118e4f57c992b9d5088b9cb4f35fb3658686`. The 10k diagnostic and accepted 100k pilot hashes are `sha256:635fee6013364eab9d47d07eab37d99fdb522a9d3ee9dcac05c7939d7648ad00` and `sha256:32f71b4e86549997787c3a63d69f7bbede0d8066c64c3f241d813285e993f0d0`; both bind reference hash `sha256:458b51662c05290784130cf02be812919063121e0ecb33086f5a6373a85f1d55`. Exact per-stage linear projection with 25% upward-rounded headroom freezes the 1M peak-RSS ceiling at 25,902,581,760 bytes and incremental-slope ceiling at 25,804 bytes/file; linearity is exactly 0.20. NFR-001 remains Partial until the scheduled 100k, file-size, and 1M release evidence pass.
+
+#### My Comments
+
+(none yet — owner block, agent does not edit)
+
+### RQ-039 — qualification resource-preflight semantics
+
+**Resolved:** 2026-07-13; RAM equivalence amended 2026-07-17 **Source question:** OQ-039 **Decision owner:** owner **Canonical references:** spec §§9, 14, 17.2, and §21 OQ-039 (Status: Resolved); revision 0.39 dynamic-Btrfs amendment, revision 0.40 pilot settlement, and revision 0.41 RAM-equivalence correction.
+
+Capacity rounds each file's logical size to its destination fragment size before grouping by followed `st_dev`, then applies one exact 25% upward-rounded byte/inode margin per filesystem. Finite statvfs inode pools use numeric availability. Only a positively identified Btrfs filesystem with the exact all-zero inode triplet may use null `dynamic-metadata`; its byte comparison stays binding, and successful corpus materialization plus all stage/artifact writes provide the runtime capacity proof. Every other zero, unreadable, malformed, ambiguous, or unclassified inode observation fails closed.
+
+One mountinfo snapshot governs a preflight. Reference comparison is exact except mount-flag order and `ram_bytes`: an absolute RAM delta of at most one current Linux base page remains the same reference class because `MemTotal` reports usable RAM after kernel reservations rather than immutable installed capacity. Wider RAM deltas are mismatches. Binding separately requires the observed environment to provide at least 16 GiB RAM, plus Linux, local SSD, eligible ext4/XFS/Btrfs storage, passing capacity, and zero child swap. Only finite value-free field-6 mount flags may be public; superblock options remain private and non-classifying. Unavailable binding child-swap telemetry makes qualification incomplete, while global swap counters remain diagnostic only.
+
+#### My Comments
+
+(none yet — owner block, agent does not edit)
+
+### RQ-040 — streamed corpus and stage-supervisor contract
+
+**Resolved:** 2026-07-13 **Source question:** OQ-040 **Decision owner:** owner **Canonical references:** spec §§9, 14, 17.2, and §21 OQ-040 (Status: Resolved).
+
+The deterministic corpus streams 1..1,000,000 frozen recipes in index order from a fresh fixed seed. Each full 40-file block contains 35 actions, four clean no-ops, and one below-floor skip/finding. Summary and materialization render the same bytes, use per-file allocation rounding, account for all corpus directories/inodes, and publish only into an absent owner-only no-follow root without merging or deleting stale names.
+
+The private versioned stage transport, fixed tracing-free child environment, one-child/one-explicit-wait lifecycle, 50-ms child-swap sampling, and Linux `ru_maxrss * 1024` external-RSS attribution are adopted. An unreadable first pre-exec snapshot may retry without publishing a value. After a valid sample, exactly one `State` and zero `VmSwap` lines is a recoverable exec/exit transition: a later valid snapshot resumes measurement, while a following exact terminal X/Z snapshot preserves the prior peak. An unresolved transition at poll-only exit, or any other missing, duplicate, malformed, or unreadable post-sample telemetry, yields null and incomplete binding evidence, never a false zero. Wrapper success means trustworthy private result publication and never mirrors the child exit.
+
+#### My Comments
+
+(none yet — owner block, agent does not edit)
+
+### RQ-041 — qualification orchestration completion contract
+
+**Resolved:** 2026-07-13 **Source question:** OQ-041 **Decision owner:** owner **Canonical references:** spec §§9, 14, 17.2, 18.5, and §21 OQ-041 (Status: Resolved).
+
+Scale-evidence 3.0, threshold 2.0, phase-truthful partial evidence, finite outcome/status precedence, immutable threshold context, and exact-HEAD installed-wheel provenance are adopted. Qualification fixes the build frontend/backend, archives a clean commit into a fresh owner-only external workspace, installs a hash-locked wheel/runtime closure, proves metadata and import origins, and uses fresh supervisors. Binding claims retain the documented quiescent same-UID repository/interpreter/workspace/destination assumption; same-UID in-call replacement, open-inode mutation, ptrace, and process injection remain outside the threat model.
+
+Reference storage classification is derived conservatively; cache class is warm. The named preflight coefficients plus exact 25% margin remain accepted because the pilot did not exceed them; they may be raised only by later approved change control and never lowered automatically. Release runtime is monotonic from scan dispatch through the final validated result, with 43,200 seconds passing and any greater value failing. Evidence and acceptance publication are deterministic, identical-byte, and no-clobber. Invalid pre-provenance inputs exit 2 without evidence; post-provenance passing or successful explicit diagnostics exit 0; failed, incomplete, or reference-mismatched binding requests exit 1 after evidence publication where possible.
+
+Revision 0.43 amends the private-output coefficient after the first clean-HEAD 1M attempt completed every stage but produced 2,100,046 bytes of deterministic verify stdout, 2,894 bytes above the fixed 2 MiB ceiling. Private request, result, stderr, and non-verify stdout files retain 2 MiB each. Verify stdout is now `max(2 MiB, 128 bytes × recipe-derived expected findings)`, and capacity preflight uses that same derived size with independent fragment rounding. The 128-byte coefficient rounds the observed 84-byte synthetic finding record upward while preserving a recipe-count source of truth; it does not reclassify or accept the incomplete attempt.
+
+#### My Comments
+
+(none yet — owner block, agent does not edit)
 
 ## How to use this document
 

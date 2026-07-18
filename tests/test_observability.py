@@ -8,15 +8,33 @@ import json
 import logging
 import re
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 import structlog
 
-from docmend.observability import configure_logging, console_level, get_logger, new_run_id
+from docmend.observability import (
+    ProgressHeartbeat,
+    configure_logging,
+    console_level,
+    get_logger,
+    new_run_id,
+)
 
 RUN_ID_RE = re.compile(r"^run_\d{8}T\d{6}Z_[0-9a-f]{6}$")
+
+
+@dataclass
+class FakeClock:
+    now: float = 100.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
 
 
 @pytest.fixture(autouse=True)
@@ -124,3 +142,75 @@ class TestConfigureLogging:
         record = json.loads(line)
         assert record["run_id"] == run_id
         assert record["event"] == "external event"
+
+
+class TestProgressHeartbeat:
+    def test_lifecycle__emits_aggregate_only_start_heartbeat_and_complete(self) -> None:
+        clock = FakeClock()
+        emitted: list[dict[str, object]] = []
+        heartbeat = ProgressHeartbeat(stage="scan", emit=emitted.append, clock=clock)
+
+        heartbeat.start(total=100)
+        clock.advance(29.9)
+        heartbeat.advance(processed=4, skipped=1, failed=0)
+        assert [event["event"] for event in emitted] == ["stage.start"]
+
+        clock.advance(0.1)
+        heartbeat.advance(processed=5, skipped=1, failed=0)
+        heartbeat.finish(processed=100, skipped=2, failed=1, artifact_bytes=4_096)
+
+        assert [event["event"] for event in emitted] == [
+            "stage.start",
+            "stage.heartbeat",
+            "stage.complete",
+        ]
+        assert emitted[1] == {
+            "event": "stage.heartbeat",
+            "stage": "scan",
+            "total": 100,
+            "processed": 5,
+            "skipped": 1,
+            "failed": 0,
+            "elapsed_seconds": 30.0,
+            "rate_per_second": pytest.approx(1 / 6),
+        }
+        assert emitted[-1]["artifact_bytes"] == 4_096
+        assert not (
+            {"path", "detail", "content"} & set().union(*(event.keys() for event in emitted))
+        )
+
+    def test_incomplete__is_terminal_and_carries_handled_failure_totals(self) -> None:
+        clock = FakeClock()
+        emitted: list[dict[str, object]] = []
+        heartbeat = ProgressHeartbeat(stage="apply", emit=emitted.append, clock=clock)
+
+        heartbeat.start(total=10)
+        clock.advance(3)
+        heartbeat.incomplete(processed=2, skipped=0, failed=1, reason="write-refused")
+
+        assert emitted[-1] == {
+            "event": "stage.incomplete",
+            "stage": "apply",
+            "total": 10,
+            "processed": 2,
+            "skipped": 0,
+            "failed": 1,
+            "elapsed_seconds": 3.0,
+            "rate_per_second": pytest.approx(2 / 3),
+            "reason": "write-refused",
+        }
+        with pytest.raises(RuntimeError, match="terminal"):
+            heartbeat.advance(processed=3, skipped=0, failed=1)
+
+    def test_native_stall__cannot_emit_until_control_reaches_record_boundary(self) -> None:
+        clock = FakeClock()
+        emitted: list[dict[str, object]] = []
+        heartbeat = ProgressHeartbeat(stage="verify", emit=emitted.append, clock=clock)
+
+        heartbeat.start(total=None)
+        clock.advance(90)
+        assert [event["event"] for event in emitted] == ["stage.start"]
+
+        heartbeat.advance(processed=1, skipped=0, failed=0)
+        assert emitted[-1]["event"] == "stage.heartbeat"
+        assert emitted[-1]["elapsed_seconds"] == 90.0

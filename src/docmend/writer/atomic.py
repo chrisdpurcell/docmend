@@ -21,11 +21,44 @@ else in docmend calls os.replace/os.link on library files. Invariants:
 
 import contextlib
 import os
+import secrets
+import stat
+from dataclasses import dataclass
 from pathlib import Path
+
+from docmend.lineage import ObjectIdentity
 
 
 class WriteError(Exception):
     """A mutation failed environmentally (ERR-003); the original is intact."""
+
+
+@dataclass(frozen=True)
+class StagedWrite:
+    """A fully written, fsync'd temp file plus its inode identity — captured
+    BEFORE publication so an intent record can carry
+    expected_published_identity (adr-0019/adr-0020 seam): the atomic publish
+    moves this exact inode onto the target name, so the identity is knowable
+    pre-mutation and survives a kill inside the publish window."""
+
+    tmp: Path
+    identity: ObjectIdentity
+
+
+def _staged_name_is_ours(staged: StagedWrite) -> bool:
+    """Return whether the staged pathname still names its captured inode.
+
+    Cleanup is best effort, so an observation error is never worth risking the
+    destruction of an unknown object swapped onto the temporary name.
+    """
+    try:
+        stat_result = os.lstat(staged.tmp)
+    except OSError:
+        return False
+    return not stat.S_ISLNK(stat_result.st_mode) and (
+        stat_result.st_dev,
+        stat_result.st_ino,
+    ) == (staged.identity.dev, staged.identity.ino)
 
 
 def fsync_dir(path: Path) -> None:
@@ -41,54 +74,106 @@ def fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
-def _write_temp(target: Path, data: bytes, mode: int | None) -> Path:
-    tmp = target.with_name(f".{target.name}.docmend-tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-            fh.flush()
-            os.fsync(fh.fileno())
-        if mode is not None:
-            tmp.chmod(mode & 0o7777)
-    except OSError:
-        tmp.unlink(missing_ok=True)
-        raise
-    return tmp
+def stage_bytes(target: Path, data: bytes, *, mode: int | None = None) -> StagedWrite:
+    """Write and fsync `data` to a randomized `O_EXCL` sibling of `target`,
+    returning the staged inode's identity. The target itself is untouched.
 
-
-def atomic_write_bytes(
-    target: Path, data: bytes, *, mode: int | None = None, clobber: bool = True
-) -> None:
-    """Write `data` to `target` with no partial-write window (NFR-002)."""
+    Randomized per attempt (rev 0.26): a fixed staging name meant a hard
+    kill's residue blocked every later attempt at the same target with a
+    spurious O_EXCL failure, and made the staging path predictable to an
+    interfering process. Residue from a killed attempt is inert; EEXIST on
+    a candidate is a name collision to retry with a fresh name (bounded so
+    a pathological directory cannot loop forever), never an environmental
+    write failure — those become WriteError.
+    """
+    for _ in range(8):
+        tmp = target.with_name(f".{target.name}.{secrets.token_hex(4)}.docmend-tmp")
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            msg = f"{target}: cannot stage write ({exc.strerror or exc})"
+            raise WriteError(msg) from exc
+        break
+    else:
+        msg = f"{target}: cannot stage write (could not allocate a staging name in 8 attempts)"
+        raise WriteError(msg)
+    stat_result = os.fstat(fd)
+    staged = StagedWrite(
+        tmp=tmp,
+        identity=ObjectIdentity(dev=stat_result.st_dev, ino=stat_result.st_ino),
+    )
     try:
-        tmp = _write_temp(target, data, mode)
+        with os.fdopen(fd, "wb") as file_handle:
+            file_handle.write(data)
+            file_handle.flush()
+            if mode is not None:
+                # Path-based chmod could follow a raced staging name onto an
+                # interloper; the open descriptor still names our inode.
+                os.fchmod(file_handle.fileno(), mode & 0o7777)
+            os.fsync(file_handle.fileno())
     except OSError as exc:
+        abort_staged(staged)
         msg = f"{target}: cannot stage write ({exc.strerror or exc})"
         raise WriteError(msg) from exc
+    return staged
+
+
+def publish_staged(staged: StagedWrite, target: Path, *, clobber: bool = True) -> None:
+    """Atomically publish a staged write onto `target` (NFR-002): the staged
+    inode MOVES onto the target name, preserving the identity `stage_bytes`
+    reported. FileExistsError (clobber=False collision race) is deliberately
+    NOT wrapped — the caller maps it to the collision policy."""
+    tmp = staged.tmp
     try:
         if clobber:
             tmp.replace(target)
         else:
             target.hardlink_to(tmp)  # FileExistsError on a collision race — caller's policy
     except FileExistsError:
-        tmp.unlink(missing_ok=True)
+        if _staged_name_is_ours(staged):
+            tmp.unlink(missing_ok=True)
         raise
     except OSError as exc:
-        tmp.unlink(missing_ok=True)
+        if _staged_name_is_ours(staged):
+            tmp.unlink(missing_ok=True)
         msg = f"{target}: cannot publish write ({exc.strerror or exc})"
         raise WriteError(msg) from exc
     if not clobber:
         # The link above already succeeded, so target now holds the new bytes
-        # — the publish happened. The stray ".{name}.docmend-tmp" is just a
-        # second name for that same inode (lossless residue); a later write
-        # attempt will surface it as an O_EXCL collision on the temp-file
-        # stage. Reporting WriteError here would tell the caller the mutation
-        # failed when it didn't — worse than the residue, so we swallow this
-        # one deliberately.
+        # — the publish happened. The stray staging name is just a second name
+        # for that same inode (lossless residue); staging names are randomized
+        # per attempt and EEXIST-retried, so residue never blocks a retry.
+        # Reporting WriteError here would tell the caller the mutation failed
+        # when it didn't — worse than the residue, so we swallow this one
+        # deliberately.
         with contextlib.suppress(OSError):
-            tmp.unlink()
+            if _staged_name_is_ours(staged):
+                tmp.unlink()
     fsync_dir(target.parent)
+
+
+def abort_staged(staged: StagedWrite, *, root_resolved: Path | None = None) -> None:
+    """Discard an unpublished staged write only while its name is still ours.
+
+    Commit-boundary callers also supply the authorized root. An interposed
+    parent makes even a matching identity unsafe to unlink through.
+    """
+    if root_resolved is not None and not (
+        staged.tmp.parent.resolve() / staged.tmp.name
+    ).is_relative_to(root_resolved):
+        return
+    if not _staged_name_is_ours(staged):
+        return
+    staged.tmp.unlink(missing_ok=True)
+
+
+def atomic_write_bytes(
+    target: Path, data: bytes, *, mode: int | None = None, clobber: bool = True
+) -> None:
+    """Write `data` to `target` with no partial-write window (NFR-002)."""
+    publish_staged(stage_bytes(target, data, mode=mode), target, clobber=clobber)
 
 
 def link_no_clobber(source: Path, target: Path) -> None:

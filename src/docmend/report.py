@@ -12,25 +12,33 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from docmend.inventory import Sha256
+from docmend.lineage import PriorAttempt
 from docmend.plan import ActionId, ArtifactRef, RunId
 
-REPORT_SCHEMA_VERSION = "1.0"
+REPORT_SCHEMA_VERSION = "2.0"
 
-type OutcomeStatus = Literal["applied", "would_apply", "skipped", "failed"]
+#: 2.0 (adr-0019): `not-attempted` is the explicit terminal for plan actions a
+#: `fail`-policy abort never reached — the report partitions EVERY plan action
+#: exactly once, so verify (Plan D) can prove full coverage instead of
+#: trailing actions silently vanishing (DMR-05 accounting).
+type OutcomeStatus = Literal["applied", "would_apply", "skipped", "failed", "not-attempted"]
 #: Closed internal vocabulary for the schema's free-string skip_reason
 #: (decision 9): stale hash ERR-002/AW-004, apply-time unreadable ERR-005,
-#: collision AW-002, EC-005 re-check, snapshot-filter enforcement (FR-012),
-#: the runtime containment belt (§13.5), and resume reconciliation (FR-013,
-#: adr-0006) — `already-applied` is the one skip that is NOT a reviewable
-#: finding (the CLI excludes it from the exit-1 count).
+#: collision AW-002, an action-time collision lacking a preservation strategy,
+#: EC-005 re-check, snapshot-filter enforcement (FR-012), the runtime
+#: containment belt (§13.5), commit-boundary interference (adr-0020), and
+#: resume reconciliation (FR-013, adr-0006) — `already-applied` is the one skip
+#: that is NOT a reviewable finding (the CLI excludes it from the exit-1 count).
 type ApplySkipReason = Literal[
     "stale-hash",
     "unreadable",
     "collision",
+    "collision-unpreserved",
     "shrink-invariant",
     "excluded",
     "containment",
     "already-applied",
+    "external-interference",
 ]
 
 
@@ -43,7 +51,11 @@ class ErrorInfo(BaseModel):
     Python keyword, hence the alias."""
 
     model_config = ConfigDict(
-        extra="forbid", strict=True, populate_by_name=True, serialize_by_alias=True
+        extra="forbid",
+        strict=True,
+        populate_by_name=True,
+        serialize_by_alias=True,
+        frozen=True,
     )
 
     error_class: Annotated[str, Field(pattern=r"^ERR-\d{3}$", alias="class")]
@@ -65,6 +77,7 @@ class ReportTotals(_StrictModel):
     would_apply: Annotated[int, Field(ge=0)]
     skipped: Annotated[int, Field(ge=0)]
     failed: Annotated[int, Field(ge=0)]
+    not_attempted: Annotated[int, Field(ge=0)] = 0
 
 
 class Report(_StrictModel):
@@ -75,7 +88,7 @@ class Report(_StrictModel):
     )
 
     schema_kind: Literal["docmend/report"] = Field(default="docmend/report", alias="schema")
-    schema_version: Annotated[str, Field(pattern=r"^1\.\d+$")] = REPORT_SCHEMA_VERSION
+    schema_version: Annotated[str, Field(pattern=r"^2\.\d+$")] = REPORT_SCHEMA_VERSION
     run_id: RunId
     generated_by: Annotated[str, Field(min_length=1)]
     plan_ref: ArtifactRef
@@ -84,3 +97,11 @@ class Report(_StrictModel):
     completed_at: str
     outcomes: list[ApplyOutcome]
     totals: ReportTotals
+    # 2.0 attempt lineage (adr-0019, design F6 round 5): the same
+    # discriminated edge the manifest header carries — persisted redundantly
+    # so the lineage survives whichever artifact an interruption erases.
+    # `manifest_sha256` is the hash of THIS attempt's closed manifest, null
+    # when the attempt mutated nothing (that null is what distinguishes a
+    # genuine report-only attempt from a LOST manifest — review CR-NEW-001).
+    prior_attempt: PriorAttempt | None = None
+    manifest_sha256: Sha256 | None = None

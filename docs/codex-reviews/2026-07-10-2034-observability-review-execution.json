@@ -1,0 +1,28 @@
+{
+	"canonical_prompt": "perform an observability review",
+	"completed_at": "2026-07-10T21:12:31.561232+00:00",
+	"error": null,
+	"follow_on_reviews": [],
+	"last_heartbeat_at": "2026-07-10T21:12:31.561232+00:00",
+	"last_message_path": null,
+	"last_progress_message": "Child review completed successfully. Elapsed: 8m59s. Saved report: docs/codex-reviews/2026-07-10-2034-observability-review-report.md",
+	"latest_existing_report": "docs/codex-reviews/2026-07-10-2034-codex-review-live-status.md",
+	"queue_position": 14,
+	"repo_name": "docmend",
+	"repo_root": ".",
+	"residual_risk_summary": [
+		"Repository evidence cannot verify GitHub settings, workflow-log retention, operator shell/scheduler capture, host ACLs, external backups, or real-library rollout monitoring.",
+		"No private corpus or real run log was inspected; privacy conclusions use synthetic paths and direct call-site analysis.",
+		"The review did not inject ENOSPC or power loss into a real destructive run. Telemetry-sink resilience remains an evidence gap until fault tests exist."
+	],
+	"review_manifest_path": "./docs/codex-reviews/2026-07-10-2034-observability-review-execution.json",
+	"review_skill": "observability-review",
+	"save_dir": "docs/codex-reviews/",
+	"saved_report_path": "docs/codex-reviews/2026-07-10-2034-observability-review-report.md",
+	"shared_research_path": "docs/codex-reviews/2026-07-10-2034-codex-review-shared-research.md",
+	"shared_research_status": "completed",
+	"started_at": "2026-07-10T21:03:31.936288+00:00",
+	"status": "completed",
+	"sweep_started_at": "2026-07-10-2034",
+	"top_findings_summary": []
+}

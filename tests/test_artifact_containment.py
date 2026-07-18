@@ -92,7 +92,7 @@ def _minimal_plan(action_path: str, target_path: str | None) -> dict[str, object
     """Minimal DR-002 plan document with one action carrying the given paths."""
     return {
         "schema": "docmend/plan",
-        "schema_version": "1.1",
+        "schema_version": "2.0",
         "run_id": RUN_ID,
         "generated_at": "2026-07-06T00:00:00+00:00",
         "generated_by": "docmend 0.1.0",

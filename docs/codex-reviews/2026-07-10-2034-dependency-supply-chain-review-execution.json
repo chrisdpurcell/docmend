@@ -1,0 +1,32 @@
+{
+	"canonical_prompt": "perform a dependency review",
+	"completed_at": "2026-07-10T20:59:41.130451+00:00",
+	"error": null,
+	"follow_on_reviews": [],
+	"last_heartbeat_at": "2026-07-10T20:59:41.130451+00:00",
+	"last_message_path": null,
+	"last_progress_message": "Child review completed successfully. Elapsed: 7m57s. Saved report: docs/codex-reviews/2026-07-10-2034-dependency-supply-chain-review-report.md",
+	"latest_existing_report": "docs/codex-reviews/2026-07-10-2034-codex-review-live-status.md",
+	"queue_position": 5,
+	"repo_name": "docmend",
+	"repo_root": ".",
+	"residual_risk_summary": [
+		"Overall residual risk: `high until ISSUE-001 through ISSUE-003 are resolved or disproved by external control evidence`.",
+		"The Python runtime dependency posture itself is comparatively strong: a single trusted public index, exact hash-bearing lock, no private namespace, clear dependency rationale, and no runtime plugin/network expansion.",
+		"The dominant residual risk is control-plane integrity: tag authorization, dynamically selected build tooling, incomplete dependency-graph evidence, mutable automation references, and absent repository-defined release provenance."
+	],
+	"review_manifest_path": "./docs/codex-reviews/2026-07-10-2034-dependency-supply-chain-review-execution.json",
+	"review_skill": "dependency-supply-chain-review",
+	"save_dir": "docs/codex-reviews/",
+	"saved_report_path": "docs/codex-reviews/2026-07-10-2034-dependency-supply-chain-review-report.md",
+	"shared_research_path": "docs/codex-reviews/2026-07-10-2034-codex-review-shared-research.md",
+	"shared_research_status": "completed",
+	"started_at": "2026-07-10T20:51:43.734118+00:00",
+	"status": "completed",
+	"sweep_started_at": "2026-07-10-2034",
+	"top_findings_summary": [
+		"ISSUE-001: The release tag boundary does not enforce the documented release provenance",
+		"ISSUE-002: The artifact-producing release toolchain is resolved dynamically",
+		"ISSUE-003: The required dependency-review gate has no proven `uv.lock` inventory path"
+	]
+}

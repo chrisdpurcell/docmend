@@ -21,7 +21,6 @@ Cross-file contracts:
   the artifact path). The default excludes make ``.docmend/`` invisible to scans.
 """
 
-import os
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -30,23 +29,41 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from pathspec import PathSpec
+from pathspec.patterns.gitignore.spec import GitIgnoreSpecPattern
 from pydantic import ValidationError
 
 from docmend import __version__, artifacts, discovery, lock, planning
+from docmend.artifacts import ARTIFACT_DIR_NAME
 from docmend.config import ConfigError, DocmendConfig, PathsConfig, load_config
-from docmend.observability import configure_logging, get_logger, new_run_id
+from docmend.lineage import PriorAttempt
+from docmend.observability import (
+    ProgressHeartbeat,
+    configure_logging,
+    emit_progress_to_log,
+    get_logger,
+    new_run_id,
+)
 from docmend.plan import PLAN_SCHEMA_VERSION, ArtifactRef
 from docmend.report import Report, ReportTotals
-from docmend.restore import run_restore
-from docmend.verify import check_content, check_frontmatter, reconcile_manifest, reconcile_report
-from docmend.writer import manifest
-from docmend.writer.apply import execute_plan
-from docmend.writer.gate import ApplyOptions, evaluate_gate, is_content_rewrite
-
-#: Default per-run artifact/log directory, created in the invoking directory
-#: (proposed OQ-034; the run-ID-keyed names inside it are the OQ-006 sidecar
-#: discovery convention's future input).
-ARTIFACT_DIR_NAME = ".docmend"
+from docmend.restore import preview_restore, run_restore
+from docmend.verify import (
+    VerifyFinding,
+    check_backups,
+    check_content,
+    check_discovery,
+    check_frontmatter,
+    check_lifecycle,
+    check_manifest_root,
+    check_outputs,
+    manifest_inspection_findings,
+)
+from docmend.verify_coverage import check_plan_coverage, load_verification_evidence
+from docmend.verify_report import VerifyFindingRecord, VerifyReport
+from docmend.writer import commit, manifest
+from docmend.writer.apply import execute_plan, preview_plan
+from docmend.writer.commit import _load_apply_predecessors  # pyright: ignore[reportPrivateUsage]
+from docmend.writer.gate import is_content_rewrite
 
 app = typer.Typer(
     name="docmend",
@@ -67,6 +84,47 @@ class GlobalOptions:
     verbose: int
     quiet: bool
     dry_run: bool
+
+
+def _start_stage(stage: str, *, total: int | None) -> ProgressHeartbeat:
+    heartbeat = ProgressHeartbeat(stage=stage, emit=emit_progress_to_log)
+    heartbeat.start(total=total)
+    return heartbeat
+
+
+def _finish_stage(
+    heartbeat: ProgressHeartbeat,
+    *artifacts_written: Path,
+    not_attempted: int = 0,
+) -> None:
+    """Finish after outputs publish, excluding the still-active structured log.
+
+    The terminal event changes that log's final size, so an external supervisor
+    owns the post-exit log measurement without a self-referential byte count.
+    """
+    artifact_bytes = sum(
+        path.stat().st_size for path in artifacts_written if path.exists() and path.is_file()
+    )
+    processed, skipped, failed = heartbeat.counts
+    heartbeat.finish(
+        processed=processed,
+        skipped=skipped,
+        failed=failed,
+        not_attempted=not_attempted,
+        artifact_bytes=artifact_bytes,
+    )
+
+
+def _incomplete_stage(heartbeat: ProgressHeartbeat | None, *, reason: str) -> None:
+    if heartbeat is None or heartbeat.is_terminal:
+        return
+    processed, skipped, failed = heartbeat.counts
+    heartbeat.incomplete(
+        processed=processed,
+        skipped=skipped,
+        failed=max(failed, 1),
+        reason=reason,
+    )
 
 
 @app.callback(invoke_without_command=True)
@@ -131,6 +189,34 @@ def _load_effective_config(
     return config
 
 
+def _guard_artifact_paths(
+    destinations: list[Path],
+    *,
+    corpus_root: Path | None,
+    input_artifacts: list[Path],
+    config: DocmendConfig,
+) -> None:
+    """Refuse unsafe artifact destinations BEFORE the pipeline runs (rev 0.26
+    IR-007, adr-0021): a refused write must not follow a completed scan. The
+    .docmend/ carve-out is licensed per destination against the effective
+    exclude patterns — if the operator's excludes no longer cover a
+    destination, that destination is scannable corpus space and loses its
+    license (guard_artifact_destination owns the decision)."""
+    exclude = PathSpec.from_lines(GitIgnoreSpecPattern, config.paths.exclude)
+    artifact_root = Path(ARTIFACT_DIR_NAME).resolve()
+    for destination in destinations:
+        refusal = artifacts.guard_artifact_destination(
+            destination,
+            corpus_root=corpus_root,
+            input_artifacts=input_artifacts,
+            artifact_root=artifact_root,
+            exclude=exclude,
+        )
+        if refusal is not None:
+            typer.echo(f"refused [artifact-destination]: {refusal}", err=True)
+            raise typer.Exit(3)
+
+
 @app.command()
 def scan(
     ctx: typer.Context,
@@ -186,20 +272,42 @@ def scan(
     log = get_logger(__name__)
     log.info("scan starting", path=str(path))
 
-    inventory = discovery.scan(path, config, run_id=run_id, generated_at=now.isoformat())
     out_path = report if report is not None else artifact_dir / f"docmend-{run_id}-inventory.json"
-    artifacts.write_inventory(inventory, out_path)
+    corpus_root = (path if path.is_dir() else path.parent).resolve()
+    _guard_artifact_paths([out_path], corpus_root=corpus_root, input_artifacts=[], config=config)
+
+    run_lock = _acquire_read_lock(corpus_root, run_id=run_id, command="scan")
+    heartbeat = _start_stage("scan", total=None)
+    try:
+        inventory = discovery.scan(
+            path,
+            config,
+            run_id=run_id,
+            generated_at=now.isoformat(),
+            heartbeat=heartbeat,
+        )
+        artifacts.write_inventory(inventory, out_path)
+        _finish_stage(heartbeat, out_path)
+    except Exception as exc:
+        _incomplete_stage(heartbeat, reason=type(exc).__name__)
+        raise
+    finally:
+        if run_lock is not None:
+            run_lock.release()
 
     totals = inventory.totals
     reasons = totals.skipped_by_reason
     typer.echo(f"inventory: {out_path}")
     typer.echo(
         f"files: {totals.files}  symlinks: {totals.symlinks}  "
-        f"skipped: {totals.skipped} (excluded {reasons.excluded}, unreadable {reasons.unreadable})  "
+        f"skipped: {totals.skipped} (excluded {reasons.excluded}, "
+        f"unreadable {reasons.unreadable}, timeout {reasons.timeout})  "
         f"hard-link groups: {totals.hard_link_groups}"
     )
-    if reasons.unreadable:
-        # Findings, not failure: the scan completed but not everything was readable.
+    if reasons.unreadable or reasons.timeout:
+        # Findings, not failure: the scan completed but not everything was
+        # covered — a watchdog timeout is a PARTIAL result exactly like an
+        # unreadable file, never a silent success (2026-07-10 review).
         raise typer.Exit(1)
 
 
@@ -267,6 +375,7 @@ def plan(
         run_id=run_id, command="plan", log_dir=artifact_dir, verbose=opts.verbose, quiet=opts.quiet
     )
     log = get_logger(__name__)
+    out_path = out if out is not None else artifact_dir / f"docmend-{run_id}-plan.json"
 
     if path is not None:
         if not path.exists():
@@ -276,13 +385,33 @@ def plan(
         # scan+plan pair is covered as one run (OQ-027) instead of leaving the
         # scan step racy against a concurrent invocation over the same tree.
         scan_root = (path if path.is_dir() else path.parent).resolve()
-        run_lock = _acquire_run_lock(scan_root, run_id=run_id)
-        log.info("plan starting (scan shorthand)", path=str(path))
-        inventory = discovery.scan(path, config, run_id=run_id, generated_at=now.isoformat())
         # Resolved to absolute: inventory_ref.path must stay valid outside this
         # invocation's CWD, unlike out_path (echoed, never round-tripped) below.
         inventory_artifact = (artifact_dir / f"docmend-{run_id}-inventory.json").resolve()
-        artifacts.write_inventory(inventory, inventory_artifact)
+        _guard_artifact_paths(
+            [out_path, inventory_artifact],
+            corpus_root=scan_root,
+            input_artifacts=[],
+            config=config,
+        )
+        run_lock = _acquire_read_lock(scan_root, run_id=run_id, command="plan")
+        log.info("plan starting (scan shorthand)", path=str(path))
+        scan_heartbeat = _start_stage("scan", total=None)
+        try:
+            inventory = discovery.scan(
+                path,
+                config,
+                run_id=run_id,
+                generated_at=now.isoformat(),
+                heartbeat=scan_heartbeat,
+            )
+            artifacts.write_inventory(inventory, inventory_artifact)
+            _finish_stage(scan_heartbeat, inventory_artifact)
+        except Exception as exc:
+            _incomplete_stage(scan_heartbeat, reason=type(exc).__name__)
+            if run_lock is not None:
+                run_lock.release()
+            raise
     else:
         assert inventory_path is not None
         log.info("plan starting", inventory=str(inventory_path))
@@ -292,11 +421,19 @@ def plan(
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(2) from exc
         inventory_artifact = inventory_path.resolve()
+        _guard_artifact_paths(
+            [out_path],
+            corpus_root=Path(inventory.source_root),
+            input_artifacts=[inventory_path],
+            config=config,
+        )
         # The root is only known once the inventory is read, so the lock is
         # acquired here rather than up front (OQ-027).
-        run_lock = _acquire_run_lock(Path(inventory.source_root), run_id=run_id)
+        run_lock = _acquire_read_lock(Path(inventory.source_root), run_id=run_id, command="plan")
 
+    plan_heartbeat: ProgressHeartbeat | None = None
     try:
+        plan_heartbeat = _start_stage("plan", total=len(inventory.files) + len(inventory.symlinks))
         inventory_ref = ArtifactRef(
             path=str(inventory_artifact),
             run_id=inventory.run_id,
@@ -308,9 +445,10 @@ def plan(
             run_id=run_id,
             generated_at=now.isoformat(),
             inventory_ref=inventory_ref,
+            heartbeat=plan_heartbeat,
         )
-        out_path = out if out is not None else artifact_dir / f"docmend-{run_id}-plan.json"
         artifacts.write_plan(result, out_path)
+        _finish_stage(plan_heartbeat, out_path)
 
         reasons = Counter(skip.reason for skip in result.skips)
         typer.echo(f"plan: {out_path}")
@@ -323,14 +461,23 @@ def plan(
             )
         )
 
-        findings = reasons.get("unreadable", 0) + reasons.get("changed-since-scan", 0)
+        # Timeouts are partial results, same finding class as unreadable
+        # (2026-07-10 review): a plan that silently skipped work must exit 1.
+        findings = (
+            reasons.get("unreadable", 0)
+            + reasons.get("changed-since-scan", 0)
+            + reasons.get("timeout", 0)
+        )
         if path is not None:
             # IR-002: the PATH shorthand's own scan step can skip unreadable files
             # (ERR-007) that never reach the plan at all — they live in the
             # inventory, not result.skips — so `plan PATH` must still count them
             # here, or it would silently exit 0 over a tree `scan PATH` would
             # have exited 1 on.
-            findings += inventory.totals.skipped_by_reason.unreadable
+            findings += (
+                inventory.totals.skipped_by_reason.unreadable
+                + inventory.totals.skipped_by_reason.timeout
+            )
         if config.rename.on_collision == "fail":
             findings += reasons.get("collision", 0)
         if fail_on_low_confidence:
@@ -339,20 +486,22 @@ def plan(
             )
         if findings:
             raise typer.Exit(1)
+    except Exception as exc:
+        _incomplete_stage(plan_heartbeat, reason=type(exc).__name__)
+        raise
     finally:
         if run_lock is not None:
             run_lock.release()
 
 
-def _acquire_run_lock(source_root: Path, *, run_id: str) -> lock.RunLock | None:
-    """Acquire the OQ-027 run lock for `plan`, mapping contention to exit 3.
+def _acquire_read_lock(source_root: Path, *, run_id: str, command: str) -> lock.RunLock | None:
+    """Acquire a read-only command's run lock, mapping contention to exit 3.
 
-    `plan` is read-only (§3.1), so a lock the tool cannot even create (e.g. an
-    unwritable state dir) must not block it — that OSError degrades to a
-    warning and an unlocked run, per the OQ-036 posture.
+    A lock the tool cannot create must not block scan, plan, or verify; that
+    OSError degrades to a warning and an unlocked run per OQ-036.
     """
     try:
-        return lock.acquire(source_root, run_id=run_id, command="plan")
+        return lock.acquire(source_root, run_id=run_id, command=command)
     except lock.LockHeldError as exc:
         typer.echo(f"refused: {exc}", err=True)
         raise typer.Exit(3) from exc
@@ -364,7 +513,7 @@ def _acquire_run_lock(source_root: Path, *, run_id: str) -> lock.RunLock | None:
 def _acquire_run_lock_strict(source_root: Path, *, run_id: str, command: str) -> lock.RunLock:
     """Acquire the OQ-027 run lock for a write-capable command (e.g. `apply`).
 
-    Unlike `plan`'s `_acquire_run_lock`, a write-capable command must REFUSE
+    Unlike `_acquire_read_lock`, a write-capable command must REFUSE
     (exit 3) when the lock cannot even be created — an unwritable state dir is
     not a reason to proceed unlocked into a run that can mutate the library
     (AW-005; contrast the OQ-036 read-only posture that lets `plan` degrade).
@@ -374,24 +523,6 @@ def _acquire_run_lock_strict(source_root: Path, *, run_id: str, command: str) ->
     except (lock.LockHeldError, OSError) as exc:
         typer.echo(f"refused: {exc}", err=True)
         raise typer.Exit(3) from exc
-
-
-def _restore_lock_root(records: list[manifest.ManifestRecord]) -> Path:
-    """The tree `docmend restore` locks (OQ-036, AW-005).
-
-    A 1.2 manifest stamps the apply run's resolved source_root on every record;
-    key the lock on THAT so restore contends with a concurrent apply/plan on the
-    same tree — even when every mutated file lives in a subdirectory whose
-    commonpath narrows below the source root (the gap the old commonpath key left
-    open: a restore keyed on the narrower path slipped past an apply's root lock).
-    A pre-1.2 manifest carries no source_root: fall back to the commonpath of
-    original paths, preserving the legacy behavior for older manifests.
-    """
-    recorded = records[0].source_root
-    if recorded is not None:
-        return Path(recorded)  # already the resolved source root written at apply
-    root = Path(os.path.commonpath([r.original_path for r in records]))
-    return root if root.is_dir() else root.parent
 
 
 class PreservedBy(StrEnum):
@@ -456,8 +587,17 @@ def apply(
         list[str] | None,
         typer.Option(
             "--resume-run-id",
-            help="Resume (FR-013): reconcile against .docmend/docmend-<ID>-manifest.jsonl "
-            "(OQ-034 sidecar convention; repeatable, combinable with --resume-manifest).",
+            help="Resume (FR-013): reconcile against BOTH .docmend sidecars of run <ID> "
+            "(manifest and report; OQ-034 convention; repeatable, combinable with "
+            "--resume-manifest/--prior-report).",
+        ),
+    ] = None,
+    prior_report: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--prior-report",
+            help="A relocated or report-only predecessor attempt's report (adr-0019 "
+            "attempt lineage; repeatable).",
         ),
     ] = None,
 ) -> None:
@@ -481,13 +621,13 @@ def apply(
     now = datetime.now(UTC)
     run_id = new_run_id(now)
     artifact_dir = Path(ARTIFACT_DIR_NAME)
-    configure_logging(
+    log_path = configure_logging(
         run_id=run_id, command="apply", log_dir=artifact_dir, verbose=opts.verbose, quiet=opts.quiet
     )
     log = get_logger(__name__)
 
     try:
-        plan = artifacts.read_plan(plan_path)
+        plan, plan_sha256 = artifacts.read_plan_snapshot(plan_path)
     except artifacts.ArtifactError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(2) from exc
@@ -514,74 +654,165 @@ def apply(
         typer.echo(f"error: {plan_path}: config snapshot invalid — {exc}", err=True)
         raise typer.Exit(2) from exc
 
-    resume_records = _read_resume_records(resume_manifest, resume_run_id, source_root)
-
-    backup_root = backup_dir if backup_dir is not None else config.write.backup_dir
-    options = ApplyOptions(
-        write=write,
-        # Resolved ONCE here (codex CR-005): every backup path derived from
-        # this root lands in the manifest, which restore must be able to
-        # follow from any cwd (IR-008) — a relative --backup-dir must never
-        # produce cwd-dependent manifest entries.
-        backup_root=backup_root.resolve() if backup_root is not None else None,
-        preserved_by=preserved_by.value if preserved_by is not None else None,
-        allow_no_backup=allow_no_backup,
-    )
+    try:
+        manifest_inputs, report_inputs = _resolve_evidence_paths(
+            resume_manifest,
+            resume_run_id,
+            prior_report,
+            option_name="--resume-run-id",
+        )
+    except artifacts.ArtifactError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
     manifest_path = artifact_dir / f"docmend-{run_id}-manifest.jsonl"
     report_path = report if report is not None else artifact_dir / f"docmend-{run_id}-report.json"
-    plan_ref = ArtifactRef(
-        path=str(plan_path), run_id=plan.run_id, sha256=artifacts.sha256_of_file(plan_path)
-    )
+    plan_ref = ArtifactRef(path=str(plan_path), run_id=plan.run_id, sha256=plan_sha256)
     started_at = now.isoformat()
 
-    run_lock = _acquire_run_lock_strict(source_root, run_id=run_id, command="apply")
-    try:
-        if write:
-            # CRITICAL (Task 9 carry-forward): the gate is invoked
-            # unconditionally before execute_plan on every write run — the
-            # engine itself does not self-enforce preservation.
-            refusals = evaluate_gate(
-                plan, config, source_root=source_root, options=options, manifest_dir=artifact_dir
+    _guard_artifact_paths(
+        [report_path, manifest_path],
+        corpus_root=source_root,
+        # Predecessor REPORTS are inputs too (adr-0019 lineage): --report must
+        # not be able to clobber the evidence this run reconciles against.
+        input_artifacts=[
+            plan_path,
+            *manifest_inputs,
+            *report_inputs,
+        ],
+        config=config,
+    )
+    if write:
+        apply_heartbeat: ProgressHeartbeat | None = None
+
+        def on_refusal(
+            refusals: list[commit.GateRefusal],
+            factory_plan_ref: ArtifactRef,
+            factory_prior_attempt: PriorAttempt | None,
+        ) -> None:
+            for refusal in refusals:
+                typer.echo(f"refused [{refusal.predicate}]: {refusal.message}", err=True)
+                log.error("gate refusal", predicate=refusal.predicate, detail=refusal.message)
+            _write_refusal_report(
+                factory_plan_ref,
+                run_id,
+                started_at,
+                report_path,
+                prior_attempt=factory_prior_attempt,
             )
-            if refusals:
-                for refusal in refusals:
-                    typer.echo(f"refused [{refusal.predicate}]: {refusal.message}", err=True)
-                    log.error("gate refusal", predicate=refusal.predicate, detail=refusal.message)
-                _write_refusal_report(plan_ref, run_id, started_at, report_path)
-                raise typer.Exit(3)
-            # Issue #15 (partial-undo trap): when the gate passes WITHOUT tool
-            # backups, this run's manifest records content mutations as hashes
-            # only, so `docmend restore` can undo its renames but not its
-            # rewrites. Say so at apply time — restore time is too late.
-            content_rewrites = sum(1 for a in plan.actions if is_content_rewrite(a))
-            if options.backup_root is None and content_rewrites:
+
+        try:
+            with commit.apply_write_context(
+                plan_path,
+                run_id=run_id,
+                manifest_path=manifest_path,
+                report_path=report_path,
+                log_path=log_path,
+                backup_root_override=backup_dir.resolve() if backup_dir is not None else None,
+                preserved_by=preserved_by.value if preserved_by is not None else None,
+                allow_no_backup=allow_no_backup,
+                resume_manifest_paths=manifest_inputs,
+                prior_report_paths=report_inputs,
+                input_artifacts=[plan_path, *manifest_inputs, *report_inputs],
+                on_refusal=on_refusal,
+            ) as safety:
+                gated_plan, _, _, effective_options, _, _ = safety._consume_apply_state()  # pyright: ignore[reportPrivateUsage]
+                apply_heartbeat = _start_stage("apply", total=len(gated_plan.actions))
+                content_rewrites = sum(
+                    1 for action in gated_plan.actions if is_content_rewrite(action)
+                )
+                if effective_options.backup_root is None and content_rewrites:
+                    typer.echo(
+                        f"warning: no tool backups for this run — `docmend restore` will be "
+                        f"able to undo only its pure renames; its {content_rewrites} action(s) "
+                        "with content rewrites rely on external preservation",
+                        err=True,
+                    )
+                result = execute_plan(
+                    run_id=run_id,
+                    manifest_path=manifest_path,
+                    started_at=started_at,
+                    safety=safety,
+                    heartbeat=apply_heartbeat,
+                )
+                if manifest_path.exists():
+                    result = result.model_copy(
+                        update={"manifest_sha256": manifest.manifest_sha256(manifest_path)}
+                    )
+                safety.confirm_report(report_path)
+                artifacts.write_report(result, report_path)
+                written_artifacts = [report_path]
+                if manifest_path.exists():
+                    written_artifacts.append(manifest_path)
+                _finish_stage(
+                    apply_heartbeat,
+                    *written_artifacts,
+                    not_attempted=result.totals.not_attempted,
+                )
+        except manifest.ManifestContainmentError as exc:
+            _incomplete_stage(apply_heartbeat, reason="manifest-containment")
+            typer.echo(f"refused [manifest-containment]: {exc}", err=True)
+            raise typer.Exit(3) from exc
+        except artifacts.ArtifactError as exc:
+            _incomplete_stage(apply_heartbeat, reason="artifact-error")
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from exc
+        except commit.WriteRefusedError as exc:
+            _incomplete_stage(apply_heartbeat, reason="write-refused")
+            raise typer.Exit(3) from exc
+        except commit.SafetyRefusedError as exc:
+            _incomplete_stage(apply_heartbeat, reason="safety-refused")
+            typer.echo(f"refused: {exc}", err=True)
+            raise typer.Exit(3) from exc
+        except Exception as exc:
+            _incomplete_stage(apply_heartbeat, reason=type(exc).__name__)
+            raise
+    else:
+        try:
+            resume_chain, prior_attempt = _load_apply_predecessors(
+                manifest_inputs,
+                report_inputs,
+                source_root=source_root,
+                plan_sha256=plan_sha256,
+            )
+        except manifest.ManifestContainmentError as exc:
+            typer.echo(f"refused [manifest-containment]: {exc}", err=True)
+            raise typer.Exit(3) from exc
+        except artifacts.ArtifactError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from exc
+        run_lock = _acquire_run_lock_strict(source_root, run_id=run_id, command="apply")
+        apply_heartbeat = _start_stage("apply", total=len(plan.actions))
+        try:
+            result = preview_plan(
+                plan,
+                config,
+                run_id=run_id,
+                plan_ref=plan_ref,
+                started_at=started_at,
+                resume_chain=resume_chain,
+                prior_attempt=prior_attempt,
+                heartbeat=apply_heartbeat,
+            )
+            try:
+                artifacts.write_report(result, report_path, clobber=False)
+            except FileExistsError as exc:
                 typer.echo(
-                    f"warning: no tool backups for this run — `docmend restore` will be able "
-                    f"to undo only its pure renames; its {content_rewrites} action(s) with "
-                    "content rewrites (including any rename+rewrite) cannot be undone from "
-                    "the manifest. Content recovery relies on whatever preservation "
-                    "satisfied the gate (FR-005: --preserved-by / --allow-no-backup)",
+                    f"error: report not written: {report_path} already exists "
+                    "(dry runs leave prior artifacts untouched; adr-0021)",
                     err=True,
                 )
-                log.warning(
-                    "restore capability for this run is renames-only",
-                    content_rewrites=content_rewrites,
-                    preserved_by=options.preserved_by,
-                )
-        result = execute_plan(
-            plan,
-            config,
-            run_id=run_id,
-            plan_ref=plan_ref,
-            options=options,
-            manifest_path=manifest_path,
-            started_at=started_at,
-            resume_records=resume_records,
-        )
-    finally:
-        run_lock.release()
+                raise typer.Exit(2) from exc
+            _finish_stage(
+                apply_heartbeat,
+                report_path,
+                not_attempted=result.totals.not_attempted,
+            )
+        except Exception as exc:
+            _incomplete_stage(apply_heartbeat, reason=type(exc).__name__)
+            raise
+        finally:
+            run_lock.release()
 
-    artifacts.write_report(result, report_path)
     totals = result.totals
     typer.echo(f"report: {report_path}")
     # exists() and not just the counts: resume reconciliation can fail actions
@@ -603,76 +834,87 @@ def apply(
         raise typer.Exit(1)
 
 
-def _read_resume_records(
-    resume_manifest: list[Path] | None,
-    resume_run_id: list[str] | None,
-    source_root: Path,
-) -> list[manifest.ManifestRecord] | None:
-    """Load and sanity-check the FR-013 resume manifests (adr-0006).
-
-    Every record's stamped source_root must match the plan's — a manifest from
-    a different tree can never legitimately reconcile (its action-IDs belong to
-    another plan), and silently re-executing everything would hide the
-    operator's mix-up (ERR-006 posture, exit 2). Pre-1.2 manifests carry no
-    source_root; they load unchecked, protected by the action-ID match itself.
-    """
-    paths = list(resume_manifest or [])
-    paths.extend(
-        Path(ARTIFACT_DIR_NAME) / f"docmend-{rid}-manifest.jsonl" for rid in resume_run_id or []
-    )
-    if not paths:
-        return None
-    root_resolved = str(source_root.resolve())
-    records: list[manifest.ManifestRecord] = []
-    for path in paths:
-        try:
-            loaded = manifest.read_manifest(path)
-        except artifacts.ArtifactError as exc:
-            typer.echo(f"error: {exc}", err=True)
-            raise typer.Exit(2) from exc
-        recorded_root = next((r.source_root for r in loaded if r.source_root is not None), None)
-        if recorded_root is not None and recorded_root != root_resolved:
-            typer.echo(
-                f"error: {path}: manifest source root {recorded_root} does not match "
-                f"the plan's ({root_resolved}) — wrong manifest for this plan (ERR-006)",
-                err=True,
+def _resolve_evidence_paths(
+    manifests: list[Path] | None,
+    run_ids: list[str] | None,
+    reports: list[Path] | None,
+    *,
+    option_name: str,
+) -> tuple[list[Path], list[Path]]:
+    """Resolve explicit and sidecar predecessor evidence without inventing paths."""
+    manifest_paths = list(manifests or [])
+    report_paths = list(reports or [])
+    for run_id in run_ids or []:
+        sidecar_manifest = Path(ARTIFACT_DIR_NAME) / f"docmend-{run_id}-manifest.jsonl"
+        sidecar_report = Path(ARTIFACT_DIR_NAME) / f"docmend-{run_id}-report.json"
+        found = False
+        if sidecar_manifest.exists():
+            manifest_paths.append(sidecar_manifest)
+            found = True
+        if sidecar_report.exists():
+            report_paths.append(sidecar_report)
+            found = True
+        if not found:
+            raise artifacts.ArtifactError(
+                f"{option_name} {run_id}: neither default manifest nor report sidecar exists "
+                "(the named predecessor left no evidence; ERR-006)"
             )
-            raise typer.Exit(2)
-        records.extend(loaded)
-    return records
+    return list(dict.fromkeys(manifest_paths)), list(dict.fromkeys(report_paths))
 
 
 def _write_refusal_report(
-    plan_ref: ArtifactRef, run_id: str, started_at: str, report_path: Path
+    plan_ref: ArtifactRef,
+    run_id: str,
+    started_at: str,
+    report_path: Path,
+    *,
+    prior_attempt: PriorAttempt | None,
 ) -> None:
     # §8.5: even a refused run leaves an artifact; zero outcomes, library untouched.
-    artifacts.write_report(
-        Report(
-            run_id=run_id,
-            generated_by=f"docmend {__version__}",
-            plan_ref=plan_ref,
-            dry_run=False,
-            started_at=started_at,
-            completed_at=datetime.now(UTC).isoformat(),
-            outcomes=[],
-            totals=ReportTotals(applied=0, would_apply=0, skipped=0, failed=0),
-        ),
-        report_path,
-    )
+    # 2.0: null manifest_sha256 + zero applied totals = a genuine report-only
+    # attempt (nothing mutated) — resumable with an empty chain (CR-NEW-001).
+    try:
+        artifacts.write_report(
+            Report(
+                run_id=run_id,
+                generated_by=f"docmend {__version__}",
+                plan_ref=plan_ref,
+                dry_run=False,
+                started_at=started_at,
+                completed_at=datetime.now(UTC).isoformat(),
+                outcomes=[],
+                totals=ReportTotals(applied=0, would_apply=0, skipped=0, failed=0, not_attempted=0),
+                prior_attempt=prior_attempt,
+                manifest_sha256=None,
+            ),
+            report_path,
+            clobber=False,
+        )
+    except FileExistsError:
+        typer.echo(
+            f"refusal report not written: {report_path} already exists "
+            "(pre-existing artifact preserved; §8.5)",
+            err=True,
+        )
 
 
 @app.command()
 def restore(
     ctx: typer.Context,
     manifest_path: Annotated[
-        Path | None,
-        typer.Option("--manifest", help="Manifest to replay (DR-004 NDJSON)."),
+        list[Path] | None,
+        typer.Option(
+            "--manifest",
+            help="Manifest(s) to undo (DR-004 NDJSON; repeatable — pass the whole "
+            "attempt chain of a multiply-resumed run).",
+        ),
     ] = None,
     run_id_arg: Annotated[
-        str | None,
+        list[str] | None,
         typer.Option(
             "--run-id",
-            help="Resolve .docmend/docmend-<ID>-manifest.jsonl (OQ-034 sidecar convention).",
+            help="Resolve .docmend/docmend-<ID>-manifest.jsonl (OQ-034 sidecar "
+            "convention; repeatable, combinable with --manifest).",
         ),
     ] = None,
     only_id: Annotated[
@@ -684,18 +926,21 @@ def restore(
     ] = False,
     dry_run_flag: Annotated[bool, typer.Option("--dry-run", help="Preview (the default).")] = False,
 ) -> None:
-    """Replay manifest records LIFO to undo an apply run (IR-008, §18.6).
+    """Undo an apply chain LIFO (IR-008, adr-0019, §18.6).
 
-    Exit codes (§18.5): 0 clean; 1 findings (skips/failures); 2 input error
-    (bad manifest); 3 safety refusal (lock).
+    Exit codes (§18.5): 0 clean; 1 findings (skips/failures, or --id matching
+    nothing); 2 input error (bad manifest); 3 safety refusal (lock or
+    containment).
     """
     opts = _global_options(ctx)
     if write and (dry_run_flag or opts.dry_run):
         raise typer.BadParameter("--write and --dry-run are mutually exclusive")
-    if (manifest_path is None) == (run_id_arg is None):
-        raise typer.BadParameter("provide exactly one of --manifest or --run-id")
-    if manifest_path is None:
-        manifest_path = Path(ARTIFACT_DIR_NAME) / f"docmend-{run_id_arg}-manifest.jsonl"
+    if not manifest_path and not run_id_arg:
+        raise typer.BadParameter("provide at least one of --manifest or --run-id")
+    manifest_paths = list(manifest_path or [])
+    manifest_paths.extend(
+        Path(ARTIFACT_DIR_NAME) / f"docmend-{rid}-manifest.jsonl" for rid in run_id_arg or []
+    )
 
     now = datetime.now(UTC)
     run_id = new_run_id(now)
@@ -709,10 +954,16 @@ def restore(
     )
 
     try:
-        records = manifest.read_manifest(manifest_path)
+        chain = manifest.read_manifest_chain(manifest_paths)
+    except manifest.ManifestContainmentError as exc:
+        # adr-0012: paths escaping the recorded roots are a safety refusal,
+        # not a mere input error — nothing is read or mutated past this point.
+        typer.echo(f"refused [manifest-containment]: {exc}", err=True)
+        raise typer.Exit(3) from exc
     except artifacts.ArtifactError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(2) from exc
+    records = [r for s in chain.sets for r in s.records]
     if not records:
         typer.echo("nothing to restore: manifest holds no records")
         return
@@ -737,24 +988,47 @@ def restore(
             "git/external declaration or the low-risk opt-in)"
         )
 
-    # OQ-036 (fixed MS-4): key on the manifest's recorded source_root so restore
-    # contends with a concurrent apply/plan on the same tree even when the
-    # mutated files nest in a subdirectory (falls back to commonpath for pre-1.2
-    # manifests). See `_restore_lock_root`.
-    run_lock = _acquire_run_lock_strict(
-        _restore_lock_root(records), run_id=run_id, command="restore"
-    )
-    try:
-        outcomes = run_restore(
-            records,
-            run_id=run_id,
-            write=write,
-            only_ids=frozenset(only_id) if only_id else None,
-            manifest_out=artifact_dir / f"docmend-{run_id}-manifest.jsonl",
+    manifest_out = artifact_dir / f"docmend-{run_id}-manifest.jsonl"
+    selector = frozenset(only_id) if only_id else None
+    if write:
+        try:
+            with commit.restore_write_context(
+                manifest_paths, run_id=run_id, manifest_out=manifest_out
+            ) as safety:
+                outcomes = run_restore(
+                    run_id=run_id,
+                    only_ids=selector,
+                    manifest_out=manifest_out,
+                    safety=safety,
+                )
+        except commit.SafetyRefusedError as exc:
+            typer.echo(f"refused: {exc}", err=True)
+            raise typer.Exit(3) from exc
+        except manifest.ManifestContainmentError as exc:
+            typer.echo(f"refused [manifest-containment]: {exc}", err=True)
+            raise typer.Exit(3) from exc
+        except artifacts.ArtifactError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from exc
+    else:
+        # Preview preserves the command's historical lock semantics while its
+        # engine remains structurally incapable of mutation.
+        run_lock = _acquire_run_lock_strict(
+            Path(chain.sets[0].header.source_root), run_id=run_id, command="restore"
         )
-    finally:
-        run_lock.release()
+        try:
+            outcomes = preview_restore(chain, run_id=run_id, only_ids=selector)
+        finally:
+            run_lock.release()
 
+    if only_id and not outcomes:
+        # A typo'd/stale --id must preserve the operator's stated intent as a
+        # finding, never a silent success (2026-07-10 review medium theme).
+        typer.echo(
+            "restore: no manifest record matches the requested id(s)",
+            err=True,
+        )
+        raise typer.Exit(1)
     counts = Counter(outcome.status for outcome in outcomes)
     typer.echo(
         f"restored: {counts.get('restored', 0)}  would-restore: {counts.get('would_restore', 0)}  "
@@ -774,27 +1048,34 @@ def verify(
             help="Converted file or directory tree to verify; a single file is first-class (NFR-006).",
         ),
     ],
-    manifest_path: Annotated[
-        Path | None,
+    manifest_paths_arg: Annotated[
+        list[Path] | None,
         typer.Option(
-            "--manifest", help="Reconcile against this manifest (DR-004 NDJSON); optional."
+            "--manifest",
+            help="Manifest evidence to consume (repeatable; DR-004 NDJSON).",
         ),
     ] = None,
-    run_id_arg: Annotated[
-        str | None,
+    run_ids_arg: Annotated[
+        list[str] | None,
         typer.Option(
             "--run-id",
-            help="Reconcile against .docmend/docmend-<ID>-manifest.jsonl (OQ-034 sidecar convention; "
-            "the run's report is reconciled too when its sidecar exists).",
+            help="Resolve default manifest/report sidecars for ID (repeatable and combinable).",
         ),
     ] = None,
-    report_path: Annotated[
-        Path | None,
+    report_paths_arg: Annotated[
+        list[Path] | None,
         typer.Option(
             "--report",
-            help="Reconcile report↔manifest accounting against this DR-003 report "
-            "(requires a manifest via --manifest or --run-id).",
+            help="Apply-report evidence to consume (repeatable; DR-003).",
         ),
+    ] = None,
+    plan_path: Annotated[
+        Path | None,
+        typer.Option("--plan", help="Plan artifact whose complete coverage must be certified."),
+    ] = None,
+    out_path: Annotated[
+        Path | None,
+        typer.Option("--out", help="Write an optional durable verify-report artifact to FILE."),
     ] = None,
     config_path: Annotated[
         Path | None,
@@ -803,31 +1084,12 @@ def verify(
 ) -> None:
     """Verify converted output read-only against the FR-014 checks (IR-004, adr-0012).
 
-    Read-only: reuses `scan`'s walk + facts, mutates nothing, writes no manifest.
-    Content checks (UTF-8 decodability, LF-only) and frontmatter-where-present
-    validation (FR-016, adr-0011) always run over PATH; manifest reconciliation
-    runs when a manifest is supplied (flag or sidecar), and report↔manifest
-    accounting when a report is too. Exit codes (adr-0012): 0 clean; 1 findings
-    (bad encoding, CRLF, invalid frontmatter, hash mismatch, accounting drift);
-    2 input error (bad flags, unreadable/invalid artifact).
+    Content checks always run. Optional plan/report/manifest evidence activates
+    lifecycle, recovery, and exactly-once plan certification. Exit codes:
+    0 clean; 1 findings; 2 invocation/structural input error; 3 safety refusal.
     """
     opts = _global_options(ctx)
     config = _load_effective_config(config_path, None, None)
-    if manifest_path is not None and run_id_arg is not None:
-        raise typer.BadParameter("provide at most one of --manifest or --run-id")
-    if report_path is not None and manifest_path is None and run_id_arg is None:
-        # Accounting is a CROSS-artifact check: a report alone has its internal
-        # totals rule enforced at read time; without a manifest there is nothing
-        # to reconcile it against.
-        raise typer.BadParameter("--report requires a manifest (--manifest or --run-id)")
-    if run_id_arg is not None:
-        manifest_path = Path(ARTIFACT_DIR_NAME) / f"docmend-{run_id_arg}-manifest.jsonl"
-        if report_path is None:
-            # Sidecar convention: reconcile the run's report too when present;
-            # absence is legal (the operator may have relocated it via --report).
-            sidecar_report = Path(ARTIFACT_DIR_NAME) / f"docmend-{run_id_arg}-report.json"
-            if sidecar_report.is_file():
-                report_path = sidecar_report
     now = datetime.now(UTC)
     run_id = new_run_id(now)
     artifact_dir = Path(ARTIFACT_DIR_NAME)
@@ -840,24 +1102,146 @@ def verify(
     )
     log = get_logger(__name__)
     log.info("verify starting", path=str(path))
-    inventory = discovery.scan(path, config, run_id=run_id, generated_at=now.isoformat())
-    findings = check_content(inventory) + check_frontmatter(inventory)
-    if manifest_path is not None:
+
+    try:
+        manifest_paths, report_paths = _resolve_evidence_paths(
+            manifest_paths_arg,
+            run_ids_arg,
+            report_paths_arg,
+            option_name="--run-id",
+        )
+    except artifacts.ArtifactError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+    if report_paths and not manifest_paths and plan_path is None:
+        raise typer.BadParameter("--report without --plan requires at least one manifest")
+
+    corpus_root = (path if path.is_dir() else path.parent).resolve()
+    input_artifacts = [*manifest_paths, *report_paths]
+    if plan_path is not None:
+        input_artifacts.append(plan_path)
+    if out_path is not None:
+        _guard_artifact_paths(
+            [out_path],
+            corpus_root=corpus_root,
+            input_artifacts=input_artifacts,
+            config=config,
+        )
+
+    plan_snapshot = None
+    if plan_path is not None:
+        # Plan 1.x must fail before a million-file scan or lock attempt, while
+        # manifest/report snapshots must remain inside the corpus lock. Reuse
+        # this exact snapshot below so plan validation has no TOCTOU reread.
         try:
-            records = manifest.read_manifest(manifest_path)
+            plan_snapshot = artifacts.read_plan_snapshot(plan_path)
         except artifacts.ArtifactError as exc:
-            # Unreadable/corrupt input artifact is an invocation error, not a
-            # finding (adr-0012 exit 2), mirroring restore's read_manifest guard.
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(2) from exc
-        findings = findings + reconcile_manifest(records)
-        if report_path is not None:
+
+    started_at = now.isoformat()
+    run_lock = _acquire_read_lock(corpus_root, run_id=run_id, command="verify")
+    scan_heartbeat: ProgressHeartbeat | None = None
+    verify_heartbeat: ProgressHeartbeat | None = None
+    try:
+        scan_heartbeat = _start_stage("scan", total=None)
+        inventory = discovery.scan(
+            path,
+            config,
+            run_id=run_id,
+            generated_at=started_at,
+            heartbeat=scan_heartbeat,
+        )
+        _finish_stage(scan_heartbeat)
+        verify_heartbeat = _start_stage("verify", total=None)
+        findings = (
+            check_content(inventory, heartbeat=verify_heartbeat)
+            + check_frontmatter(inventory, heartbeat=verify_heartbeat)
+            + check_discovery(inventory)
+        )
+        evidence = None
+        if manifest_paths or report_paths or plan_path is not None:
             try:
-                run_report = artifacts.read_report(report_path)
+                evidence = load_verification_evidence(
+                    plan_path,
+                    manifest_paths,
+                    report_paths,
+                    plan_snapshot=plan_snapshot,
+                )
+            except manifest.ManifestContainmentError as exc:
+                # Inspection owns containment; this is a defense-in-depth
+                # fallback if a future refactor lets one escape as an error.
+                findings.append(VerifyFinding(str(path), "manifest-containment", str(exc)))
             except artifacts.ArtifactError as exc:
                 typer.echo(f"error: {exc}", err=True)
                 raise typer.Exit(2) from exc
-            findings = findings + reconcile_report(run_report, records)
+            if evidence is not None:
+                inspection = evidence.manifest_inspection
+                findings.extend(evidence.findings)
+                findings.extend(manifest_inspection_findings(inspection))
+                root_findings = check_manifest_root(inspection.chain, corpus_root)
+                findings.extend(root_findings)
+                findings.extend(check_lifecycle(inspection.chain, heartbeat=verify_heartbeat))
+                if not root_findings:
+                    unsafe = frozenset(item.action_id for item in inspection.findings)
+                    findings.extend(
+                        check_outputs(
+                            inspection.chain,
+                            unsafe_action_ids=unsafe,
+                            heartbeat=verify_heartbeat,
+                        )
+                    )
+                    findings.extend(
+                        check_backups(
+                            inspection.chain,
+                            unsafe_action_ids=unsafe,
+                            heartbeat=verify_heartbeat,
+                        )
+                    )
+        if plan_path is not None and evidence is not None:
+            findings.extend(check_plan_coverage(evidence, heartbeat=verify_heartbeat).findings)
+        if out_path is not None:
+            result_report = VerifyReport(
+                run_id=run_id,
+                generated_by=f"docmend {__version__}",
+                verified_path=str(path),
+                source_root=str(corpus_root),
+                started_at=started_at,
+                completed_at=datetime.now(UTC).isoformat(),
+                inputs=list(evidence.inputs) if evidence is not None else [],
+                checked_files=inventory.totals.files,
+                findings=[
+                    VerifyFindingRecord(
+                        path=item.path,
+                        check=item.check,
+                        detail=item.detail,
+                    )
+                    for item in findings
+                ],
+                clean=not findings,
+            )
+            try:
+                artifacts.write_verify_report(result_report, out_path)
+            except artifacts.ArtifactError as exc:
+                typer.echo(f"error: {exc}", err=True)
+                raise typer.Exit(2) from exc
+        processed, skipped, failed = verify_heartbeat.counts
+        verify_heartbeat.advance(
+            processed=processed,
+            skipped=skipped,
+            failed=max(failed, len(findings)),
+        )
+        _finish_stage(verify_heartbeat, *([out_path] if out_path is not None else []))
+    except Exception as exc:
+        if verify_heartbeat is not None:
+            _incomplete_stage(verify_heartbeat, reason=type(exc).__name__)
+        else:
+            _incomplete_stage(scan_heartbeat, reason=type(exc).__name__)
+        raise
+    finally:
+        if run_lock is not None:
+            run_lock.release()
+
     for finding in findings:
         typer.echo(f"finding [{finding.check}] {finding.path}: {finding.detail}")
     typer.echo(f"verify: {inventory.totals.files} files checked, {len(findings)} findings")

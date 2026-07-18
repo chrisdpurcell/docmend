@@ -6,24 +6,31 @@ outcomes, manifest records, and corpus state. Real filesystem (OQ-019).
 """
 
 import hashlib
+import inspect
 import shutil
 from collections import Counter
 from pathlib import Path
 
 import pytest
+from tests.helpers import replace_with_new_inode
+from tests.helpers.manifest2 import read_records
+from tests.helpers.writectx import apply_safety, restore_safety
 
 from corpus import FileRecipe, materialize, seeded_faker
 from docmend import discovery, planning
 from docmend.artifacts import sha256_of_file
 from docmend.config import DocmendConfig, RenameConfig, WriteConfig
-from docmend.plan import ArtifactRef, Plan
-from docmend.transform.dispatch import apply_text_transforms, classify_suffix
+from docmend.plan import ActionProvenance, ArtifactRef, Plan, PlanAction, PlanTotals
+from docmend.report import Report
+from docmend.restore import run_restore
+from docmend.transform.dispatch import Operation, apply_text_transforms, classify_suffix
 from docmend.transform.encoding import decode_source, encode_utf8
 from docmend.writer import apply as apply_module
-from docmend.writer.apply import execute_plan
+from docmend.writer.apply import execute_plan, preview_plan
 from docmend.writer.backup import BackupError
+from docmend.writer.commit import NO_HOOKS, CommitHooks
 from docmend.writer.gate import ApplyOptions
-from docmend.writer.manifest import read_manifest
+from docmend.writer.manifest import read_manifest_set
 
 RUN_ID = "run_20260706T000000Z_00008f"
 PLAN_RUN_ID = "run_20260706T000000Z_00008e"
@@ -44,6 +51,8 @@ def _plan_for(root: Path, config: DocmendConfig) -> Plan:
 
 
 def _execute(plan: Plan, config: DocmendConfig, tmp_path: Path, **kwargs: object):
+    hooks = kwargs.pop("hooks", NO_HOOKS)
+    assert isinstance(hooks, CommitHooks)
     options = ApplyOptions(
         write=bool(kwargs.pop("write", False)),
         backup_root=kwargs.pop("backup_root", None),  # type: ignore[arg-type]
@@ -51,16 +60,36 @@ def _execute(plan: Plan, config: DocmendConfig, tmp_path: Path, **kwargs: object
         allow_no_backup=bool(kwargs.pop("allow_no_backup", False)),
     )
     assert not kwargs
-    return execute_plan(
-        plan,
-        config,
-        run_id=RUN_ID,
-        plan_ref=ArtifactRef(path="plan.json", run_id=PLAN_RUN_ID, sha256="sha256:" + "1" * 64),
-        options=options,
-        manifest_path=tmp_path / "manifest.jsonl",
-        started_at=GENERATED_AT,
-        now=lambda: NOW,
-    )
+    if not options.write:
+        return preview_plan(
+            plan,
+            config,
+            run_id=RUN_ID,
+            plan_ref=ArtifactRef(path="plan.json", run_id=PLAN_RUN_ID, sha256="sha256:" + "1" * 64),
+            started_at=GENERATED_AT,
+            now=lambda: NOW,
+        )
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        with apply_safety(
+            plan,
+            options=options,
+            manifest_path=tmp_path / "manifest.jsonl",
+            report_path=tmp_path / "report.json",
+            run_id=RUN_ID,
+            state_dir=tmp_path / "state",
+            monkeypatch=monkeypatch,
+        ) as safety:
+            return execute_plan(
+                run_id=RUN_ID,
+                manifest_path=tmp_path / "manifest.jsonl",
+                started_at=GENERATED_AT,
+                now=lambda: NOW,
+                hooks=hooks,
+                safety=safety,
+            )
+    finally:
+        monkeypatch.undo()
 
 
 def _hash_tree(root: Path) -> dict[str, str]:
@@ -70,6 +99,95 @@ def _hash_tree(root: Path) -> dict[str, str]:
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
+
+
+class TestEntrypointSplit:
+    def test_execute_plan_with_expired_capability__runtimeerror(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "root"
+        materialize(root, [FileRecipe("a.txt", "utf-8", "crlf")], seeded_faker())
+        plan = _plan_for(root, DocmendConfig())
+        manifest_path = tmp_path / "manifest.jsonl"
+        with apply_safety(
+            plan,
+            options=ApplyOptions(
+                write=True,
+                backup_root=None,
+                preserved_by="external",
+                allow_no_backup=False,
+            ),
+            manifest_path=manifest_path,
+            report_path=tmp_path / "report.json",
+            run_id=RUN_ID,
+            state_dir=tmp_path / "state",
+            monkeypatch=monkeypatch,
+        ) as safety:
+            leaked = safety
+        with pytest.raises(RuntimeError, match="factory scope"):
+            execute_plan(
+                run_id=RUN_ID,
+                manifest_path=manifest_path,
+                started_at=GENERATED_AT,
+                safety=leaked,
+            )
+
+    def test_execute_plan_runs_gated_copy_not_caller_plan(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "root"
+        materialize(root, [FileRecipe("a.txt", "utf-8", "crlf")], seeded_faker())
+        plan = _plan_for(root, DocmendConfig())
+        original_target = plan.actions[0].target_path
+        assert original_target is not None
+        manifest_path = tmp_path / "manifest.jsonl"
+        with apply_safety(
+            plan,
+            options=ApplyOptions(
+                write=True,
+                backup_root=None,
+                preserved_by="external",
+                allow_no_backup=False,
+            ),
+            manifest_path=manifest_path,
+            report_path=tmp_path / "report.json",
+            run_id=RUN_ID,
+            state_dir=tmp_path / "state",
+            monkeypatch=monkeypatch,
+        ) as safety:
+            plan.actions[0].target_path = "victim.md"
+            report = execute_plan(
+                run_id=RUN_ID,
+                manifest_path=manifest_path,
+                started_at=GENERATED_AT,
+                safety=safety,
+            )
+        assert report.outcomes[0].status == "applied"
+        assert (root / original_target).exists()
+        assert not (root / "victim.md").exists()
+
+    def test_mutation_entrypoints_accept_only_sealed_authority(self) -> None:
+        parameters = inspect.signature(execute_plan).parameters
+        for forbidden in (
+            "plan",
+            "config",
+            "options",
+            "plan_ref",
+            "plan_sha256",
+            "resume_chain",
+            "prior_attempt",
+        ):
+            assert forbidden not in parameters
+        assert tuple(
+            inspect.signature(
+                apply_module._execute_action  # pyright: ignore[reportPrivateUsage]
+            ).parameters
+        ) == (
+            "run",
+            "action_id",
+        )
+        with pytest.raises(TypeError, match="engine-sealed"):
+            apply_module._ApplyRun()  # pyright: ignore[reportPrivateUsage]
 
 
 def test_dry_run_default__writes_nothing_reports_would_apply(tmp_path: Path) -> None:
@@ -94,21 +212,22 @@ def test_dry_run_default__writes_nothing_reports_would_apply(tmp_path: Path) -> 
     assert report.totals.applied == report.totals.skipped == report.totals.failed == 0
 
 
-def test_write__records_carry_resolved_source_root(tmp_path: Path) -> None:
-    """Manifest 1.2 (OQ-036): every record carries the apply run's resolved source
-    root so `docmend restore` can key its lock on it (closes the AW-005 gap)."""
+def test_write__header_carries_resolved_source_root(tmp_path: Path) -> None:
+    """Manifest 2.0 (adr-0019, was OQ-036): the HEADER carries the apply run's
+    resolved source root so `docmend restore` can key its lock on it (AW-005);
+    records no longer repeat it per line."""
     root = tmp_path / "root"
     materialize(root, [FileRecipe("a.txt", "utf-8", "crlf")], seeded_faker())
     config = DocmendConfig()
     plan = _plan_for(root, config)
 
-    _execute(plan, config, tmp_path, write=True)
+    _execute(plan, config, tmp_path, write=True, preserved_by="external")
 
-    records = read_manifest(tmp_path / "manifest.jsonl")
-    assert records
+    loaded = read_manifest_set(tmp_path / "manifest.jsonl")
+    assert loaded.records
     assert plan.source_root is not None
-    resolved = str(Path(plan.source_root).resolve())
-    assert all(record.source_root == resolved for record in records)
+    assert loaded.header.source_root == str(Path(plan.source_root).resolve())
+    assert loaded.header.kind == "apply"
 
 
 def test_write_rewrite_in_place__utf8_lf_and_manifest(tmp_path: Path) -> None:
@@ -148,9 +267,10 @@ def test_write_rewrite_in_place__utf8_lf_and_manifest(tmp_path: Path) -> None:
     assert outcome.after_sha256 == _sha(expected_bytes)
     assert outcome.after_sha256 == sha256_of_file(target_file)
 
-    records = read_manifest(tmp_path / "manifest.jsonl")
-    assert len(records) == 1
-    record = records[0]
+    records = read_records(tmp_path / "manifest.jsonl")
+    # 2.0: intent + terminal per mutation; the terminal carries the outcome.
+    assert [r.result for r in records] == ["intent", "applied"]
+    record = records[1]
     assert record.operation == "rewrite"
     assert record.backup_path is not None
     backup_bytes = Path(record.backup_path).read_bytes()
@@ -167,7 +287,7 @@ def test_write_rename_only__link_semantics(tmp_path: Path) -> None:
     action = {a.path: a for a in plan.actions}["clean.txt"]
     assert action.operations == ["rename"]
 
-    report = _execute(plan, config, tmp_path, write=True)
+    report = _execute(plan, config, tmp_path, write=True, preserved_by="external")
 
     assert not (root / "clean.txt").exists()
     new_path = root / "clean.md"
@@ -176,7 +296,7 @@ def test_write_rename_only__link_semantics(tmp_path: Path) -> None:
     assert outcome.status == "applied"
     assert outcome.after_sha256 == outcome.before_sha256
 
-    records = read_manifest(tmp_path / "manifest.jsonl")
+    records = read_records(tmp_path / "manifest.jsonl")
     assert records[0].operation == "rename"
     assert records[0].after_sha256 == records[0].before_sha256
 
@@ -196,9 +316,9 @@ def test_write_rename_and_rewrite__source_survives_failure(
     def _boom(*_a: object, **_kw: object) -> None:
         raise apply_module.WriteError("simulated publish failure")
 
-    monkeypatch.setattr(apply_module, "atomic_write_bytes", _boom)
+    monkeypatch.setattr(apply_module, "publish_staged", _boom)
 
-    report = _execute(plan, config, tmp_path, write=True)
+    report = _execute(plan, config, tmp_path, write=True, preserved_by="external")
 
     outcome = report.outcomes[0]
     assert outcome.status == "failed"
@@ -207,7 +327,7 @@ def test_write_rename_and_rewrite__source_survives_failure(
     assert outcome.after_sha256 is None
     assert (root / "legacy.txt").read_bytes() == original_bytes
 
-    records = read_manifest(tmp_path / "manifest.jsonl")
+    records = read_records(tmp_path / "manifest.jsonl")
     # 1.3: the write-ahead intent precedes the mutation attempt; the failure
     # closes it, so this dangling-free pair is exactly what resume expects.
     assert [r.result for r in records] == ["intent", "failed"]
@@ -225,7 +345,7 @@ def test_stale_hash__skipped_batch_continues(tmp_path: Path) -> None:
 
     (root / "a.txt").write_bytes(b"one CHANGED\n")
 
-    report = _execute(plan, config, tmp_path, write=True)
+    report = _execute(plan, config, tmp_path, write=True, preserved_by="external")
 
     outcomes = {o.path: o for o in report.outcomes}
     assert outcomes["a.txt"].status == "skipped"
@@ -245,11 +365,617 @@ def test_unreadable_at_apply__skipped(tmp_path: Path) -> None:
     plan = _plan_for(root, config)
     (root / "a.txt").unlink()
 
-    report = _execute(plan, config, tmp_path, write=True)
+    report = _execute(plan, config, tmp_path, write=True, preserved_by="external")
 
     outcome = report.outcomes[0]
     assert outcome.status == "skipped"
     assert outcome.skip_reason == "unreadable"
+
+
+class TestCommitBoundarySourceBinding:
+    @staticmethod
+    def _planned_rewrite(tmp_path: Path) -> tuple[Path, Plan, DocmendConfig, Path]:
+        root = tmp_path / "root"
+        materialize(root, [FileRecipe("a.txt", "utf-8", "crlf")], seeded_faker())
+        config = DocmendConfig()
+        plan = _plan_for(root, config)
+        assert len(plan.actions) == 1
+        return root, plan, config, tmp_path / "manifest.jsonl"
+
+    @staticmethod
+    def _execute(plan: Plan, config: DocmendConfig, tmp_path: Path) -> Report:
+        return _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+        )
+
+    def test_symlinked_source_at_apply__external_interference_skip(self, tmp_path: Path) -> None:
+        """Refuse an in-root symlink interposed after planning without mutation."""
+        root, plan, config, manifest_path = self._planned_rewrite(tmp_path)
+        source = root / plan.actions[0].path
+        payload = source.read_bytes()
+        aside = root / "aside.txt"
+        source.rename(aside)
+        source.symlink_to(aside)
+
+        report = self._execute(plan, config, tmp_path)
+
+        outcome = report.outcomes[0]
+        assert outcome.status == "skipped"
+        assert outcome.skip_reason == "external-interference"
+        assert aside.read_bytes() == payload
+        assert source.is_symlink()
+        assert not manifest_path.exists()
+
+    def test_source_swapped_same_bytes_before_bind__applies_against_new_object(
+        self, tmp_path: Path
+    ) -> None:
+        """A pre-bind same-byte replacement becomes the object the run validates."""
+        root, plan, config, _manifest_path = self._planned_rewrite(tmp_path)
+        source = root / plan.actions[0].path
+        payload = source.read_bytes()
+        source.unlink()
+        source.write_bytes(payload)
+
+        report = self._execute(plan, config, tmp_path)
+
+        assert report.outcomes[0].status == "applied"
+
+
+class TestActionTimeOverwriteInvariant:
+    @staticmethod
+    def _planned_rename(tmp_path: Path) -> tuple[Path, Plan, DocmendConfig]:
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "a.txt").write_bytes(b"clean\n")
+        config = DocmendConfig(rename=RenameConfig(on_collision="overwrite"))
+        plan = _plan_for(root, config)
+        assert len(plan.actions) == 1
+        assert plan.actions[0].operations == ["rename"]
+        return root, plan, config
+
+    def test_target_appears_after_gate_no_strategy__collision_unpreserved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root, plan, _config = self._planned_rename(tmp_path)
+        target_path = plan.actions[0].target_path
+        assert target_path is not None
+        target = root / target_path
+        assert not target.exists()
+        options = ApplyOptions(
+            write=True, backup_root=None, preserved_by=None, allow_no_backup=False
+        )
+        manifest_path = tmp_path / "manifest.jsonl"
+        with apply_safety(
+            plan,
+            options=options,
+            manifest_path=manifest_path,
+            report_path=tmp_path / "report.json",
+            run_id=RUN_ID,
+            state_dir=tmp_path / "state",
+            monkeypatch=monkeypatch,
+        ) as safety:
+            target.write_bytes(b"late arrival")
+            report = execute_plan(
+                run_id=RUN_ID,
+                manifest_path=manifest_path,
+                started_at=GENERATED_AT,
+                safety=safety,
+            )
+
+        outcome = report.outcomes[0]
+        assert outcome.status == "skipped"
+        assert outcome.skip_reason == "collision-unpreserved"
+        assert target.read_bytes() == b"late arrival"
+        assert (root / plan.actions[0].path).exists()
+
+    def test_target_appears_after_gate_with_strategy__clobbers_with_backup(
+        self, tmp_path: Path
+    ) -> None:
+        root, plan, config = self._planned_rename(tmp_path)
+        target_path = plan.actions[0].target_path
+        assert target_path is not None
+        target = root / target_path
+        target.write_bytes(b"late arrival")
+
+        report = _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+        )
+
+        assert report.outcomes[0].status == "applied"
+        record = read_records(tmp_path / "manifest.jsonl")[-1]
+        assert record.overwritten_backup_path is not None
+        assert Path(record.overwritten_backup_path).read_bytes() == b"late arrival"
+
+
+class TestCommitBoundaryTargetBinding:
+    def test_symlinked_overwrite_target__external_interference_skip(self, tmp_path: Path) -> None:
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "a.txt").write_bytes(b"clean\n")
+        config = DocmendConfig(rename=RenameConfig(on_collision="overwrite"))
+        plan = _plan_for(root, config)
+        target_path = plan.actions[0].target_path
+        assert target_path is not None
+        target = root / target_path
+        victim = root / "victim.txt"
+        victim.write_bytes(b"existing target bytes")
+        target.symlink_to(victim)
+
+        report = _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+        )
+
+        assert report.outcomes[0].skip_reason == "external-interference"
+        assert victim.read_bytes() == b"existing target bytes"
+        assert target.is_symlink()
+
+
+class TestCommitBoundaryRaces:
+    @staticmethod
+    def _planned_rewrite(tmp_path: Path) -> tuple[Path, Plan, DocmendConfig]:
+        root = tmp_path / "root"
+        materialize(root, [FileRecipe("a.md", "utf-8", "crlf")], seeded_faker())
+        config = DocmendConfig()
+        plan = _plan_for(root, config)
+        assert plan.actions[0].operations == ["normalize_newlines"]
+        return root, plan, config
+
+    @staticmethod
+    def _planned_rename(tmp_path: Path) -> tuple[Path, Plan, DocmendConfig]:
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "a.txt").write_bytes(b"clean\n")
+        config = DocmendConfig()
+        plan = _plan_for(root, config)
+        assert plan.actions[0].operations == ["rename"]
+        return root, plan, config
+
+    @staticmethod
+    def _planned_rename_overwrite(tmp_path: Path) -> tuple[Path, Plan, DocmendConfig]:
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "a.txt").write_bytes(b"clean\n")
+        config = DocmendConfig(rename=RenameConfig(on_collision="overwrite"))
+        plan = _plan_for(root, config)
+        assert plan.actions[0].operations == ["rename"]
+        return root, plan, config
+
+    @staticmethod
+    def _planned_rename_rewrite(
+        tmp_path: Path, *, overwrite: bool = False
+    ) -> tuple[Path, Plan, DocmendConfig]:
+        root = tmp_path / "root"
+        materialize(root, [FileRecipe("a.txt", "utf-8", "crlf")], seeded_faker())
+        config = DocmendConfig(
+            rename=RenameConfig(on_collision="overwrite" if overwrite else "skip")
+        )
+        plan = _plan_for(root, config)
+        assert plan.actions[0].operations == ["normalize_newlines", "rename"]
+        return root, plan, config
+
+    def test_rewrite__source_swapped_same_bytes_after_intent__refused_nothing_mutated(
+        self, tmp_path: Path
+    ) -> None:
+        root, plan, config = self._planned_rewrite(tmp_path)
+        source = root / plan.actions[0].path
+
+        def swap(step: str, path: Path) -> None:
+            if step == "publish":
+                payload = source.read_bytes()
+                replace_with_new_inode(source, payload)
+
+        report = _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+            hooks=CommitHooks(swap),
+        )
+
+        assert report.outcomes[0].skip_reason == "external-interference"
+        assert [record.result for record in read_records(tmp_path / "manifest.jsonl")] == [
+            "intent",
+            "failed",
+        ]
+
+    def test_rewrite__staged_temp_swapped_before_publish__refused(self, tmp_path: Path) -> None:
+        root, plan, config = self._planned_rewrite(tmp_path)
+        source = root / plan.actions[0].path
+
+        def swap(step: str, path: Path) -> None:
+            if step == "publish":
+                for staged_name in source.parent.glob(f".{source.name}.*.docmend-tmp"):
+                    content = staged_name.read_bytes()
+                    replace_with_new_inode(staged_name, content)
+
+        report = _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+            hooks=CommitHooks(swap),
+        )
+
+        assert report.outcomes[0].skip_reason == "external-interference"
+        assert [record.result for record in read_records(tmp_path / "manifest.jsonl")] == [
+            "intent",
+            "failed",
+        ]
+        assert len(list(source.parent.glob(f".{source.name}.*.docmend-tmp"))) == 1
+
+    def test_rename__target_created_before_publish__collision_unpreserved(
+        self, tmp_path: Path
+    ) -> None:
+        root, plan, config = self._planned_rename(tmp_path)
+        target_path = plan.actions[0].target_path
+        assert target_path is not None
+        target = root / target_path
+
+        def appear(step: str, path: Path) -> None:
+            if step == "publish":
+                target.write_bytes(b"late arrival")
+
+        report = _execute(plan, config, tmp_path, write=True, hooks=CommitHooks(appear))
+
+        assert report.outcomes[0].skip_reason == "collision-unpreserved"
+        assert target.read_bytes() == b"late arrival"
+
+    def test_rename__published_target_replaced_before_unlink__source_retained(
+        self, tmp_path: Path
+    ) -> None:
+        root, plan, config = self._planned_rename(tmp_path)
+        source = root / plan.actions[0].path
+        target_path = plan.actions[0].target_path
+        assert target_path is not None
+        target = root / target_path
+
+        def swap(step: str, path: Path) -> None:
+            if step == "unlink":
+                target.unlink()
+                target.write_bytes(b"interloper")
+
+        report = _execute(plan, config, tmp_path, write=True, hooks=CommitHooks(swap))
+
+        assert report.outcomes[0].skip_reason == "external-interference"
+        assert source.exists()
+        assert target.read_bytes() == b"interloper"
+        assert [record.result for record in read_records(tmp_path / "manifest.jsonl")] == [
+            "intent",
+            "failed",
+        ]
+
+    def test_rename__source_lost_in_unlink_window__dangling_intent_last_copy(
+        self, tmp_path: Path
+    ) -> None:
+        root, plan, config = self._planned_rename(tmp_path)
+        source = root / plan.actions[0].path
+        target_path = plan.actions[0].target_path
+        assert target_path is not None
+        target = root / target_path
+
+        def swap(step: str, path: Path) -> None:
+            if step == "unlink":
+                payload = source.read_bytes()
+                source.unlink()
+                source.write_bytes(payload)
+
+        report = _execute(plan, config, tmp_path, write=True, hooks=CommitHooks(swap))
+
+        outcome = report.outcomes[0]
+        assert outcome.status == "failed"
+        assert outcome.error is not None
+        assert outcome.error.error_class == "ERR-002"
+        assert target.exists()
+        assert [record.result for record in read_records(tmp_path / "manifest.jsonl")] == ["intent"]
+
+    def test_rename_overwrite__target_replaced_after_backup__refused(self, tmp_path: Path) -> None:
+        root, plan, config = self._planned_rename_overwrite(tmp_path)
+        target_path = plan.actions[0].target_path
+        assert target_path is not None
+        target = root / target_path
+        target.write_bytes(b"existing")
+
+        def swap(step: str, path: Path) -> None:
+            if step == "replace-target":
+                content = target.read_bytes()
+                replace_with_new_inode(target, content)
+
+        report = _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+            hooks=CommitHooks(swap),
+        )
+
+        assert report.outcomes[0].skip_reason == "external-interference"
+
+    def test_rewrite__parent_swapped_for_symlink_before_publish__refused(
+        self, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "root"
+        sub = root / "sub"
+        materialize(sub, [FileRecipe("a.md", "utf-8", "crlf")], seeded_faker())
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        config = DocmendConfig()
+        plan = _plan_for(root, config)
+        source = root / plan.actions[0].path
+        original = source.read_bytes()
+
+        def interpose(step: str, path: Path) -> None:
+            if step == "publish":
+                sub.rename(outside / "sub")
+                sub.symlink_to(outside / "sub")
+
+        report = _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+            hooks=CommitHooks(interpose),
+        )
+
+        assert report.outcomes[0].skip_reason == "external-interference"
+        assert (outside / "sub" / "a.md").read_bytes() == original
+
+    def test_rename_and_rewrite__source_swapped_in_unlink_window__output_retained_dangling(
+        self, tmp_path: Path
+    ) -> None:
+        root, plan, config = self._planned_rename_rewrite(tmp_path)
+        action = plan.actions[0]
+        source = root / action.path
+        assert action.target_path is not None
+        target = root / action.target_path
+
+        def swap(step: str, path: Path) -> None:
+            if step == "unlink":
+                replace_with_new_inode(source, b"interloper")
+
+        report = _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+            hooks=CommitHooks(swap),
+        )
+
+        outcome = report.outcomes[0]
+        assert outcome.status == "failed"
+        assert outcome.error is not None and outcome.error.error_class == "ERR-002"
+        assert source.read_bytes() == b"interloper"
+        assert target.exists()
+        assert [record.result for record in read_records(tmp_path / "manifest.jsonl")] == ["intent"]
+
+    def test_rename_and_rewrite__published_target_replaced_before_unlink__proven_failed(
+        self, tmp_path: Path
+    ) -> None:
+        root, plan, config = self._planned_rename_rewrite(tmp_path)
+        action = plan.actions[0]
+        source = root / action.path
+        assert action.target_path is not None
+        target = root / action.target_path
+
+        def swap(step: str, path: Path) -> None:
+            if step == "unlink":
+                replace_with_new_inode(target, b"interloper")
+
+        report = _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+            hooks=CommitHooks(swap),
+        )
+
+        assert report.outcomes[0].skip_reason == "external-interference"
+        assert source.exists()
+        assert target.read_bytes() == b"interloper"
+        assert [record.result for record in read_records(tmp_path / "manifest.jsonl")] == [
+            "intent",
+            "failed",
+        ]
+
+    def test_rename_and_rewrite_clobber__published_target_replaced__dangling(
+        self, tmp_path: Path
+    ) -> None:
+        root, plan, config = self._planned_rename_rewrite(tmp_path, overwrite=True)
+        action = plan.actions[0]
+        source = root / action.path
+        assert action.target_path is not None
+        target = root / action.target_path
+        target.write_bytes(b"old target")
+
+        def swap(step: str, path: Path) -> None:
+            if step == "unlink":
+                target.unlink()
+                target.write_bytes(b"interloper")
+
+        report = _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+            hooks=CommitHooks(swap),
+        )
+
+        outcome = report.outcomes[0]
+        assert outcome.status == "failed"
+        assert outcome.error is not None and outcome.error.error_class == "ERR-002"
+        assert source.exists()
+        assert target.read_bytes() == b"interloper"
+        assert [record.result for record in read_records(tmp_path / "manifest.jsonl")] == ["intent"]
+
+    def test_dangling_interference_intent__resume_leaves_it_dangling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root, plan, config = self._planned_rename_rewrite(tmp_path, overwrite=True)
+        action = plan.actions[0]
+        source = root / action.path
+        assert action.target_path is not None
+        target = root / action.target_path
+        target.write_bytes(b"old target")
+
+        def swap(step: str, path: Path) -> None:
+            if step == "unlink":
+                target.unlink()
+                target.write_bytes(b"interloper")
+
+        first_manifest = tmp_path / "manifest.jsonl"
+        _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+            hooks=CommitHooks(swap),
+        )
+        source_before = source.read_bytes()
+        target_before = target.read_bytes()
+        resume_manifest = tmp_path / "resume.jsonl"
+
+        resume_run = "run_20260706T000002Z_000090"
+        options = ApplyOptions(
+            write=True,
+            backup_root=tmp_path / "backups",
+            preserved_by=None,
+            allow_no_backup=False,
+        )
+        with apply_safety(
+            plan,
+            options=options,
+            manifest_path=resume_manifest,
+            report_path=tmp_path / "resume-report.json",
+            run_id=resume_run,
+            state_dir=tmp_path / "state",
+            resume_manifest_paths=[first_manifest],
+            monkeypatch=monkeypatch,
+        ) as safety:
+            report = execute_plan(
+                run_id=resume_run,
+                manifest_path=resume_manifest,
+                started_at=GENERATED_AT,
+                now=lambda: NOW,
+                safety=safety,
+            )
+
+        outcome = report.outcomes[0]
+        assert outcome.status == "failed"
+        assert outcome.error is not None and outcome.error.error_class == "ERR-002"
+        assert source.read_bytes() == source_before
+        assert target.read_bytes() == target_before
+        assert not resume_manifest.exists()
+
+    def test_rename_and_rewrite__clobber_target_swapped_before_publish__refused(
+        self, tmp_path: Path
+    ) -> None:
+        root, plan, config = self._planned_rename_rewrite(tmp_path, overwrite=True)
+        action = plan.actions[0]
+        source = root / action.path
+        original = source.read_bytes()
+        assert action.target_path is not None
+        target = root / action.target_path
+        target.write_bytes(b"old target")
+
+        def swap(step: str, path: Path) -> None:
+            if step == "publish":
+                content = target.read_bytes()
+                replace_with_new_inode(target, content)
+
+        report = _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+            hooks=CommitHooks(swap),
+        )
+
+        assert report.outcomes[0].skip_reason == "external-interference"
+        assert source.read_bytes() == original
+        assert target.read_bytes() == b"old target"
+
+    def test_rename_and_rewrite__target_appears_before_publish__collision_unpreserved(
+        self, tmp_path: Path
+    ) -> None:
+        root, plan, config = self._planned_rename_rewrite(tmp_path)
+        action = plan.actions[0]
+        assert action.target_path is not None
+        target = root / action.target_path
+
+        def appear(step: str, path: Path) -> None:
+            if step == "publish":
+                target.write_bytes(b"late arrival")
+
+        report = _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+            hooks=CommitHooks(appear),
+        )
+
+        assert report.outcomes[0].skip_reason == "collision-unpreserved"
+        assert target.read_bytes() == b"late arrival"
+
+    def test_rename_and_rewrite__survivor_lost_after_unlink_failure__rollback_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root, plan, config = self._planned_rename_rewrite(tmp_path)
+        action = plan.actions[0]
+        source = root / action.path
+        assert action.target_path is not None
+        target = root / action.target_path
+        real_unlink = Path.unlink
+        source_unlinks = 0
+
+        def fail_once(self: Path, missing_ok: bool = False) -> None:
+            nonlocal source_unlinks
+            if self == source:
+                source_unlinks += 1
+                if source_unlinks == 1:
+                    raise OSError(5, "I/O error")
+            real_unlink(self, missing_ok=missing_ok)
+
+        def lose_survivor(step: str, path: Path) -> None:
+            if step == "rollback-survivor":
+                source.unlink()
+
+        monkeypatch.setattr(Path, "unlink", fail_once)
+        report = _execute(
+            plan,
+            config,
+            tmp_path,
+            write=True,
+            backup_root=tmp_path / "backups",
+            hooks=CommitHooks(lose_survivor),
+        )
+
+        outcome = report.outcomes[0]
+        assert outcome.status == "failed"
+        assert outcome.error is not None and outcome.error.error_class == "ERR-002"
+        assert target.exists()
+        assert [record.result for record in read_records(tmp_path / "manifest.jsonl")] == ["intent"]
 
 
 def test_collision_policies__skip_fail_overwrite(tmp_path: Path) -> None:
@@ -278,9 +1004,11 @@ def test_collision_policies__skip_fail_overwrite(tmp_path: Path) -> None:
     assert [a.path for a in fail_plan.actions] == ["a.txt", "b.txt"]
     (fail_root / "a.md").write_bytes(b"live collision\n")
     fail_report = _execute(fail_plan, fail_config, tmp_path / "fail-run", write=True)
-    assert len(fail_report.outcomes) == 1
-    assert fail_report.outcomes[0].status == "skipped"
-    assert fail_report.outcomes[0].skip_reason == "collision"
+    # Report 2.0 partition: the abort's unreached action is explicit.
+    assert [(o.status, o.skip_reason) for o in fail_report.outcomes] == [
+        ("skipped", "collision"),
+        ("not-attempted", None),
+    ]
     assert (fail_root / "b.txt").exists()  # second action never ran
     assert not (fail_root / "b.md").exists()
 
@@ -299,16 +1027,15 @@ def test_collision_policies__skip_fail_overwrite(tmp_path: Path) -> None:
     ow_outcome = ow_report.outcomes[0]
     assert ow_outcome.status == "applied"
     assert (ow_root / "a.md").read_bytes() == b"clean\n"
-    ow_records = read_manifest((tmp_path / "overwrite-run") / "manifest.jsonl")
+    ow_records = read_records((tmp_path / "overwrite-run") / "manifest.jsonl")
     ow_record = ow_records[0]
     assert ow_record.overwritten_sha256 == old_target_sha
     assert ow_record.overwritten_backup_path is not None
     assert _sha(Path(ow_record.overwritten_backup_path).read_bytes()) == old_target_sha
 
 
-def test_overwrite_target_unreadable__failed_recorded_in_manifest(tmp_path: Path) -> None:
-    """FR-011, FR-018, DR-003, DR-004: an unreadable overwrite target fails, with a matching
-    manifest record — the pre-mutation ERR-003 branch must not skip DR-004's reconciliation."""
+def test_overwrite_target_nonregular__external_interference_no_manifest(tmp_path: Path) -> None:
+    """A non-regular overwrite target is an object-class replacement refusal."""
     root = tmp_path / "root"
     root.mkdir()
     (root / "a.txt").write_bytes(b"clean\n")
@@ -316,22 +1043,16 @@ def test_overwrite_target_unreadable__failed_recorded_in_manifest(tmp_path: Path
     plan = _plan_for(root, config)
     original_bytes = (root / "a.txt").read_bytes()
 
-    # Live collision whose target is a directory: target.exists() is True (so
-    # the overwrite policy clobbers), but target.read_bytes() raises OSError.
     (root / "a.md").mkdir()
 
     report = _execute(plan, config, tmp_path, write=True, backup_root=tmp_path / "backups")
 
     outcome = report.outcomes[0]
-    assert outcome.status == "failed"
-    assert outcome.error is not None
-    assert outcome.error.error_class == "ERR-003"
-    assert report.totals.failed == 1
+    assert outcome.status == "skipped"
+    assert outcome.skip_reason == "external-interference"
     assert (root / "a.txt").read_bytes() == original_bytes
-
-    records = read_manifest(tmp_path / "manifest.jsonl")
-    assert len(records) == 1
-    assert records[0].result == "failed"
+    assert (root / "a.md").is_dir()
+    assert not (tmp_path / "manifest.jsonl").exists()
 
 
 def test_overwrite_target_backup_failure__failed_recorded_in_manifest(
@@ -365,7 +1086,7 @@ def test_overwrite_target_backup_failure__failed_recorded_in_manifest(
     assert (root / "a.txt").read_bytes() == original_bytes
     assert (root / "a.md").read_bytes() == original_target_bytes
 
-    records = read_manifest(tmp_path / "manifest.jsonl")
+    records = read_records(tmp_path / "manifest.jsonl")
     assert len(records) == 1
     assert records[0].result == "failed"
 
@@ -429,7 +1150,7 @@ def test_shrink_invariant_recheck__skips(tmp_path: Path, monkeypatch: pytest.Mon
 
     monkeypatch.setattr(apply_module, "apply_text_transforms", _shrink)
 
-    report = _execute(plan, config, tmp_path, write=True)
+    report = _execute(plan, config, tmp_path, write=True, preserved_by="external")
 
     outcome = report.outcomes[0]
     assert outcome.status == "skipped"
@@ -451,7 +1172,7 @@ def test_operations_divergence__failed_err006(
 
     monkeypatch.setattr(apply_module, "apply_text_transforms", _diverge)
 
-    report = _execute(plan, config, tmp_path, write=True)
+    report = _execute(plan, config, tmp_path, write=True, preserved_by="external")
 
     outcome = report.outcomes[0]
     assert outcome.status == "failed"
@@ -478,7 +1199,7 @@ def test_containment_resolve_escape__skipped(tmp_path: Path) -> None:
     shutil.rmtree(sub)
     sub.symlink_to(outside, target_is_directory=True)
 
-    report = _execute(plan, config, tmp_path, write=True)
+    report = _execute(plan, config, tmp_path, write=True, preserved_by="external")
 
     outcome = report.outcomes[0]
     assert outcome.status == "skipped"
@@ -511,9 +1232,11 @@ def test_report_counts_reconcile__and_manifest_seq_monotonic(tmp_path: Path) -> 
     assert report.totals.failed == counts.get("failed", 0)
     assert sum(report.totals.__dict__.values()) == len(report.outcomes)
 
-    records = read_manifest(tmp_path / "manifest.jsonl")
+    records = read_records(tmp_path / "manifest.jsonl")
     assert [r.seq for r in records] == list(range(1, len(records) + 1))
-    assert len(records) == counts.get("applied", 0) + counts.get("failed", 0)
+    # 2.0 journal-every-mutation: each applied action is an intent+terminal
+    # pair; skips write nothing (this fixture produces no failed actions).
+    assert len(records) == 2 * counts.get("applied", 0)
 
 
 def test_empty_plan__clean_report(tmp_path: Path) -> None:
@@ -603,7 +1326,7 @@ def test_rename_and_rewrite_unlink_failure__publish_rolled_back(
     assert outcome_a.error.error_class == "ERR-003"
     assert (root_a / "legacy.txt").read_bytes() == original_bytes_a
     assert not (root_a / "legacy.md").exists()
-    records_a = read_manifest((tmp_path / "a-run") / "manifest.jsonl")
+    records_a = read_records((tmp_path / "a-run") / "manifest.jsonl")
     assert [r.result for r in records_a] == ["intent", "failed"]
     monkeypatch.setattr(Path, "unlink", original_unlink)
 
@@ -627,3 +1350,289 @@ def test_rename_and_rewrite_unlink_failure__publish_rolled_back(
     assert outcome_b.error.error_class == "ERR-003"
     assert (root_b / "legacy.txt").read_bytes() == original_bytes_b
     assert (root_b / "legacy.md").read_bytes() == b"old target content\n"
+
+
+def _sha256(data: bytes) -> str:
+    return f"sha256:{hashlib.sha256(data).hexdigest()}"
+
+
+def _dmr01_action(
+    run_id: str,
+    seq: int,
+    path: str,
+    ops: list[Operation],
+    target: str | None,
+    data: bytes,
+) -> PlanAction:
+    return PlanAction(
+        action_id=f"{run_id}/a{seq}",
+        docmend_id=f"00000000-0000-7000-8000-00000000000{seq}",
+        path=path,
+        source_sha256=_sha256(data),
+        source_size_bytes=len(data),
+        operations=ops,
+        target_path=target,
+        provenance=ActionProvenance(
+            detected_encoding=None,
+            newline_style="crlf" if b"\r" in data else "lf",
+        ),
+    )
+
+
+def test_dmr01_colliding_backup_keys__both_preserved_and_restorable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DMR-01 defense in depth: a crafted plan with an in-place rewrite of a.md
+    AND a rename a.txt -> a.md (overwrite policy) must preserve every byte
+    stream under distinct backup keys, and restore must reproduce both
+    originals. The Task 5 output ledger stops the planner emitting this plan,
+    but execute_plan accepts crafted plans — the backup layer must not rely on
+    the planner being correct."""
+    root = tmp_path / "corpus"
+    root.mkdir()
+    md_original = b"alpha\r\n"  # dirty: CRLF forces a rewrite action
+    txt_original = b"bravo\n"  # clean content: rename-only action
+    (root / "a.md").write_bytes(md_original)
+    (root / "a.txt").write_bytes(txt_original)
+
+    config = DocmendConfig()
+    config = config.model_copy(
+        update={"rename": config.rename.model_copy(update={"on_collision": "overwrite"})}
+    )
+    run_id = "run_20260710T000000Z_00d0a1"
+
+    plan = Plan(
+        run_id=run_id,
+        generated_at="2026-07-10T00:00:00+00:00",
+        generated_by="docmend test",
+        inventory_ref=ArtifactRef(path="unused", run_id=run_id, sha256=_sha256(b"")),
+        source_root=str(root),
+        config=config.model_dump(mode="json"),
+        actions=[
+            _dmr01_action(run_id, 1, "a.md", ["normalize_newlines"], None, md_original),
+            _dmr01_action(run_id, 2, "a.txt", ["rename"], "a.md", txt_original),
+        ],
+        skips=[],
+        totals=PlanTotals(actions=2, skips=0),
+    )
+
+    backup_root = tmp_path / "backups"
+    manifest_path = tmp_path / "manifest.jsonl"
+    options = ApplyOptions(
+        write=True, backup_root=backup_root, preserved_by=None, allow_no_backup=False
+    )
+    with apply_safety(
+        plan,
+        options=options,
+        manifest_path=manifest_path,
+        report_path=tmp_path / "report.json",
+        run_id=run_id,
+        state_dir=tmp_path / "state",
+        monkeypatch=monkeypatch,
+    ) as safety:
+        report = execute_plan(
+            run_id=run_id,
+            manifest_path=manifest_path,
+            started_at="2026-07-10T00:00:00+00:00",
+            safety=safety,
+        )
+    assert report.totals.applied == 2, [o.status for o in report.outcomes]
+
+    records = read_records(manifest_path)
+    backup_paths = {r.backup_path for r in records if r.backup_path is not None} | {
+        r.overwritten_backup_path for r in records if r.overwritten_backup_path is not None
+    }
+    # a1's source copy of a.md, a2's source copy of a.txt, and a2's
+    # overwritten-role copy of the (already rewritten) a.md — three distinct
+    # keys, none clobbered.
+    assert len(backup_paths) == 3
+    stored = {Path(p).read_bytes() for p in backup_paths}
+    assert stored == {md_original, txt_original, b"alpha\n"}
+
+    restore_run = "run_20260710T000001Z_00d0a2"
+    restore_manifest = tmp_path / "restore-manifest.jsonl"
+    with restore_safety(
+        [manifest_path],
+        run_id=restore_run,
+        manifest_out=restore_manifest,
+        state_dir=tmp_path / "restore-state",
+        monkeypatch=monkeypatch,
+    ) as safety:
+        outcomes = run_restore(
+            run_id=restore_run,
+            only_ids=None,
+            manifest_out=restore_manifest,
+            safety=safety,
+        )
+    assert all(o.status == "restored" for o in outcomes), [
+        (o.path, o.status, o.detail) for o in outcomes
+    ]
+    assert (root / "a.md").read_bytes() == md_original
+    assert (root / "a.txt").read_bytes() == txt_original
+
+
+class TestJournalEveryMutation:
+    """adr-0019 (DMR-04): EVERY mutation kind appends a fsync'd intent with
+    the durable object identities BEFORE any corpus name is touched, and a
+    terminal repeating the immutable fields after."""
+
+    IMMUTABLE = (
+        "action_id",
+        "docmend_id",
+        "operation",
+        "original_path",
+        "target_path",
+        "before_sha256",
+        "backup_path",
+        "overwritten_backup_path",
+        "overwritten_sha256",
+        "source_identity",
+        "target_identity",
+        "expected_published_identity",
+    )
+
+    def test_every_kind__intent_then_terminal_with_identities(self, tmp_path: Path) -> None:
+        root = tmp_path / "root"
+        materialize(
+            root,
+            [FileRecipe("rw.md", "windows-1252", "crlf", sentences=15)],
+            seeded_faker(),
+        )
+        (root / "mv.txt").write_bytes(b"clean\n")
+        materialize(
+            root,
+            [FileRecipe("both.txt", "windows-1252", "crlf", sentences=15)],
+            seeded_faker(),
+        )
+        config = DocmendConfig()
+        plan = _plan_for(root, config)
+        assert len(plan.actions) == 3
+
+        _execute(plan, config, tmp_path, write=True, backup_root=tmp_path / "backups")
+
+        records = read_records(tmp_path / "manifest.jsonl")
+        by_action: dict[str, list[object]] = {}
+        for record in records:
+            by_action.setdefault(record.action_id, []).append(record)
+        assert len(by_action) == 3
+        for group in by_action.values():
+            intent, terminal = group  # exactly two records per action
+            assert intent.result == "intent"  # type: ignore[union-attr]
+            assert terminal.result == "applied"  # type: ignore[union-attr]
+            assert intent.source_identity is not None  # type: ignore[union-attr]
+            assert intent.expected_published_identity is not None  # type: ignore[union-attr]
+            for field in self.IMMUTABLE:
+                assert getattr(intent, field) == getattr(terminal, field), field
+
+    def test_pure_rename__expected_identity_is_source_inode(self, tmp_path: Path) -> None:
+        """A rename moves the inode: expected_published_identity == the source
+        identity, and the LIVE published file carries that exact inode."""
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "clean.txt").write_bytes(b"already clean\n")
+        config = DocmendConfig()
+        plan = _plan_for(root, config)
+        source_stat = (root / "clean.txt").stat()
+
+        _execute(plan, config, tmp_path, write=True)
+
+        [intent, _terminal] = read_records(tmp_path / "manifest.jsonl")
+        assert intent.expected_published_identity == intent.source_identity
+        assert intent.source_identity is not None
+        assert intent.source_identity.ino == source_stat.st_ino
+        published = (root / "clean.md").stat()
+        assert intent.expected_published_identity is not None
+        assert published.st_ino == intent.expected_published_identity.ino
+
+    def test_rewrite__expected_identity_is_staged_inode_now_live(self, tmp_path: Path) -> None:
+        root = tmp_path / "root"
+        materialize(
+            root, [FileRecipe("legacy.md", "windows-1252", "crlf", sentences=15)], seeded_faker()
+        )
+        config = DocmendConfig()
+        plan = _plan_for(root, config)
+
+        _execute(plan, config, tmp_path, write=True, backup_root=tmp_path / "backups")
+
+        [intent, _terminal] = read_records(tmp_path / "manifest.jsonl")
+        assert intent.expected_published_identity != intent.source_identity
+        live = (root / "legacy.md").stat()
+        assert intent.expected_published_identity is not None
+        assert live.st_ino == intent.expected_published_identity.ino
+
+    def test_pre_mutation_failure__failed_record_without_intent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A staging failure precedes any corpus-name mutation: the manifest
+        records `failed` with NO intent and null identities."""
+        root = tmp_path / "root"
+        materialize(
+            root, [FileRecipe("legacy.md", "windows-1252", "crlf", sentences=15)], seeded_faker()
+        )
+        config = DocmendConfig()
+        plan = _plan_for(root, config)
+
+        def broken_stage(*args: object, **kwargs: object) -> object:
+            raise apply_module.WriteError("simulated staging failure")
+
+        monkeypatch.setattr(apply_module, "stage_bytes", broken_stage)
+        report = _execute(plan, config, tmp_path, write=True, backup_root=tmp_path / "backups")
+
+        assert report.outcomes[0].status == "failed"
+        [record] = read_records(tmp_path / "manifest.jsonl")
+        assert record.result == "failed"
+        assert record.source_identity is None
+        assert record.expected_published_identity is None
+
+
+def test_no_clobber_race_lost__intent_closed_report_skips(tmp_path: Path) -> None:
+    """FR-011 race window: a target appearing between the collision check and
+    the publish is external interference (ERR-002). The REPORT keeps the
+    collision-unpreserved skip; the MANIFEST closes the intent with a failed
+    terminal so it never dangles for a live run."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "clean.txt").write_bytes(b"already clean\n")
+    config = DocmendConfig()
+    plan = _plan_for(root, config)
+
+    target_path = plan.actions[0].target_path
+    assert target_path is not None
+    target = root / target_path
+
+    def race_lost(step: str, path: Path) -> None:
+        if step == "publish":
+            target.write_bytes(b"target appeared inside the race window")
+
+    report = _execute(plan, config, tmp_path, write=True, hooks=CommitHooks(race_lost))
+
+    outcome = report.outcomes[0]
+    assert (outcome.status, outcome.skip_reason) == ("skipped", "collision-unpreserved")
+    records = read_records(tmp_path / "manifest.jsonl")
+    assert [r.result for r in records] == ["intent", "failed"]
+    assert records[1].error is not None
+    assert records[1].error.error_class == "ERR-002"
+
+
+def test_fail_policy_abort__trailing_actions_reported_not_attempted(tmp_path: Path) -> None:
+    """DMR-05 accounting half (report 2.0): the `fail` collision policy aborts
+    mid-plan; every unexecuted trailing action must appear in the report as
+    `not-attempted` — the partition invariant: each plan action exactly once."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "a.txt").write_bytes(b"clean a\n")
+    (root / "z.txt").write_bytes(b"clean z, never reached\n")
+    config = DocmendConfig(rename=RenameConfig(on_collision="fail"))
+    plan = _plan_for(root, config)
+    assert [a.path for a in plan.actions] == ["a.txt", "z.txt"]
+    # The colliding target appears AFTER planning — the apply-time `fail`
+    # policy is what aborts (a plan-time collision would just skip a.txt).
+    (root / "a.md").write_bytes(b"occupies a.txt's target\n")
+
+    report = _execute(plan, config, tmp_path, write=True)
+
+    statuses = [(o.path, o.status) for o in report.outcomes]
+    assert statuses == [("a.txt", "skipped"), ("z.txt", "not-attempted")]
+    assert report.totals.not_attempted == 1
+    assert report.totals.skipped == 1
+    assert len(report.outcomes) == len(plan.actions)  # full partition

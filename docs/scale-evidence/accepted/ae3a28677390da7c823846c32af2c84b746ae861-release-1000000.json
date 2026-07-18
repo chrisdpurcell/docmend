@@ -1,0 +1,162 @@
+{
+  "schema": "docmend/scale-evidence",
+  "schema_version": "3.0",
+  "status": "passing",
+  "tier": "release",
+  "candidate_commit": "ae3a28677390da7c823846c32af2c84b746ae861",
+  "package_version": "1.0.2",
+  "build_frontend_version": "0.11.6",
+  "build_backend_version": "0.11.6",
+  "wheel_sha256": "sha256:e724554c4bacff65de7aee1afb117f202818249523832d6e652e62648f98fdfd",
+  "lock_sha256": "sha256:53c099ddb5bd0dbbc4cecc92dd11c7d8627ed1705fb6ed9a3c37f70f9bbd89e8",
+  "reference_environment_sha256": "sha256:458b51662c05290784130cf02be812919063121e0ecb33086f5a6373a85f1d55",
+  "threshold_baseline_sha256": "sha256:e951a302f0b1505afd0f11dc769914d102bf389f3c5cbd231e2a4adb0c7bf011",
+  "artifact_schema_versions": {
+    "inventory": "1.2",
+    "plan": "2.0",
+    "report": "2.0",
+    "manifest": "2.0",
+    "verify-report": "1.0",
+    "frontmatter": "1.0"
+  },
+  "python_version": "3.14.6",
+  "kernel_version": "7.1.3-200.fc44.x86_64",
+  "memory_measurement": "external-rss",
+  "cache_classification": "warm",
+  "started_at": "2026-07-18T11:59:40.629239Z",
+  "completed_at": "2026-07-18T19:40:50.239920Z",
+  "preflight": {
+    "filesystems": [
+      {
+        "required_bytes": 51258874880,
+        "available_bytes": 3428744843264,
+        "required_inodes": 1252899,
+        "inode_capacity_mode": "dynamic-metadata",
+        "available_inodes": null,
+        "margin_fraction": 0.25,
+        "passed": true
+      }
+    ],
+    "capacity_margin_met": true,
+    "reference_environment_match": true,
+    "binding_filesystem": true,
+    "ram_requirement_met": true,
+    "passed": true
+  },
+  "outcome_reason": null,
+  "file_count": 1000000,
+  "corpus_bytes": 114511047,
+  "stages": [
+    {
+      "stage": "scan",
+      "run_id": "run_20260718T120210Z_166f87",
+      "elapsed_seconds": 397.3011431190098,
+      "files_per_second": 2516.982438433243,
+      "bytes_per_second": 288222.29430560366,
+      "peak_rss_bytes": 3201589248,
+      "python_allocation_peak_bytes": null,
+      "vm_swap_peak_bytes": 0,
+      "exit_code": 0,
+      "completed": true,
+      "artifact_validated": true,
+      "artifact_bytes": {
+        "stdout-log": 179,
+        "stderr-log": 0,
+        "inventory": 561751468,
+        "structured-log": 252003117
+      }
+    },
+    {
+      "stage": "plan",
+      "run_id": "run_20260718T121154Z_b7cacc",
+      "elapsed_seconds": 429.70992033999937,
+      "files_per_second": 2327.151300600112,
+      "bytes_per_second": 266484.53195913055,
+      "peak_rss_bytes": 6384893952,
+      "python_allocation_peak_bytes": null,
+      "vm_swap_peak_bytes": 0,
+      "exit_code": 0,
+      "completed": true,
+      "artifact_validated": true,
+      "artifact_bytes": {
+        "stdout-log": 131,
+        "stderr-log": 0,
+        "plan": 526365992,
+        "structured-log": 220077048
+      }
+    },
+    {
+      "stage": "apply",
+      "run_id": "run_20260718T122607Z_9b8009",
+      "elapsed_seconds": 20060.967367172998,
+      "files_per_second": 43.6170391978114,
+      "bytes_per_second": 5708.151800664484,
+      "peak_rss_bytes": 14654480384,
+      "python_allocation_peak_bytes": null,
+      "vm_swap_peak_bytes": 0,
+      "exit_code": 0,
+      "completed": true,
+      "artifact_validated": true,
+      "artifact_bytes": {
+        "stdout-log": 199,
+        "stderr-log": 177,
+        "report": 333214655,
+        "manifest": 1735692498,
+        "structured-log": 230161299
+      }
+    },
+    {
+      "stage": "verify",
+      "run_id": "run_20260718T182026Z_45ad96",
+      "elapsed_seconds": 1105.2381269390025,
+      "files_per_second": 791.6845959914037,
+      "bytes_per_second": 103607.57940656874,
+      "peak_rss_bytes": 20825497600,
+      "python_allocation_peak_bytes": null,
+      "vm_swap_peak_bytes": 0,
+      "exit_code": 1,
+      "completed": true,
+      "artifact_validated": true,
+      "artifact_bytes": {
+        "stdout-log": 2100046,
+        "stderr-log": 0,
+        "verify-report": 3476316,
+        "structured-log": 241929037
+      }
+    }
+  ],
+  "totals": {
+    "scanned": 1000000,
+    "actions": 875000,
+    "clean_noops": 100000,
+    "plan_skips": 25000,
+    "applied": 875000,
+    "apply_skips": 0,
+    "failures": 0,
+    "not_attempted": 0,
+    "verified": 875000,
+    "expected_findings": 25000,
+    "observed_findings": 25000
+  },
+  "thresholds": {
+    "limits": {
+      "absolute_peak_rss_bytes": 25902581760,
+      "slope_bytes_per_file": 25804,
+      "linearity_tolerance": 0.2
+    },
+    "observed_peak_rss_bytes": 20825497600,
+    "observed_slope_bytes_per_file": 20752,
+    "observed_linearity_ratio": 0.004991403606,
+    "peak_passed": true,
+    "slope_passed": true,
+    "linearity_passed": true,
+    "passed": true
+  },
+  "workflow_runtime": {
+    "elapsed_seconds": 25629.225190793004,
+    "limit_seconds": 43200,
+    "passed": true
+  },
+  "file_size_cases": null,
+  "configured_max_file_size_mib": null
+}

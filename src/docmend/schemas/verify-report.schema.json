@@ -1,0 +1,61 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://raw.githubusercontent.com/chrisdpurcell/docmend/main/src/docmend/schemas/verify-report.schema.json",
+	"title": "docmend verification report (FR-014)",
+	"description": "Optional durable output of `docmend verify`: the canonical corpus root and operator argument, immutable references to consumed evidence, readable-file count, exact emitted findings, and the reconciled clean verdict. Hand-authored external contract per adr-0005.",
+	"type": "object",
+	"additionalProperties": false,
+	"required": [
+		"schema",
+		"schema_version",
+		"run_id",
+		"generated_by",
+		"verified_path",
+		"source_root",
+		"started_at",
+		"completed_at",
+		"inputs",
+		"checked_files",
+		"findings",
+		"clean"
+	],
+	"properties": {
+		"schema": { "const": "docmend/verify-report" },
+		"schema_version": { "type": "string", "const": "1.0", "pattern": "^1\\.[0-9]+$" },
+		"run_id": { "$ref": "#/$defs/run_id" },
+		"generated_by": { "type": "string", "minLength": 1 },
+		"verified_path": { "type": "string", "minLength": 1 },
+		"source_root": { "type": "string", "minLength": 1 },
+		"started_at": { "type": "string", "format": "date-time" },
+		"completed_at": { "type": "string", "format": "date-time" },
+		"inputs": { "type": "array", "items": { "$ref": "#/$defs/input" } },
+		"checked_files": { "type": "integer", "minimum": 0 },
+		"findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+		"clean": { "type": "boolean" }
+	},
+	"$defs": {
+		"run_id": { "type": "string", "pattern": "^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{6}$" },
+		"sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+		"input": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["kind", "path", "run_id", "sha256"],
+			"properties": {
+				"kind": { "enum": ["plan", "report", "manifest"] },
+				"path": { "type": "string", "minLength": 1 },
+				"run_id": { "$ref": "#/$defs/run_id" },
+				"sha256": { "$ref": "#/$defs/sha256" }
+			}
+		},
+		"finding": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["path", "check", "detail"],
+			"properties": {
+				"path": { "type": "string", "minLength": 1 },
+				"check": { "type": "string", "minLength": 1 },
+				"detail": { "type": "string", "minLength": 1 }
+			}
+		}
+	}
+}

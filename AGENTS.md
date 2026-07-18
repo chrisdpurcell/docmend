@@ -1,6 +1,6 @@
 # Agents
 
-**Session state:** read `docs/handoff/state.md`, then this file, then `docs/handoff/conventions.md`.
+**Session state:** Agent Handoff SessionStart injects `docs/handoff/state.md`; do not reread it when injected. Then use this file and `docs/handoff/conventions.md`.
 
 **Full conventions reference:** [`docs/handoff/conventions.md`](docs/handoff/conventions.md) - LLM-targeted pattern library. Check it before adding persistent patterns.
 
@@ -14,7 +14,7 @@ Read [`docs/specs/docmend.md`](docs/specs/docmend.md) (SPEC-VHHB, `full` profile
 
 ## Task Tracking
 
-- [`TODO.md`](TODO.md) — user tasks above agent tasks; don't complete a user task unless asked.
+- [`docs/TODO.md`](docs/TODO.md) — user tasks above agent tasks; don't complete a user task unless asked.
 - [`docs/repo-hygiene.md`](docs/repo-hygiene.md) — periodic repository hygiene checklist for cleanup and maintenance passes.
 - [`docs/open-questions.md`](docs/open-questions.md) / [`docs/resolved-questions.md`](docs/resolved-questions.md) — the spec's `OQ-`/`RQ-` decision backlog.
 
@@ -23,3 +23,17 @@ Read [`docs/specs/docmend.md`](docs/specs/docmend.md) (SPEC-VHHB, `full` profile
 - This repo is public — see conventions #6 before adding any file, fixture, or doc: never real library documents, paths, or personal content.
 - Four Project Standards are adopted (python-tooling, markdown-tooling, project-spec, adr), pinned `@v4` — conventions #1-#5 and #8 are their operational how-to. The Markdown Frontmatter Standard is deliberately **not** adopted (ADR-0001) — see conventions #7 for the product-vs-repo-doc frontmatter distinction this creates.
 - Never hand-edit a standard-owned file to bypass a check (conventions #8).
+
+<!-- BEGIN agent-handoff managed instructions -->
+Use the repo-local `$agent-handoff` skill at startup and closeout.
+Do not reread `docs/handoff/state.md` when SessionStart already injected it.
+Keep current status and tasks in `docs/STATUS.md` and `docs/TODO.md`; route durable facts through `docs/handoff/`.
+At closeout, update only changed facts, preserve user-authored work, store credential references only, and run relevant validation.
+<!-- END agent-handoff managed instructions -->
+
+## Review Orchestrator Note
+
+- Full `review-orchestrator` sweeps now run selected child reviews with bounded parallelism by default, currently up to `8` in parallel after planning, preflight, and shared research complete.
+- The shared-research phase can legitimately take around `10` minutes on larger or research-heavy repos before child reviews start, so treat that as normal unless heartbeats stop or no artifact activity appears beyond that window.
+- Expect the sweep index, child review reports, and `*-execution.json` manifests under `docs/codex-reviews/` while the sweep is running.
+- Do not describe sweep child reviews as running “one at a time” unless the sweep was explicitly configured down to serial execution.

@@ -1,0 +1,32 @@
+{
+	"canonical_prompt": "perform a release readiness review",
+	"completed_at": "2026-07-10T21:13:56.561402+00:00",
+	"error": null,
+	"follow_on_reviews": [],
+	"last_heartbeat_at": "2026-07-10T21:13:56.561402+00:00",
+	"last_message_path": null,
+	"last_progress_message": "Child review completed successfully. Elapsed: 9m58s. Saved report: docs/codex-reviews/2026-07-10-2034-release-readiness-review-report.md",
+	"latest_existing_report": "docs/codex-reviews/2026-07-10-2034-codex-review-live-status.md",
+	"queue_position": 15,
+	"repo_name": "docmend",
+	"repo_root": ".",
+	"residual_risk_summary": [
+		"overall: `medium-after-high-blockers-are-fixed; high-while-current-release-automation-remains-unchanged`",
+		"strongest_controls: `application safety gates, atomic writer, backup/manifest recovery, resume, verification, schema contracts, broad automated tests`",
+		"dominant_residuals: `external GitHub governance unknowns, release artifact identity/provenance, post-publish verification, first real-library evidence`"
+	],
+	"review_manifest_path": "./docs/codex-reviews/2026-07-10-2034-release-readiness-review-execution.json",
+	"review_skill": "release-readiness-review",
+	"save_dir": "docs/codex-reviews/",
+	"saved_report_path": "docs/codex-reviews/2026-07-10-2034-release-readiness-review-report.md",
+	"shared_research_path": "docs/codex-reviews/2026-07-10-2034-codex-review-shared-research.md",
+	"shared_research_status": "completed",
+	"started_at": "2026-07-10T21:03:57.744074+00:00",
+	"status": "completed",
+	"sweep_started_at": "2026-07-10-2034",
+	"top_findings_summary": [
+		"ISSUE-001: Current HEAD is not a coherent new release candidate",
+		"ISSUE-002: Any matching tag can publish without proving it is the signed mainline candidate",
+		"ISSUE-003: The privileged release build is not immutable or least-privileged"
+	]
+}

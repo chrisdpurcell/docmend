@@ -7,7 +7,7 @@
   - _open question_ (`OQ-###`) is a decision still to be made — the primary unit of this document.
   - _resolved question_ (`RQ-###`, already settled) lives in the companion file [`resolved-questions.md`](resolved-questions.md).
 - **Priority scale:** open questions carry a `P0 blocker` / `P1 near-blocker` / `P2 decision` label; the gap-analysis-sourced ones also carry a High / Medium / Low gap-analysis priority. The full ranked register with downstream-impact analysis lives in [`gap-analysis.md`](gap-analysis.md).
-- **Status:** **No open questions.** OQ-001..036 are all settled — see [`resolved-questions.md`](resolved-questions.md), RQ-001..036 (OQ-034..036 received owner sign-off 2026-07-07, post-v1.0.0). New decisions get added here as OQ-### per the rules below.
+- **Status:** OQ-001..041 are settled — see [`resolved-questions.md`](resolved-questions.md), RQ-001..041. **No open questions.**
 
 ## Table of Contents
 
@@ -19,7 +19,7 @@
 
 ## Open questions
 
-<!-- OQ-001..036 are settled — see resolved-questions.md (RQ-001..036). New decisions get added here as OQ-### per the rules below. -->
+None. OQ-001..041 are settled; see [`resolved-questions.md`](resolved-questions.md), RQ-001..041. New decisions are added here as OQ-### per the rules below.
 
 ## How to maintain this document
 

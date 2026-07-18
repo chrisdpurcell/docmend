@@ -25,12 +25,68 @@ def test_backup__written_verified_and_returned(tmp_path: Path) -> None:
         data,
         backup_root=tmp_path / "backups",
         run_id=RUN_ID,
+        action_seq="a1",
+        role="source",
         relative_path="sub/a.txt",
         expected_sha256=_sha(data),
     )
-    assert dest == (tmp_path / "backups" / RUN_ID / "sub" / "a.txt").resolve()
+    assert dest == (tmp_path / "backups" / RUN_ID / "a1" / "source" / "sub" / "a.txt").resolve()
     assert dest.is_absolute()  # CR-005: manifest backup paths must survive cwd changes
     assert dest.read_bytes() == data
+
+
+def test_backup_key_write_once__second_write_raises(tmp_path: Path) -> None:
+    """DMR-01 defense in depth: a backup key is write-once — a second write to
+    the same (run, action, role, path) key is a defect, never a retry (ERR-004)."""
+    data = b"payload"
+    backup.backup_file(
+        data,
+        backup_root=tmp_path / "backups",
+        run_id=RUN_ID,
+        action_seq="a1",
+        role="source",
+        relative_path="a.txt",
+        expected_sha256=_sha(data),
+    )
+    with pytest.raises(backup.BackupError, match="write-once"):
+        backup.backup_file(
+            data,
+            backup_root=tmp_path / "backups",
+            run_id=RUN_ID,
+            action_seq="a1",
+            role="source",
+            relative_path="a.txt",
+            expected_sha256=_sha(data),
+        )
+
+
+def test_backup_roles__same_relative_path_distinct_keys(tmp_path: Path) -> None:
+    """The DMR-01 shape: one action's source bytes and another action's
+    overwritten-target bytes may share a relative path; roles + action_seq
+    keep the keys distinct so neither copy can clobber the other."""
+    source = b"original a.md\n"
+    clobbered = b"pre-existing a.md target\n"
+    dest_source = backup.backup_file(
+        source,
+        backup_root=tmp_path / "backups",
+        run_id=RUN_ID,
+        action_seq="a1",
+        role="source",
+        relative_path="a.md",
+        expected_sha256=_sha(source),
+    )
+    dest_overwritten = backup.backup_file(
+        clobbered,
+        backup_root=tmp_path / "backups",
+        run_id=RUN_ID,
+        action_seq="a2",
+        role="overwritten",
+        relative_path="a.md",
+        expected_sha256=_sha(clobbered),
+    )
+    assert dest_source != dest_overwritten
+    assert dest_source.read_bytes() == source
+    assert dest_overwritten.read_bytes() == clobbered
 
 
 def test_backup_hash_mismatch__raises_before_mutation(tmp_path: Path) -> None:
@@ -41,6 +97,8 @@ def test_backup_hash_mismatch__raises_before_mutation(tmp_path: Path) -> None:
             data,
             backup_root=tmp_path / "backups",
             run_id=RUN_ID,
+            action_seq="a1",
+            role="source",
             relative_path="a.txt",
             expected_sha256=_sha(b"different"),
         )
@@ -60,9 +118,35 @@ def test_backup_reread_corruption__raises(tmp_path: Path, monkeypatch: pytest.Mo
             data,
             backup_root=tmp_path / "backups",
             run_id=RUN_ID,
+            action_seq="a1",
+            role="source",
             relative_path="a.txt",
             expected_sha256=_sha(data),
         )
+
+
+def test_backup_leaf_parent_is_file__mkdir_reported_as_copy_failed(tmp_path: Path) -> None:
+    """If the leaf parent path (.../a1/source) pre-exists as a REGULAR FILE
+    rather than a directory, `dest.parent.mkdir` raises FileExistsError too —
+    but that is an honest mkdir/copy failure, not the write-once violation the
+    `except FileExistsError` clause around `atomic_write_bytes` exists to
+    report. Must NOT match "write-once"."""
+    backup_root = tmp_path / "backups"
+    parent = backup_root / RUN_ID / "a1"
+    parent.mkdir(parents=True)
+    (parent / "source").write_bytes(b"not a directory")
+    data = b"payload"
+    with pytest.raises(backup.BackupError, match="backup copy failed") as excinfo:
+        backup.backup_file(
+            data,
+            backup_root=backup_root,
+            run_id=RUN_ID,
+            action_seq="a1",
+            role="source",
+            relative_path="a.txt",
+            expected_sha256=_sha(data),
+        )
+    assert "write-once" not in str(excinfo.value)
 
 
 def test_backup_destination_unwritable__raises(tmp_path: Path) -> None:
@@ -75,6 +159,8 @@ def test_backup_destination_unwritable__raises(tmp_path: Path) -> None:
                 b"x",
                 backup_root=root,
                 run_id=RUN_ID,
+                action_seq="a1",
+                role="source",
                 relative_path="a.txt",
                 expected_sha256=_sha(b"x"),
             )

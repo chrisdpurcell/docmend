@@ -54,6 +54,37 @@ def test_report_round_trip__write_read_identical(tmp_path: Path) -> None:
     assert artifacts.read_report(out) == _report()
 
 
+def test_report_no_clobber__existing_bytes_preserved(tmp_path: Path) -> None:
+    out = tmp_path / "report.json"
+    out.write_bytes(b"pre-existing\n")
+    with pytest.raises(FileExistsError):
+        artifacts.write_report(_report(), out, clobber=False)
+    assert out.read_bytes() == b"pre-existing\n"
+
+
+def test_report_snapshot__model_and_hash_come_from_one_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "report.json"
+    report = _report()
+    artifacts.write_report(report, out)
+    reads = 0
+    real_read_bytes = Path.read_bytes
+
+    def read_once(path: Path) -> bytes:
+        nonlocal reads
+        reads += 1
+        if reads > 1:
+            raise AssertionError("report snapshot read more than once")
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_once)
+    loaded, digest = artifacts.read_report_snapshot(out)
+    assert loaded == report
+    assert digest == "sha256:" + __import__("hashlib").sha256(real_read_bytes(out)).hexdigest()
+    assert reads == 1
+
+
 def test_report_serializes_wire_names__schema_and_class(tmp_path: Path) -> None:
     document = _report().model_dump(mode="json")
     assert document["schema"] == "docmend/report"

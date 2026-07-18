@@ -15,10 +15,10 @@ from pathlib import Path
 
 import pytest
 import structlog
+from tests.helpers.manifest2 import read_records
 from typer.testing import CliRunner
 
 from docmend.cli import app
-from docmend.writer.manifest import read_manifest
 
 runner = CliRunner()
 
@@ -122,7 +122,7 @@ def test_double_apply_with_resume__no_op_exit_0(
     assert "applied: 0" in result.output
     assert "already-applied 2" in result.output
     assert _hashes(corpus) == before
-    records = read_manifest(tmp_path / ".docmend" / f"docmend-{run_id}-manifest.jsonl")
+    records = read_records(tmp_path / ".docmend" / f"docmend-{run_id}-manifest.jsonl")
     assert sum(1 for r in records if r.result == "applied") == 2  # no re-apply records
 
 

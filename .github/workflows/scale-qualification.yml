@@ -1,0 +1,78 @@
+name: Scale qualification
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scale-qualification
+  cancel-in-progress: false
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: ".python-version"
+
+      # SHA-pinned to the same reviewed setup-uv release as check.yml.
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.11.6"
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --locked --all-groups
+
+      - name: Validate scale thresholds
+        run: |
+          uv run python - <<'PY'
+          from pathlib import Path
+
+          from docmend.scale_evidence import (
+              load_threshold_context,
+              read_reference_environment_snapshot,
+          )
+
+          reference = Path("docs/scale-evidence/reference-environment.json")
+          thresholds = Path("docs/scale-evidence/thresholds.json")
+          _, reference_sha256 = read_reference_environment_snapshot(reference)
+          load_threshold_context(
+              thresholds,
+              reference_environment_sha256=reference_sha256,
+          )
+          PY
+
+      # This hosted lane is diagnostic only. Accepted baselines remain reviewed,
+      # no-clobber files committed under docs/scale-evidence/accepted/.
+      - name: Run 100k diagnostic qualification
+        run: |
+          uv run python scripts/qualify_scale.py \
+            --tier scheduled \
+            --diagnostic \
+            --count 100000 \
+            --workspace "$RUNNER_TEMP/docmend-scale-scheduled" \
+            --reference-environment docs/scale-evidence/reference-environment.json \
+            --thresholds docs/scale-evidence/thresholds.json \
+            --evidence-out "$RUNNER_TEMP/docmend-scale-scheduled-evidence.json"
+
+      - name: Upload diagnostic evidence and private logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scale-qualification-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/docmend-scale-scheduled-evidence.json
+            ${{ runner.temp }}/docmend-scale-scheduled/supervisor/*/*.stdout
+            ${{ runner.temp }}/docmend-scale-scheduled/supervisor/*/*.stderr
+          if-no-files-found: warn
+          retention-days: 7

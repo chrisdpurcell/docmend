@@ -224,3 +224,9 @@ __marimo__/
 # Claude Code agent worktrees (session-local; excluded for every clone, not
 # just this one via .git/info/exclude)
 .claude/worktrees/
+
+# Superpowers/Codex implementation worktrees (session-local).
+.worktrees/
+
+# Specification-authoring drafts are promoted only after validation.
+.project-pipeline/

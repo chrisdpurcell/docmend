@@ -1,5 +1,6 @@
 """DR-002 plan artifact: model<->schema conformance, round-trip, IDs (adr-0005, IR-007)."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -98,6 +99,49 @@ class TestPlanArtifactIO:
         target.write_text('{"schema": "docmend/plan"}')
         with pytest.raises(artifacts.ArtifactError):
             artifacts.read_plan(target)
+
+    def test_read_plan_1_x__regenerate_error(self, tmp_path: Path) -> None:
+        target = tmp_path / "old-plan.json"
+        document = sample_plan().model_dump(mode="json")
+        document["schema_version"] = "1.2"
+        config = document["config"]
+        assert isinstance(config, dict)
+        config["parallel"] = {
+            "enabled": False,
+            "model": "process",
+            "workers": "auto",
+            "start_method": "forkserver",
+            "chunksize": "auto",
+            "maxtasksperchild": None,
+        }
+        target.write_text(json.dumps(document), encoding="utf-8")
+
+        with pytest.raises(artifacts.ArtifactError, match=r"plan schema 1\.2.*regenerate.*v2"):
+            artifacts.read_plan_snapshot(target)
+
+    def test_snapshot__model_and_hash_come_from_one_read(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        target = tmp_path / "plan.json"
+        plan = sample_plan()
+        artifacts.write_plan(plan, target)
+        reads = 0
+        real_read_bytes = Path.read_bytes
+
+        def read_once(path: Path) -> bytes:
+            nonlocal reads
+            reads += 1
+            if reads > 1:
+                raise AssertionError("plan snapshot read more than once")
+            return real_read_bytes(path)
+
+        monkeypatch.setattr(Path, "read_bytes", read_once)
+        loaded, digest = artifacts.read_plan_snapshot(target)
+        assert loaded == plan
+        assert (
+            digest == "sha256:" + __import__("hashlib").sha256(real_read_bytes(target)).hexdigest()
+        )
+        assert reads == 1
 
 
 class TestSha256OfFile:

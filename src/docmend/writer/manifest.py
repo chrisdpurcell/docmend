@@ -1,50 +1,124 @@
-"""Manifest writer/reader — the DR-004 append-only NDJSON record (adr-0005, adr-0006).
+"""Manifest 2.0 writer/reader — the DR-004 append-only NDJSON ledger (adr-0005, adr-0019).
 
 Cross-file contracts:
-- One record is appended, flushed, and fsync'd immediately after each mutation
-  (spec 12.3: incremental, never only at run end); a crash therefore loses at
-  most the trailing record, which is exactly what the AOF read rule tolerates.
+- Line 1 is the fsync'd header envelope (run, root, plan, backup-store,
+  attempt lineage); every later line is one mutation record, appended and
+  fsync'd immediately after its mutation step (spec 12.3). A crash loses at
+  most the trailing line — exactly what the AOF torn-tail rule tolerates.
 - Paths are ABSOLUTE (decision 7): `docmend restore` has no PATH argument
-  (IR-008) and must locate files from the manifest alone.
-- read_manifest is the MS-4 resume reader too — torn TRAILING line dropped
-  with a warning; any interior parse/schema failure hard-aborts (ArtifactError
-  → exit 2), because a corrupt interior record is a defect, not something to
-  skip past (adr-0006).
+  (IR-008) and must locate files from the manifest alone; containment against
+  the header's source_root is validated BEFORE any consumer touches them.
+- `read_manifest_set` validates one file; `read_manifest_chain` (Plan B
+  Task 3) proves the hash links across files; `reduce_lifecycle` (Task 4) is
+  the single lifecycle authority for resume, restore, and verify.
+- Any 1.x manifest is rejected with the clean-break operator message —
+  there is deliberately no 1.x read path (adr-0019; no real-library runs
+  exist, so compatibility would only preserve the DMR-03 trust hole).
 """
 
+import hashlib
 import json
 import os
-from collections.abc import Callable
+import stat
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
-from typing import Annotated, Literal, Self, TextIO
+from typing import Annotated, Literal, Self, TextIO, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from docmend.artifacts import ArtifactError, validate_artifact
 from docmend.inventory import RunId, Sha256
+from docmend.lineage import ObjectIdentity, PriorAttempt
 from docmend.observability import get_logger
 from docmend.plan import ActionId, DocmendId
 from docmend.report import ErrorInfo
 from docmend.writer.atomic import fsync_dir
 
-MANIFEST_SCHEMA_VERSION = "1.3"
+MANIFEST_SCHEMA_VERSION = "2.0"
+MANIFEST_HEADER_SCHEMA_VERSION = "2.0"
+
+#: The clean-break operator message (adr-0019): 2.0 carries no 1.x read path.
+CLEAN_BREAK_MESSAGE = (
+    "this manifest was written by docmend 1.x; restore pre-2.0 runs with docmend 1.0.2"
+)
+
+
+class ManifestContainmentError(ArtifactError):
+    """A manifest references paths outside its recorded roots (source_root
+    containment or the F5 BackupStore trust boundary). Safety refusal — the
+    CLI maps it to exit 3 in restore/resume (adr-0012), unlike its parent's
+    exit-2 artifact-input class."""
+
 
 type ManifestOperation = Literal["rename", "rewrite", "rename_and_rewrite"]
+type ManifestKind = Literal["apply", "restore"]
+
+
+class ManifestHeader(BaseModel):
+    """Line 1 of every 2.0 manifest (adr-0019: the header envelope anchoring
+    run, root, plan, backup-store, and attempt-lineage facts that records were
+    previously trusted to repeat per line).
+
+    - `backup_root` is THIS run's resolved tool-backup root, null when the run
+      took no tool backups — restore runs always carry null (their inverse
+      records hold no backup references; Plan B review CR-NEW-003).
+    - `prior_manifest_sha256` is the mutation-ledger subchain link; null only
+      on the root manifest of a chain.
+    - `prior_attempt` is the redundant attempt-lineage edge (also stamped on
+      the run's report); a ROOT manifest may carry a report-flavored edge —
+      its predecessor attempts were report-only and produced no manifest.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        populate_by_name=True,
+        serialize_by_alias=True,
+        frozen=True,
+    )
+
+    schema_kind: Literal["docmend/manifest-header"] = Field(
+        default="docmend/manifest-header", alias="schema"
+    )
+    schema_version: Annotated[str, Field(pattern=r"^2\.\d+$")] = MANIFEST_HEADER_SCHEMA_VERSION
+    run_id: RunId
+    kind: ManifestKind
+    source_root: Annotated[str, Field(min_length=1)]
+    backup_root: str | None
+    plan_sha256: Sha256
+    prior_manifest_sha256: Sha256 | None
+    prior_attempt: PriorAttempt | None
+    # Restore cannot reconstruct apply-time policy when invocation flags replace
+    # the configured list. This durable witness is therefore the sole license
+    # source for the canonical .docmend/ artifact carve-out (Plan C CR-006).
+    effective_excludes: tuple[str, ...]
+    created_at: str
+
+    @field_validator("effective_excludes", mode="before")
+    @classmethod
+    def _excludes_to_tuple(cls, value: object) -> object:
+        """Keep the frozen header free of a mutable exclude container."""
+        return tuple(cast("list[object]", value)) if isinstance(value, list) else value
 
 
 class ManifestRecord(BaseModel):
     """One mutation record (DR-004) — one NDJSON line, restorable in isolation."""
 
     model_config = ConfigDict(
-        extra="forbid", strict=True, populate_by_name=True, serialize_by_alias=True
+        extra="forbid",
+        strict=True,
+        populate_by_name=True,
+        serialize_by_alias=True,
+        frozen=True,
     )
 
     schema_kind: Literal["docmend/manifest-record"] = Field(
         default="docmend/manifest-record", alias="schema"
     )
-    schema_version: Annotated[str, Field(pattern=r"^1\.\d+$")] = MANIFEST_SCHEMA_VERSION
+    schema_version: Annotated[str, Field(pattern=r"^2\.\d+$")] = MANIFEST_SCHEMA_VERSION
     run_id: RunId
     action_id: ActionId
     docmend_id: DocmendId
@@ -56,46 +130,59 @@ class ManifestRecord(BaseModel):
     backup_path: str | None
     before_sha256: Sha256
     after_sha256: Sha256 | None
-    # 1.3: "intent" is the write-ahead record appended BEFORE the first mutation
-    # of a multi-step action (rename_and_rewrite); after_sha256 then holds the
-    # EXPECTED output hash. A dangling intent (no later applied/failed record
-    # for the action) is resume's evidence that a kill landed inside the
-    # publish→unlink→record window. Restore and verify replay/reconcile only
-    # result=="applied" records, so intents are inert to them.
+    # 2.0 (adr-0019): EVERY mutation kind journals `intent` before any corpus
+    # name is touched and a terminal after. after_sha256 on an intent holds the
+    # EXPECTED output hash. A dangling intent (no terminal after it in the
+    # chain) is the evidence a kill landed inside that mutation's window; the
+    # adjudication table decides from disk state + the identities below.
     result: Literal["applied", "failed", "intent"]
     error: ErrorInfo | None
     overwritten_sha256: Sha256 | None = None
     overwritten_backup_path: str | None = None
-    # 1.2 (OQ-036): the apply run's resolved source root, writer-stamped like
-    # seq/recorded_at (a run-level constant, not per-action). `docmend restore`
-    # keys its run-lock on this so it contends with a concurrent apply on the
-    # same tree — closing the AW-005 gap where restore's old commonpath key
-    # narrowed below source_root. None in pre-1.2 manifests and in restore's own
-    # inverse manifest (which is never used to re-key a lock).
-    source_root: str | None = None
+    # 2.0 restore lineage: an inverse record names the exact apply action it
+    # undoes — the reducer never infers the relationship from paths or clocks.
+    # Set together or not at all; non-null exactly in restore-kind sets.
+    undoes_action_id: ActionId | None = None
+    undoes_run_id: RunId | None = None
+    # 2.0 durable object identities (design F4 rounds 3-4), persisted in the
+    # INTENT before mutation: the validated source object, the overwrite
+    # target when one existed, and the identity the published output will
+    # have (the staged inode for replacement publishes; the source inode for
+    # pure renames). The terminal CONFIRMS the same values — divergence is a
+    # lifecycle violation. Null on pre-mutation `failed` records.
+    source_identity: ObjectIdentity | None = None
+    target_identity: ObjectIdentity | None = None
+    expected_published_identity: ObjectIdentity | None = None
+
+    @model_validator(mode="after")
+    def _undoes_paired(self) -> Self:
+        if (self.undoes_action_id is None) != (self.undoes_run_id is None):
+            msg = "undoes_action_id and undoes_run_id are set together or not at all"
+            raise ValueError(msg)
+        return self
 
 
 class ManifestWriter:
-    """Append-only, per-record-durable NDJSON writer (single-writer, OQ-027)."""
+    """Append-only, per-record-durable NDJSON writer (single-writer, OQ-027).
+
+    2.0: the fsync'd header is written at lazy open, BEFORE the first record —
+    so a manifest file, once it exists, always carries its run/root/plan/
+    lineage envelope. A write run in which every action skips still leaves NO
+    file (the lazy-open contract): a header-only file therefore means a run
+    was killed between its header and its first record — a valid, empty set.
+    """
 
     def __init__(
         self,
         path: Path,
         *,
-        run_id: str,
-        source_root: str | None = None,
+        header: ManifestHeader,
         now: Callable[[], str] = lambda: datetime.now(UTC).isoformat(),
     ) -> None:
         self._path = path
-        self._run_id = run_id
-        # Run-level constant stamped onto every record (OQ-036); None for
-        # writers with no single source root, e.g. restore's inverse manifest.
-        self._source_root = source_root
+        self._header = header
         self._now = now
         self._seq = 0
-        # Lazy-open on first append: a write run in which every action skips
-        # must not leave an empty manifest file implying mutations happened
-        # (codex round-1 "empty manifest" question — the answer is: no file).
         self._fh: TextIO | None = None
 
     def __enter__(self) -> Self:
@@ -117,11 +204,13 @@ class ManifestWriter:
             # file alone does not persist a newly created directory entry
             # (codex CR-NEW-005), so the first append also fsyncs the parent.
             fsync_dir(self._path.parent)
+            header_doc = self._header.model_dump(mode="json")
+            validate_artifact("manifest-header", header_doc)
+            self._fh.write(json.dumps(header_doc, ensure_ascii=False) + "\n")
+            self._fh.flush()
+            os.fsync(self._fh.fileno())
         self._seq += 1
-        update: dict[str, object] = {"seq": self._seq, "recorded_at": self._now()}
-        if self._source_root is not None:
-            update["source_root"] = self._source_root
-        stamped = record.model_copy(update=update)
+        stamped = record.model_copy(update={"seq": self._seq, "recorded_at": self._now()})
         document = stamped.model_dump(mode="json")
         # Self-check before disk, mirroring write_inventory/write_plan.
         validate_artifact("manifest", document)
@@ -139,8 +228,60 @@ class ManifestWriter:
         return self._path
 
 
-def read_manifest(path: Path) -> list[ManifestRecord]:
-    """Read every record, applying the adr-0006 AOF torn-tail rule."""
+def manifest_sha256(path: Path) -> str:
+    """`sha256:<hex>` of a CLOSED manifest file's bytes — the chain-link and
+    attempt-lineage currency (adr-0019). Manifests are closed before any
+    successor hashes them, so the value is stable (a torn tail stays torn)."""
+    return f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
+
+
+@dataclass(frozen=True)
+class ManifestSet:
+    """One validated manifest file: header envelope plus its records.
+
+    `sha256` is filled by chain reading (`read_manifest_chain` hashes every
+    non-tip file to prove the links); a set read in isolation carries None.
+    """
+
+    header: ManifestHeader
+    records: tuple[ManifestRecord, ...]
+    path: Path
+    sha256: str | None = None
+
+
+@dataclass(frozen=True)
+class ManifestInspectionFinding:
+    path: str
+    action_id: str
+    check: Literal["manifest-containment", "backup-containment"]
+    detail: str
+
+
+#: Fields an action's intent and terminal record must agree on (adr-0019
+#: immutable-field rule) — only result/error/seq/recorded_at (and the
+#: set-scope run_id, for adjudication terminals appended by a later run)
+#: may differ.
+_IMMUTABLE_FIELDS = (
+    "action_id",
+    "docmend_id",
+    "operation",
+    "original_path",
+    "target_path",
+    "before_sha256",
+    "after_sha256",
+    "backup_path",
+    "overwritten_backup_path",
+    "overwritten_sha256",
+    "source_identity",
+    "target_identity",
+    "expected_published_identity",
+)
+
+
+def _parse_lines(path: Path) -> list[object]:
+    """NDJSON parse with the adr-0006 AOF torn-tail rule (unchanged in 2.0):
+    tolerate only a physically unterminated trailing line; any interior or
+    newline-terminated corruption hard-aborts."""
     log = get_logger(__name__)
     try:
         raw = path.read_text(encoding="utf-8")
@@ -148,24 +289,652 @@ def read_manifest(path: Path) -> list[ManifestRecord]:
         msg = f"{path}: cannot read manifest ({exc.strerror or exc})"
         raise ArtifactError(msg) from exc
     lines = raw.splitlines()
-    # AOF tolerance applies ONLY to a physically unterminated tail (a crash
-    # mid-append). A newline-terminated final line was a COMPLETE record; if
-    # it no longer parses, that is corruption, not a torn write, and it must
-    # hard-abort like an interior record (codex CR-NEW-006; adr-0006).
     unterminated_tail = bool(raw) and not raw.endswith("\n")
-    records: list[ManifestRecord] = []
+    documents: list[object] = []
     for index, line in enumerate(lines):
         if not line.strip():
             continue
         trailing = index == len(lines) - 1
         try:
-            document: object = json.loads(line)
+            documents.append(json.loads(line))
         except json.JSONDecodeError as exc:
             if trailing and unterminated_tail:
                 log.warning("torn trailing manifest line dropped", path=str(path), line=index + 1)
                 break
             msg = f"{path}:{index + 1}: corrupt manifest record — {exc}"
             raise ArtifactError(msg) from exc
+    return documents
+
+
+def _read_header(path: Path, first: object) -> ManifestHeader:
+    raw: object = first  # keep the un-narrowed alias for validate_artifact
+    if isinstance(first, dict):
+        document = cast("dict[str, object]", first)
+        if document.get("schema") == "docmend/manifest-record":
+            raise ArtifactError(f"{path}: {CLEAN_BREAK_MESSAGE}")
+    validate_artifact("manifest-header", raw)
+    header = ManifestHeader.model_validate(raw)
+    _check_supported_minor(path, header.schema_version, MANIFEST_HEADER_SCHEMA_VERSION)
+    return header
+
+
+def _check_supported_minor(path: Path, version: str, current: str) -> None:
+    if int(version.split(".")[1]) > int(current.split(".")[1]):
+        msg = f"{path}: unsupported future manifest schema version {version} (this docmend reads up to {current})"
+        raise ArtifactError(msg)
+
+
+def _lexically_inside(candidate: str, root: str) -> bool:
+    return Path(os.path.normpath(candidate)).is_relative_to(os.path.normpath(root))
+
+
+def _validate_lifecycle(path: Path, records: list[ManifestRecord]) -> None:
+    """Per-set lifecycle legality — PROVISIONAL by design (adr-0019; Plan B
+    review CR-NEW-002): a terminal with no same-set intent parses here and is
+    proven (or rejected) at chain scope, where it must close exactly one
+    earlier set's dangling intent. That is what makes both adjudication
+    terminals and pre-journaling producers representable at set scope."""
+    by_action: dict[str, list[ManifestRecord]] = {}
+    for record in records:
+        by_action.setdefault(record.action_id, []).append(record)
+    for action_id, group in by_action.items():
+        intents = [r for r in group if r.result == "intent"]
+        terminals = [r for r in group if r.result != "intent"]
+        if len(intents) > 1:
+            msg = f"{path}: {action_id}: more than one intent record in one set"
+            raise ArtifactError(msg)
+        if len(terminals) > 1:
+            msg = f"{path}: {action_id}: more than one terminal record in one set"
+            raise ArtifactError(msg)
+        if intents and terminals:
+            intent, terminal = intents[0], terminals[0]
+            if intent.seq > terminal.seq:
+                msg = f"{path}: {action_id}: intent recorded after its terminal"
+                raise ArtifactError(msg)
+            for field in _IMMUTABLE_FIELDS:
+                if field == "after_sha256" and terminal.result == "failed":
+                    # The intent records the EXPECTED output hash; a failed
+                    # terminal asserts the mutation did not complete, so its
+                    # after is null (the original is intact) — the one field
+                    # a failure legitimately "changes" (spec 10.4).
+                    if terminal.after_sha256 is not None:
+                        msg = f"{path}: {action_id}: failed terminal carries an after hash"
+                        raise ArtifactError(msg)
+                    continue
+                if getattr(intent, field) != getattr(terminal, field):
+                    msg = (
+                        f"{path}: {action_id}: immutable field {field!r} diverges "
+                        f"between intent and terminal"
+                    )
+                    raise ArtifactError(msg)
+
+
+def _validate_kind(path: Path, header: ManifestHeader, records: list[ManifestRecord]) -> None:
+    for record in records:
+        has_undoes = record.undoes_action_id is not None
+        if header.kind == "restore" and not has_undoes:
+            msg = f"{path}: {record.action_id}: restore-kind record missing undoes lineage"
+            raise ArtifactError(msg)
+        if header.kind == "apply" and has_undoes:
+            msg = f"{path}: {record.action_id}: apply-kind record carries undoes lineage"
+            raise ArtifactError(msg)
+
+
+def _manifest_containment_findings(
+    manifest_set: ManifestSet, *, resolve_paths: bool
+) -> list[ManifestInspectionFinding]:
+    root = manifest_set.header.source_root
+    resolved_root = Path(root).resolve() if resolve_paths else None
+    findings: list[ManifestInspectionFinding] = []
+    seen: set[tuple[str, str]] = set()
+    for record in manifest_set.records:
+        for candidate in (record.original_path, record.target_path):
+            key = (record.action_id, candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            inside = _lexically_inside(candidate, root)
+            if inside and resolved_root is not None:
+                inside = Path(candidate).resolve().is_relative_to(resolved_root)
+            if inside:
+                continue
+            detail = (
+                f"{manifest_set.path}: {record.action_id}: recorded path {candidate} escapes "
+                f"the manifest's source root {root}"
+            )
+            findings.append(
+                ManifestInspectionFinding(
+                    path=candidate,
+                    action_id=record.action_id,
+                    check="manifest-containment",
+                    detail=detail,
+                )
+            )
+    return findings
+
+
+def _backup_trust_findings(
+    manifest_set: ManifestSet,
+    *,
+    check_objects: bool,
+    include_missing_objects: bool,
+) -> list[ManifestInspectionFinding]:
+    """The complete F5 BackupStore trust boundary (Plan B review CR-002): a
+    backup reference is DERIVABLE evidence, never a free-form path. The key's
+    run segment is the PERFORMING run's run_id — which equals this set's
+    header run (run coherence already forced record.run_id == header.run_id).
+    A STANDALONE terminal (no same-set intent) is exempt at set scope: it is
+    either an adoption terminal whose backup was written under the CLOSING
+    INTENT's run (chain scope validates it against that intent, whose own set
+    already reconstructed the key) or a pre-journaling producer's record —
+    the same provisional-set/strict-chain split as the lifecycle rule.
+    NOTE: action_id's run prefix is the PLAN run, never the key's run segment.
+    """
+    path = manifest_set.path
+    header = manifest_set.header
+    records = manifest_set.records
+    findings: list[ManifestInspectionFinding] = []
+    intent_actions = {r.action_id for r in records if r.result == "intent"}
+    seen: set[tuple[str, str, str]] = set()
+    for record in records:
+        references = (
+            (record.backup_path, "source", record.original_path),
+            (record.overwritten_backup_path, "overwritten", record.target_path),
+        )
+        if record.overwritten_backup_path is not None and record.overwritten_sha256 is None:
+            key = (record.action_id, "overwritten-sha", record.overwritten_backup_path)
+            if key not in seen:
+                seen.add(key)
+                detail = (
+                    f"{path}: {record.action_id}: overwritten backup without overwritten_sha256"
+                )
+                findings.append(
+                    ManifestInspectionFinding(
+                        path=record.overwritten_backup_path,
+                        action_id=record.action_id,
+                        check="backup-containment",
+                        detail=detail,
+                    )
+                )
+        for recorded, role, base in references:
+            if recorded is None:
+                continue
+            if record.result != "intent" and record.action_id not in intent_actions:
+                continue  # standalone terminal: key proven at chain scope (see docstring)
+            key = (record.action_id, role, recorded)
+            if key in seen:
+                continue
+            seen.add(key)
+            if header.backup_root is None:
+                detail = (
+                    f"{path}: {record.action_id}: backup reference with no backup_root "
+                    f"in the header (BackupStore trust boundary)"
+                )
+                findings.append(
+                    ManifestInspectionFinding(
+                        path=recorded,
+                        action_id=record.action_id,
+                        check="backup-containment",
+                        detail=detail,
+                    )
+                )
+                continue
+            _, _, action_part = record.action_id.partition("/")
+            try:
+                rel = Path(os.path.normpath(base)).relative_to(os.path.normpath(header.source_root))
+            except ValueError:
+                detail = f"{path}: {record.action_id}: backup base path outside source root"
+                findings.append(
+                    ManifestInspectionFinding(
+                        path=base,
+                        action_id=record.action_id,
+                        check="backup-containment",
+                        detail=detail,
+                    )
+                )
+                continue
+            expected = Path(header.backup_root) / header.run_id / action_part / role / rel
+            if os.path.normpath(recorded) != os.path.normpath(str(expected)):
+                detail = (
+                    f"{path}: {record.action_id}: backup path {recorded} does not "
+                    f"reconstruct from its BackupStore key (expected {expected})"
+                )
+                findings.append(
+                    ManifestInspectionFinding(
+                        path=recorded,
+                        action_id=record.action_id,
+                        check="backup-containment",
+                        detail=detail,
+                    )
+                )
+                continue
+            # F5's "at most one path per role per action" holds without a
+            # dedicated check at set scope: the immutable-field rule already
+            # forces an action's intent and terminal to agree on both backup
+            # fields, and a second record pair for the action is illegal.
+            # Cross-SET agreement (adoption terminals) is chain scope (Task 3).
+            if check_objects:
+                findings.extend(
+                    _backup_object_findings(
+                        manifest_path=path,
+                        action_id=record.action_id,
+                        backup_root=Path(header.backup_root),
+                        components=(header.run_id, action_part, role, *rel.parts),
+                        include_missing=include_missing_objects,
+                    )
+                )
+    return findings
+
+
+def _backup_object_findings(
+    *,
+    manifest_path: Path,
+    action_id: str,
+    backup_root: Path,
+    components: tuple[str, ...],
+    include_missing: bool,
+) -> list[ManifestInspectionFinding]:
+    """Filesystem half of F5, run BEFORE any backup is opened: the leaf must
+    be a regular file and no component below backup_root may be a symlink.
+    `components` is the full derivable key below the root — the same
+    (run, action, role, relative-path) tuple reconstruction proved."""
+    current = backup_root
+    for index, part in enumerate(components):
+        current = current / part
+        try:
+            st = os.lstat(current)
+        except OSError as exc:
+            if not include_missing:
+                return []
+            detail = (
+                f"{manifest_path}: {action_id}: backup component {current} "
+                f"missing/unreadable ({exc})"
+            )
+            return [
+                ManifestInspectionFinding(
+                    path=str(current),
+                    action_id=action_id,
+                    check="backup-containment",
+                    detail=detail,
+                )
+            ]
+        leaf = index == len(components) - 1
+        if stat.S_ISLNK(st.st_mode):
+            detail = (
+                f"{manifest_path}: {action_id}: symlink component {current} below the backup root"
+            )
+            return [
+                ManifestInspectionFinding(
+                    path=str(current),
+                    action_id=action_id,
+                    check="backup-containment",
+                    detail=detail,
+                )
+            ]
+        if leaf and not stat.S_ISREG(st.st_mode):
+            detail = f"{manifest_path}: {action_id}: backup object {current} is not a regular file"
+            return [
+                ManifestInspectionFinding(
+                    path=str(current),
+                    action_id=action_id,
+                    check="backup-containment",
+                    detail=detail,
+                )
+            ]
+        if not leaf and not stat.S_ISDIR(st.st_mode):
+            detail = (
+                f"{manifest_path}: {action_id}: backup path component {current} is not a directory"
+            )
+            return [
+                ManifestInspectionFinding(
+                    path=str(current),
+                    action_id=action_id,
+                    check="backup-containment",
+                    detail=detail,
+                )
+            ]
+    return []
+
+
+def _containment_findings(
+    manifest_set: ManifestSet,
+    *,
+    resolve_paths: bool,
+    check_backup_objects: bool,
+    include_missing_backup_objects: bool,
+) -> tuple[ManifestInspectionFinding, ...]:
+    return (
+        *_manifest_containment_findings(manifest_set, resolve_paths=resolve_paths),
+        *_backup_trust_findings(
+            manifest_set,
+            check_objects=check_backup_objects,
+            include_missing_objects=include_missing_backup_objects,
+        ),
+    )
+
+
+def _read_manifest_set_structural(path: Path) -> ManifestSet:
+    """Validate one set without inspecting any referenced filesystem path."""
+    documents = _parse_lines(path)
+    if not documents:
+        raise ArtifactError(f"{path}: manifest has no header")
+    header = _read_header(path, documents[0])
+    records: list[ManifestRecord] = []
+    for document in documents[1:]:
         validate_artifact("manifest", document)
-        records.append(ManifestRecord.model_validate(document))
-    return records
+        record = ManifestRecord.model_validate(document)
+        _check_supported_minor(path, record.schema_version, MANIFEST_SCHEMA_VERSION)
+        records.append(record)
+    for index, record in enumerate(records, start=1):
+        if record.run_id != header.run_id:
+            msg = f"{path}: seq {record.seq}: record run_id {record.run_id} != header run_id"
+            raise ArtifactError(msg)
+        if record.seq != index:
+            msg = f"{path}: record seq {record.seq} at position {index} — seq must be contiguous from 1"
+            raise ArtifactError(msg)
+    _validate_lifecycle(path, records)
+    _validate_kind(path, header, records)
+    return ManifestSet(header=header, records=tuple(records), path=path)
+
+
+def read_manifest_set(path: Path, *, check_backup_objects: bool = True) -> ManifestSet:
+    """Read and validate ONE manifest file (adr-0019: header presence and
+    version, single run, contiguous seq, provisional per-set lifecycle, kind
+    lineage, source-root containment, and the full F5 BackupStore trust
+    boundary) — before any referenced path is touched by a consumer.
+
+    `check_backup_objects=False` skips the live-filesystem half of F5 (regular
+    file, no symlink components); mutating consumers use the default so every
+    check runs before `_verified_backup` opens anything, while read-only
+    verify (Plan D) re-runs those checks as findings.
+    """
+    manifest_set = _read_manifest_set_structural(path)
+    findings = _containment_findings(
+        manifest_set,
+        resolve_paths=check_backup_objects,
+        check_backup_objects=check_backup_objects,
+        include_missing_backup_objects=True,
+    )
+    if findings:
+        raise ManifestContainmentError(findings[0].detail)
+    return manifest_set
+
+
+@dataclass(frozen=True)
+class ManifestChain:
+    """Validated manifest sets ordered root→tip by their hash links."""
+
+    sets: tuple[ManifestSet, ...]
+
+
+@dataclass(frozen=True)
+class ManifestInspection:
+    chain: ManifestChain
+    findings: tuple[ManifestInspectionFinding, ...]
+
+
+def _order_chain(paths: Sequence[Path], sets: list[ManifestSet]) -> list[ManifestSet]:
+    """Order by prior_manifest_sha256 links — never caller order (adr-0019)."""
+    roots = [s for s in sets if s.header.prior_manifest_sha256 is None]
+    if len(roots) != 1:
+        msg = (
+            f"manifest chain must have exactly one root manifest "
+            f"(prior_manifest_sha256: null); found {len(roots)} among {len(paths)} inputs"
+        )
+        raise ArtifactError(msg)
+    successors: dict[str, ManifestSet] = {}
+    for candidate in sets:
+        prior = candidate.header.prior_manifest_sha256
+        if prior is None:
+            continue
+        if prior in successors:
+            msg = (
+                f"manifest chain forks: both {successors[prior].path} and "
+                f"{candidate.path} link the same prior manifest"
+            )
+            raise ArtifactError(msg)
+        successors[prior] = candidate
+    ordered = [roots[0]]
+    while True:
+        assert ordered[-1].sha256 is not None
+        follower = successors.pop(ordered[-1].sha256, None)
+        if follower is None:
+            break
+        ordered.append(follower)
+    if successors:
+        orphan = next(iter(successors.values()))
+        msg = (
+            f"{orphan.path}: prior manifest link {orphan.header.prior_manifest_sha256} "
+            f"matches no supplied input — broken chain link"
+        )
+        raise ArtifactError(msg)
+    return ordered
+
+
+def _validate_chain_coherence(ordered: list[ManifestSet]) -> None:
+    root = ordered[0]
+    seen_runs: set[str] = set()
+    restore_seen = False
+    for current in ordered:
+        if current.header.source_root != root.header.source_root:
+            msg = f"{current.path}: source_root differs from the chain root's"
+            raise ArtifactError(msg)
+        if current.header.plan_sha256 != root.header.plan_sha256:
+            msg = f"{current.path}: plan_sha256 differs — one chain serves one plan"
+            raise ArtifactError(msg)
+        if current.header.run_id in seen_runs:
+            msg = f"{current.path}: duplicate run_id {current.header.run_id} in chain"
+            raise ArtifactError(msg)
+        seen_runs.add(current.header.run_id)
+        if current.header.kind == "restore":
+            restore_seen = True
+        elif restore_seen:
+            msg = (
+                f"{current.path}: apply-kind manifest after a restore in the same "
+                f"chain — re-application requires a fresh plan (adr-0019)"
+            )
+            raise ArtifactError(msg)
+
+
+def _validate_attempt_lineage(ordered: list[ManifestSet]) -> None:
+    """The locally provable attempt-chain/subchain invariants (review CR-006);
+    report-hash verification lives where report inputs exist: apply-resume at
+    edge-build time, verify (Plan D) chain-wide."""
+    chain_runs = {s.header.run_id for s in ordered}
+    for index, current in enumerate(ordered):
+        edge = current.header.prior_attempt
+        if current.header.prior_manifest_sha256 is None:
+            # Root: no edge (true first attempt) or a REPORT-flavored edge
+            # (its predecessors were report-only and produced no manifest).
+            if edge is not None and edge.manifest_sha256 is not None:
+                msg = (
+                    f"{current.path}: root manifest carries a manifest-flavored "
+                    f"prior_attempt but no prior manifest link"
+                )
+                raise ArtifactError(msg)
+            continue
+        if edge is None:
+            msg = f"{current.path}: non-root manifest missing its prior_attempt edge"
+            raise ArtifactError(msg)
+        predecessor = ordered[index - 1]
+        if edge.manifest_sha256 is not None:
+            if (
+                edge.manifest_sha256 != current.header.prior_manifest_sha256
+                or edge.run_id != predecessor.header.run_id
+            ):
+                msg = (
+                    f"{current.path}: manifest-flavored prior_attempt disagrees with "
+                    f"the subchain link — the attempt chain and manifest subchain "
+                    f"cannot diverge"
+                )
+                raise ArtifactError(msg)
+        elif edge.run_id in chain_runs:
+            msg = (
+                f"{current.path}: report-flavored prior_attempt names run "
+                f"{edge.run_id}, which produced a manifest in this chain — a "
+                f"report-only attempt has no manifest"
+            )
+            raise ArtifactError(msg)
+
+
+def _validate_cross_set_lifecycle(ordered: list[ManifestSet]) -> None:
+    """The cross-set transition table plus terminal closure (review
+    CR-NEW-002): a terminal with no same-set intent must close exactly one
+    earlier set's dangling intent, with immutable-field agreement."""
+    dangling: dict[str, ManifestRecord] = {}
+    terminal_applied: set[str] = set()
+    for current in ordered:
+        set_intents = {r.action_id for r in current.records if r.result == "intent"}
+        for record in current.records:
+            if record.result == "intent":
+                dangling[record.action_id] = record
+                continue
+            if record.action_id in terminal_applied:
+                msg = (
+                    f"{current.path}: {record.action_id}: terminal contradicts an "
+                    f"earlier applied record for the same action"
+                )
+                raise ArtifactError(msg)
+            if record.action_id not in set_intents:
+                closing = dangling.get(record.action_id)
+                if closing is None:
+                    if record.result != "failed":
+                        msg = (
+                            f"{current.path}: {record.action_id}: standalone terminal "
+                            f"closes no dangling intent in the chain"
+                        )
+                        raise ArtifactError(msg)
+                    # A standalone `failed` closing nothing is the designed
+                    # PRE-MUTATION failure shape (adr-0019 amendment
+                    # 2026-07-11): the producer records `failed` with no
+                    # intent when a stat/staging/backup failure aborted the
+                    # action before any corpus name was touched — it asserts
+                    # a no-op and needs no closure evidence. Only ADOPTION
+                    # terminals (`applied`) assert a mutation happened and
+                    # must close a dangling intent. Rejecting these made
+                    # every manifest containing an ordinary pre-mutation
+                    # failure unresumable and unrestorable (plan C review
+                    # round 2, CR-NEW-002).
+                else:
+                    for field in _IMMUTABLE_FIELDS:
+                        if field == "after_sha256" and record.result == "failed":
+                            continue  # the per-set failed-after exemption, cross-set
+                        if getattr(closing, field) != getattr(record, field):
+                            msg = (
+                                f"{current.path}: {record.action_id}: closure terminal "
+                                f"diverges from the dangling intent on immutable "
+                                f"field {field!r}"
+                            )
+                            raise ArtifactError(msg)
+            dangling.pop(record.action_id, None)
+            if record.result == "applied":
+                terminal_applied.add(record.action_id)
+
+
+def _validate_undoes_references(ordered: list[ManifestSet]) -> None:
+    applied_actions = {
+        r.action_id
+        for s in ordered
+        if s.header.kind == "apply"
+        for r in s.records
+        if r.result == "applied"
+    }
+    for current in ordered:
+        if current.header.kind != "restore":
+            continue
+        for record in current.records:
+            if record.undoes_action_id not in applied_actions:
+                msg = (
+                    f"{current.path}: {record.action_id}: undoes "
+                    f"{record.undoes_action_id}, which no apply record in this "
+                    f"chain applied"
+                )
+                raise ArtifactError(msg)
+
+
+def _finish_chain_validation(paths: Sequence[Path], sets: list[ManifestSet]) -> ManifestChain:
+    if not sets:
+        return ManifestChain(sets=())
+    ordered = _order_chain(paths, sets)
+    _validate_chain_coherence(ordered)
+    _validate_attempt_lineage(ordered)
+    _validate_cross_set_lifecycle(ordered)
+    _validate_undoes_references(ordered)
+    return ManifestChain(sets=tuple(ordered))
+
+
+def read_manifest_chain(
+    paths: Sequence[Path], *, check_backup_objects: bool = True
+) -> ManifestChain:
+    """Read, hash, order, and cross-validate a set of manifest files as one
+    chain (adr-0019). An EMPTY input is a legal empty chain: a report-only
+    predecessor produced no manifest (review CR-004)."""
+    sets = [
+        replace(
+            read_manifest_set(path, check_backup_objects=check_backup_objects),
+            sha256=manifest_sha256(path),
+        )
+        for path in paths
+    ]
+    return _finish_chain_validation(paths, sets)
+
+
+def inspect_manifest_chain(paths: Sequence[Path]) -> ManifestInspection:
+    """Validate structure without touching referenced objects; return containment defects."""
+    sets = [
+        replace(_read_manifest_set_structural(path), sha256=manifest_sha256(path)) for path in paths
+    ]
+    chain = _finish_chain_validation(paths, sets)
+    findings = tuple(
+        finding
+        for manifest_set in chain.sets
+        for finding in _containment_findings(
+            manifest_set,
+            resolve_paths=True,
+            check_backup_objects=True,
+            include_missing_backup_objects=False,
+        )
+    )
+    return ManifestInspection(chain=chain, findings=findings)
+
+
+type LifecycleState = Literal[
+    "pending-intent", "applied", "failed", "pending-restore", "restored", "restore-failed"
+]
+
+_APPLY_STATES: dict[str, LifecycleState] = {
+    "intent": "pending-intent",
+    "applied": "applied",
+    "failed": "failed",
+}
+_RESTORE_STATES: dict[str, LifecycleState] = {
+    "intent": "pending-restore",
+    "applied": "restored",
+    "failed": "restore-failed",
+}
+
+
+@dataclass(frozen=True)
+class ActionLifecycle:
+    state: LifecycleState
+    record: ManifestRecord
+    set_index: int
+
+
+def reduce_lifecycle(chain: ManifestChain) -> dict[str, ActionLifecycle]:
+    """Fold the chain into ONE state per ORIGINAL apply action — chain order
+    then seq, never wall-clock (adr-0019). Resume, restore, and verify all
+    consume this; the transition legality was already proven by the chain
+    rules, so the fold is pure: the newest record for an action wins, with
+    restore inverses mapped back through their undoes lineage."""
+    states: dict[str, ActionLifecycle] = {}
+    for index, current in enumerate(chain.sets):
+        for record in current.records:
+            if record.undoes_action_id is not None:
+                key = record.undoes_action_id
+                state = _RESTORE_STATES[record.result]
+            else:
+                key = record.action_id
+                state = _APPLY_STATES[record.result]
+            states[key] = ActionLifecycle(state=state, record=record, set_index=index)
+    return states

@@ -1,17 +1,13 @@
-"""Per-file watchdog — the FR-019/OQ-028 timeout, realized for v1's engine.
+"""Per-file cooperative watchdog for the FR-019/OQ-028 timeout.
 
-Design decision (spec FR-019, ERR-009, R-007; adr-0007): FR-019's requirement
-text describes a *process-level* watchdog that "terminates" per-file work — the
-form that fits the deferred process pool (adr-0007's concurrency primitive),
-where a stuck worker can be killed outright. v1 never spawns that pool:
-adr-0007 keeps the engine sequential-in-process until profiling justifies
-parallelism, so there is no worker process to terminate. The v1 realization is
-therefore an in-process ``signal.setitimer(ITIMER_REAL)`` alarm scoped to one
-file: SIGALRM fires after ``per_file_timeout`` seconds and the handler raises
-:class:`PerFileTimeoutError` inside the same process, unwinding the current
-file's work back to the caller, which records it as a timeout skip and moves on.
-The process-level "terminate" form rides the deferred pool; this deviation is
-recorded as DEV-002 in the spec's Deviations Log.
+Design decision (spec FR-019, ERR-009, R-007; OQ-037): the v2 sequential engine
+uses an in-process ``signal.setitimer(ITIMER_REAL)`` alarm scoped to one file.
+SIGALRM raises :class:`PerFileTimeoutError` inside the process, unwinding the
+current file's work so the caller can record a timeout skip and continue. This
+is a cooperative Python boundary, not hard process termination: a native call
+that does not return control to the interpreter can delay the exception. No
+worker protocol exists in v2; a future hard process boundary requires the
+separately approved concurrency design governed by adr-0022.
 
 Scope contract (FR-019): discovery, detection, and transform-prediction ONLY —
 NEVER the writer. The alarm interrupts arbitrary in-progress work by raising at
@@ -39,10 +35,9 @@ def per_file_watchdog(seconds: float) -> Generator[None]:
     No-ops (a plain yield) off the main thread: ``signal.signal`` and
     ``setitimer`` only work there, so a watchdog installed from a worker thread
     would raise ``ValueError`` at setup. This is a safety valve, not the normal
-    path — v1's sequential engine always runs on the main thread, and a future
-    pool's workers run on the main thread of their own process, so both get the
-    real alarm; only in-process threads (which v1 never uses for this work) fall
-    through to the no-op.
+    path — the sequential engine runs this work on the main thread. In-process
+    threads fall through to the no-op and therefore must not be treated as a
+    hard watchdog boundary.
 
     The itimer is always disarmed and the prior SIGALRM handler always restored
     in ``finally``, so a timeout in one file never leaks an armed alarm into the

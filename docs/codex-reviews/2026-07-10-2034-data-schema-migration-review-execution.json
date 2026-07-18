@@ -1,0 +1,28 @@
+{
+	"canonical_prompt": "perform a data review",
+	"completed_at": "2026-07-10T21:10:01.312686+00:00",
+	"error": null,
+	"follow_on_reviews": [],
+	"last_heartbeat_at": "2026-07-10T21:10:01.312686+00:00",
+	"last_message_path": null,
+	"last_progress_message": "Child review completed successfully. Elapsed: 10m10s. Saved report: docs/codex-reviews/2026-07-10-2034-data-schema-migration-review-report.md",
+	"latest_existing_report": "docs/codex-reviews/2026-07-10-2034-codex-review-live-status.md",
+	"queue_position": 10,
+	"repo_name": "docmend",
+	"repo_root": ".",
+	"residual_risk_summary": [
+		"overall: high",
+		"high: Until ISSUE-001 is fixed, a crash can leave a completed single-step mutation without its recovery record or backup pointer.",
+		"high: Until ISSUE-002 and ISSUE-003 are fixed, restore safety depends on every manifest being contained, coherent, and producer-authentic despite the reader accepting weaker states."
+	],
+	"review_manifest_path": "./docs/codex-reviews/2026-07-10-2034-data-schema-migration-review-execution.json",
+	"review_skill": "data-schema-migration-review",
+	"save_dir": "docs/codex-reviews/",
+	"saved_report_path": "docs/codex-reviews/2026-07-10-2034-data-schema-migration-review-report.md",
+	"shared_research_path": "docs/codex-reviews/2026-07-10-2034-codex-review-shared-research.md",
+	"shared_research_status": "completed",
+	"started_at": "2026-07-10T20:59:50.458037+00:00",
+	"status": "completed",
+	"sweep_started_at": "2026-07-10-2034",
+	"top_findings_summary": []
+}

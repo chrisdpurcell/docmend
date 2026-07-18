@@ -27,6 +27,8 @@ from ruamel.yaml.nodes import ScalarNode
 
 from docmend.artifacts import ArtifactError, validate_artifact
 
+FRONTMATTER_SCHEMA_VERSION = "1.0"
+
 #: Frontmatter block delimiters (§9/C-004): the block must be the FIRST content
 #: in the file, opened by `---` and closed by `---` (Pandoc also accepts `...`).
 _OPEN = "---"

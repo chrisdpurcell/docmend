@@ -59,10 +59,37 @@ def test_restore_drill__manifest_replay_reproduces_original_corpus(drill_corpus:
     assert applied.exit_code == 0, applied.output
     assert _snapshot(drill_corpus) != before  # the corpus really changed
     manifest = _artifact(r"manifest: (\S+)", applied.output)
+    report = _artifact(r"report: (\S+)", applied.output)
+    manifests_before_restore = set(Path(".docmend").glob("docmend-*-manifest.jsonl"))
 
     restored = runner.invoke(app, ["restore", "--manifest", str(manifest), "--write"])
     assert restored.exit_code == 0, restored.output
     assert _snapshot(drill_corpus) == before  # IR-008: bytes match pre-apply hashes
+    restore_manifests = (
+        set(Path(".docmend").glob("docmend-*-manifest.jsonl")) - manifests_before_restore
+    )
+    assert len(restore_manifests) == 1
+    restore_manifest = restore_manifests.pop()
+
+    verified = runner.invoke(
+        app,
+        [
+            "verify",
+            str(drill_corpus),
+            "--plan",
+            "plan.json",
+            "--manifest",
+            str(restore_manifest),
+            "--manifest",
+            str(manifest),
+            "--report",
+            str(report),
+        ],
+    )
+    assert verified.exit_code == 1, verified.output
+    assert "[lifecycle]" in verified.output
+    assert "restored" in verified.output
+    assert "coverage-unprovable" not in verified.output
 
 
 def test_single_file_journey__scan_plan_apply_with_defaults(
@@ -76,11 +103,18 @@ def test_single_file_journey__scan_plan_apply_with_defaults(
     single = tmp_path / "letter.txt"
     single.write_bytes(b"hello\r\nworld")
 
-    scanned = runner.invoke(app, ["scan", str(single), "--report", "inventory.json"])
+    # rev 0.26 IR-007/adr-0021: a loose `inventory.json`/`plan.json` in the
+    # corpus root is now a refused artifact-destination (DMR-02, Task 8 wires
+    # the same guard onto `plan`'s --out) — both artifacts must land under the
+    # licensed .docmend/ carve-out like the tool's own defaults do.
+    scanned = runner.invoke(app, ["scan", str(single), "--report", ".docmend/inventory.json"])
     assert scanned.exit_code == 0, scanned.output
-    planned = runner.invoke(app, ["plan", "--inventory", "inventory.json", "--out", "plan.json"])
+    planned = runner.invoke(
+        app,
+        ["plan", "--inventory", ".docmend/inventory.json", "--out", ".docmend/plan.json"],
+    )
     assert planned.exit_code == 0, planned.output
-    applied = runner.invoke(app, ["apply", "plan.json", "--write", "--allow-no-backup"])
+    applied = runner.invoke(app, ["apply", ".docmend/plan.json", "--write", "--allow-no-backup"])
     assert applied.exit_code == 0, applied.output
 
     converted = tmp_path / "letter.md"
@@ -124,9 +158,12 @@ def test_drill_report_and_manifest_agree(drill_corpus: Path) -> None:
     report_path = _artifact(r"report: (\S+)", applied.output)
     manifest_path = _artifact(r"manifest: (\S+)", applied.output)
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    records = [
+    lines = [
         json.loads(line)
         for line in manifest_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+    # 2.0: line 1 is the header envelope; mutation records follow it.
+    assert lines[0]["schema"] == "docmend/manifest-header"
+    records = lines[1:]
     assert report["totals"]["applied"] == sum(1 for r in records if r["result"] == "applied")

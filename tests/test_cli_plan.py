@@ -70,6 +70,15 @@ class TestPlanCommand:
         document = json.loads(plans[0].read_text())
         assert document["inventory_ref"]["path"] == str(inventories[0])
         assert document["inventory_ref"]["run_id"] == document["run_id"]
+        log_path = artifact_dir / f"docmend-{document['run_id']}.jsonl"
+        events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+        stage_events = [event for event in events if str(event["event"]).startswith("stage.")]
+        assert [(event["stage"], event["event"]) for event in stage_events] == [
+            ("scan", "stage.start"),
+            ("scan", "stage.complete"),
+            ("plan", "stage.start"),
+            ("plan", "stage.complete"),
+        ]
 
     def test_inventory_flag__consumes_existing_artifact(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -245,3 +254,64 @@ class TestPlanLock:
         monkeypatch.setattr(cli.lock, "acquire", _raise_oserror)
         result = runner.invoke(app, ["plan", str(corpus)])
         assert result.exit_code == 0, result.output
+        assert "run lock unavailable" in result.output
+
+
+class TestPlanArtifactGuard:
+    """rev 0.26 IR-007 / adr-0021 / DMR-02 wiring for both plan branches."""
+
+    def test_out_inside_corpus__refused_exit_3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        victim = corpus / "victim.txt"
+        victim.write_bytes(b"corpus document\n")
+        result = runner.invoke(app, ["plan", str(corpus), "--out", str(victim)])
+        assert result.exit_code == 3
+        assert "artifact-destination" in result.output
+        assert victim.read_bytes() == b"corpus document\n"
+
+    def test_out_aliasing_inventory_input__refused_exit_3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A destination outside the corpus can still corrupt the pipeline by
+        aliasing this invocation's own input (adr-0021)."""
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "doc.txt").write_text("clean\n")
+        inventory_path = tmp_path / "inventory.json"
+        scan_result = runner.invoke(app, ["scan", str(corpus), "--report", str(inventory_path)])
+        assert scan_result.exit_code == 0, scan_result.output
+        result = runner.invoke(
+            app,
+            ["plan", "--inventory", str(inventory_path), "--out", str(inventory_path)],
+        )
+        assert result.exit_code == 3
+        assert "artifact-destination" in result.output
+
+
+class TestTimeoutExit:
+    def test_plan_with_timeout_skip__partial_result_exit_1(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """2026-07-10 review: a content-pass watchdog timeout is a PARTIAL
+        plan — the same finding class as unreadable (exit 1)."""
+        import docmend.planning as planning_module
+        from docmend.watchdog import PerFileTimeoutError
+
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "slow.txt").write_bytes(b"slow body\r\n")
+
+        def timing_out(*args: object, **kwargs: object) -> object:
+            raise PerFileTimeoutError(0.0)
+
+        monkeypatch.setattr(planning_module, "decode_source", timing_out)
+        result = runner.invoke(app, ["plan", str(corpus)])
+
+        assert result.exit_code == 1, result.output
+        assert "timeout" in result.output

@@ -7,11 +7,13 @@ exactly with the per-file records.
 """
 
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from docmend import artifacts
 from docmend.artifacts import ArtifactError, read_inventory, validate_artifact, write_inventory
 from docmend.config import DocmendConfig
 from docmend.discovery import scan
@@ -120,3 +122,79 @@ class TestReadFailureModes:
         artifact.write_text(json.dumps(document), encoding="utf-8")
         with pytest.raises(ArtifactError, match=r"generated_at|date-time"):
             read_inventory(artifact)
+
+
+def test_artifact_staging__randomized_and_retry_safe(tmp_path: Path) -> None:
+    """DMR-02: the old fixed '<name>.tmp' sibling was a predictable truncation
+    target and blocked nothing on collision. Staging must be O_EXCL-random:
+    pre-existing residue at the legacy name must be left untouched and must
+    not block the write."""
+    dest = tmp_path / "out.json"
+    legacy_residue = tmp_path / "out.json.tmp"
+    legacy_residue.write_bytes(b"victim bytes that must survive")
+    artifacts.write_json_artifact({"k": "v"}, dest)
+    assert json.loads(dest.read_text()) == {"k": "v"}
+    assert legacy_residue.read_bytes() == b"victim bytes that must survive"
+    leftovers = sorted(p.name for p in tmp_path.iterdir())
+    assert leftovers == ["out.json", "out.json.tmp"]  # staging temp cleaned up
+    # F6: modes stay umask-derived — no artifact-mode policy is decided here.
+    umask = os.umask(0)
+    os.umask(umask)
+    assert (dest.stat().st_mode & 0o777) == (0o666 & ~umask)
+
+
+def test_artifact_publish__fsyncs_destination_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-07-10 review, data-schema ISSUE-008 durability half: tmp.replace
+    makes the publish atomic but not durable — the parent directory entry must
+    be fsync'd or a power loss can lose the artifact entirely, diverging from
+    writer/atomic.py's publish (which has always fsync'd the parent)."""
+    import stat as stat_module
+
+    dest = tmp_path / "out.json"
+    dir_stat = tmp_path.stat()
+    synced_dirs: list[tuple[int, int]] = []
+    real_fsync = os.fsync
+
+    def recording_fsync(fd: int) -> None:
+        st = os.fstat(fd)
+        if stat_module.S_ISDIR(st.st_mode):
+            synced_dirs.append((st.st_dev, st.st_ino))
+        real_fsync(fd)
+
+    monkeypatch.setattr(artifacts.os, "fsync", recording_fsync)
+    artifacts.write_json_artifact({"k": "v"}, dest)
+    assert (dir_stat.st_dev, dir_stat.st_ino) in synced_dirs
+
+
+def test_artifact_staging__serialization_failure_leaves_no_residue(tmp_path: Path) -> None:
+    """plan-review F4: json.dump can raise TypeError on a non-serializable
+    document; cleanup must cover that class too, not only OSError."""
+    dest = tmp_path / "out.json"
+    with pytest.raises(TypeError):
+        artifacts.write_json_artifact({"k": object()}, dest)
+    assert not dest.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_artifact_staging_exhaustion__oserror_no_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 8-attempt staging-name loop's `for...else` bound: if every
+    candidate collides (here, token_hex is pinned so all 8 attempts generate
+    the same colliding name), allocation must fail as OSError rather than
+    loop forever — no destination is produced and the colliding residue is
+    left untouched."""
+    dest = tmp_path / "out.json"
+    residue = tmp_path / ".out.json.deadbeef.tmp"
+    residue.write_bytes(b"stale residue that always collides")
+
+    def fixed_token_hex(nbytes: int) -> str:
+        return "deadbeef"
+
+    monkeypatch.setattr(artifacts.secrets, "token_hex", fixed_token_hex)
+    with pytest.raises(OSError):
+        artifacts.write_json_artifact({"k": "v"}, dest)
+    assert not dest.exists()
+    assert residue.read_bytes() == b"stale residue that always collides"

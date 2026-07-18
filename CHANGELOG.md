@@ -2,9 +2,9 @@
 
 All notable changes to docmend are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.0] - 2026-07-18
 
-Safety-core remediation, plans A–D (spec revs 0.26–0.29; 2026-07-10 comprehensive review findings DMR-01..07; ADRs 0019–0021). Targets the eventual v2.0.0.
+Safety-core remediation, plans A–D (spec revs 0.26–0.29; 2026-07-10 comprehensive review findings DMR-01..07; ADRs 0019–0021).
 
 ### Changed — bounded-linear scale contract (DMR-08)
 
@@ -98,6 +98,7 @@ First release. docmend normalizes, repairs, and converts legacy `.txt`/`.html` d
 - Five pinned JSON Schemas (inventory, plan, report, manifest, frontmatter) ship inside the package as the durable artifact contract.
 - Scale-tested: the seeded 100,000-file synthetic-corpus test completes in about six minutes with peak memory under 500 MiB.
 
+[2.0.0]: https://github.com/chrisdpurcell/docmend/releases/tag/v2.0.0
 [1.0.2]: https://github.com/chrisdpurcell/docmend/releases/tag/v1.0.2
 [1.0.1]: https://github.com/chrisdpurcell/docmend/releases/tag/v1.0.1
 [1.0.0]: https://github.com/chrisdpurcell/docmend/releases/tag/v1.0.0

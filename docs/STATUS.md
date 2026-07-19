@@ -2,7 +2,7 @@
 
 ## Current snapshot
 
-- docmend v2.0.0 is released with the complete scan, plan, apply, restore, resume, and verify pipeline.
+- docmend v2.0.1 is released with the complete scan, plan, apply, restore, resume, and verify pipeline; 2.0.1 ships the 2026-07-19 comprehensive-review remediation (26 findings, none Critical/High — `docs/fable-review/2026-07-19-docmend-review.md`).
 - The approved SPEC-VHHB revision 0.44 and ADRs 0001-0022 govern landed post-v1 changes (adr-0006 superseded by adr-0019; adr-0007 superseded by adr-0022). DMR-08 is closed: plan schema 2.0/config migration, the 1,000-file guard, aggregate liveness, capacity preflight, the 100,000-file pilot/diagnostic workflow, the 100 MiB file-size matrix, and the accepted million-file release qualification implement the sequential bounded-linear contract.
 - The current `dev` baseline is 1,728 passing tests with no skips on a non-root runner (four permission-bit tests skip only when run as root), 89% branch coverage, and no known dependency vulnerabilities.
 - The repository workflow is `dev` to pull request to protected `main`; releases are signed `vX.Y.Z` tags with sdist and wheel artifacts. The v2.0.0 safety-core release ships all four remediation plans.

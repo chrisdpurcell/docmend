@@ -191,11 +191,6 @@ type PublicLabel = Annotated[
 ]
 
 
-class MemoryPoint(_StrictModel):
-    files: Annotated[int, Field(gt=0)]
-    peak_rss_bytes: Annotated[int, Field(gt=0)]
-
-
 class StageEvidence(_StrictModel):
     stage: StageName
     run_id: RunId | None
@@ -518,6 +513,21 @@ class FileSizeCaseEvidence(_StrictModel):
             and not self.findings_reconciled
         )
 
+    def has_trustworthy_backup_failure(self) -> bool:
+        """Return whether a validated apply proves a wrong-sized tool backup.
+
+        Backup bytes are accounted only on the apply stage, so a validated apply
+        is what makes the mismatch trustworthy. The predicate is the negation of
+        _reconcile_case's tool_backup_ok, letting a rebuilt checkpoint classify a
+        tool-preservation size defect identically to run_file_size_matrix (F-014).
+        """
+
+        return (
+            any(stage.stage == "apply" and stage.artifact_validated for stage in self.stages)
+            and self.preservation != "external"
+            and self.backup_bytes != self.source_bytes
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class EvidenceOutcome:
@@ -625,7 +635,10 @@ class ScaleEvidence(_StrictModel):
         trustworthy_failures: list[OutcomeReason] = []
         if any(stage.completed and stage.exit_code != 0 for case in cases for stage in case.stages):
             trustworthy_failures.append("stage-exit")
-        if any(case.has_trustworthy_conservation_failure() for case in cases):
+        if any(
+            case.has_trustworthy_conservation_failure() or case.has_trustworthy_backup_failure()
+            for case in cases
+        ):
             trustworthy_failures.append("conservation-mismatch")
         if any(case.has_trustworthy_finding_failure() for case in cases):
             trustworthy_failures.append("finding-mismatch")
@@ -971,14 +984,6 @@ class ThresholdBaseline(_StrictModel):
 
 
 @dataclass(frozen=True, slots=True)
-class MemoryFit:
-    """Exact least-squares line; fractions prevent pilot-dependent float drift."""
-
-    slope_bytes_per_file: Fraction
-    intercept_bytes: Fraction
-
-
-@dataclass(frozen=True, slots=True)
 class StageMemorySeries:
     stage: StageName
     rss_10k: int
@@ -1007,29 +1012,6 @@ class ThresholdContext:
             raise ValueError("threshold context stage memory must follow stage order")
         if self.baseline.limits != derive_thresholds(self.stage_memory):
             raise ValueError("threshold context limits do not match its stage memory")
-
-
-def fit_peak_rss_slope(points: Iterable[MemoryPoint]) -> MemoryFit:
-    """Fit ``peak = intercept + slope * files`` using exact rational arithmetic."""
-    values = tuple(points)
-    if len(values) < 2:
-        raise ValueError("at least two memory points are required")
-    if len({point.files for point in values}) != len(values):
-        raise ValueError("memory points must use distinct file counts")
-
-    count = len(values)
-    sum_x = sum(point.files for point in values)
-    sum_y = sum(point.peak_rss_bytes for point in values)
-    sum_xy = sum(point.files * point.peak_rss_bytes for point in values)
-    sum_x_squared = sum(point.files * point.files for point in values)
-    denominator = count * sum_x_squared - sum_x * sum_x
-    if denominator == 0:
-        raise ValueError("memory points do not define a slope")
-    slope = Fraction(count * sum_xy - sum_x * sum_y, denominator)
-    if slope < 0:
-        raise ValueError("peak RSS slope must not be negative")
-    intercept = Fraction(sum_y, count) - slope * Fraction(sum_x, count)
-    return MemoryFit(slope_bytes_per_file=slope, intercept_bytes=intercept)
 
 
 def _ceil_fraction(value: Fraction) -> int:

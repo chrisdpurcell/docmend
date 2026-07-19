@@ -185,11 +185,21 @@ def check_outputs(
     records = sorted(reduce_lifecycle(chain).items())
     for action_id, lifecycle in _record_boundaries(records, heartbeat=heartbeat, findings=findings):
         record = lifecycle.record
-        if (
-            lifecycle.state != "applied"
-            or action_id in unsafe_action_ids
-            or record.after_sha256 is None
-        ):
+        if lifecycle.state != "applied" or action_id in unsafe_action_ids:
+            continue
+        if record.after_sha256 is None:
+            # A trusted `applied` record with a null after-hash passes full chain
+            # validation (manifest.py constrains the after-hash only for `failed`
+            # terminals), so nothing is left to hash the live output against.
+            # verify's mandate (FR-014) is to catch corrupt/crafted manifests, not
+            # silently treat this as nothing-to-verify — flag it (F-010).
+            findings.append(
+                VerifyFinding(
+                    record.target_path,
+                    "hash",
+                    "applied record has no recorded after-hash to verify against",
+                )
+            )
             continue
         target = Path(record.target_path)
         try:

@@ -21,7 +21,14 @@ from pathlib import Path
 import pytest
 import structlog
 from tests.helpers import replace_with_new_inode
-from tests.helpers.manifest2 import header_doc, read_records, write_set
+from tests.helpers.manifest2 import (
+    UUID7,
+    chain_of,
+    header_doc,
+    read_records,
+    record_doc,
+    write_set,
+)
 from tests.helpers.writectx import restore_safety
 from typer.testing import CliRunner
 
@@ -1444,6 +1451,50 @@ class TestRestoreSelectorMiss:
 
         assert result.exit_code == 1, result.output
         assert "no manifest record matches" in result.output
+
+    def test_id_matching_only_failed_records__non_restorable_finding_exit_1(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F-012: an --id that resolves only to failed (non-restorable) records
+        must say so — not misreport 'no match' and misdirect diagnosis toward a
+        typo. Exit 1 either way; the message is what differs."""
+        monkeypatch.chdir(tmp_path)
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        target = corpus / "doc.md"
+        target.write_bytes(b"clean\n")
+        manifest_path = write_set(
+            tmp_path / "failed.jsonl",
+            header_doc(source_root=str(corpus)),
+            record_doc(
+                1,
+                result="failed",
+                after_sha256=None,
+                original_path=str(target),
+                target_path=str(target),
+            ),
+        )
+
+        result = runner.invoke(app, ["restore", "--manifest", str(manifest_path), "--id", UUID7])
+
+        assert result.exit_code == 1, result.output
+        assert "matched only non-restorable (failed) records" in result.output
+
+
+def test_matched_counts_selector_hits_even_when_all_non_restorable() -> None:
+    """The restore engines expose how many records the id selector matched, so
+    the CLI can tell 'matched only failed records' apart from 'no such id'
+    (F-012). A failed record is matched but yields no restore outcome."""
+    failed = ManifestRecord.model_validate(record_doc(1, result="failed", after_sha256=None))
+    chain = chain_of([failed])
+
+    hit = preview_restore(chain, run_id=RESTORE_RUN_ID, only_ids=frozenset({UUID7}))
+    assert list(hit) == []
+    assert hit.matched == 1
+
+    miss = preview_restore(chain, run_id=RESTORE_RUN_ID, only_ids=frozenset({"no-such-id"}))
+    assert list(miss) == []
+    assert miss.matched == 0
 
 
 class TestReducerDrivenStates:

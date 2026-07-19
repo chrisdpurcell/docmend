@@ -33,22 +33,18 @@ from docmend.scale_resources import (
     ReferenceProbes,
     Requirement,
     ResourcePreflightError,
-    SwapCounters,
     allocated_bytes,
     available_capacity,
     build_preflight_evidence,
     check_capacity,
     compare_reference_environment,
-    is_binding_filesystem,
     max_child_vm_swap,
     observe_reference_environment,
     parse_mountinfo,
     parse_vm_swap,
-    parse_vmstat_swap,
     project_mount_flags,
     qualification_requirements,
     select_mount,
-    swap_counter_delta,
 )
 
 
@@ -1176,23 +1172,7 @@ class TestMountInfo:
         mount = _mount(super_options="rw,subvol=/private")
         projection = project_mount_flags(mount)
         assert projection == MountFlagProjection(flags=("rw", "relatime"), complete=True)
-        assert is_binding_filesystem(mount, projection) is True
         assert "private" not in repr(projection)
-
-    @pytest.mark.parametrize("filesystem", sorted(ALLOWED_BINDING_FILESYSTEMS))
-    def test_binding_filesystem__accepts_local_disk_types(self, filesystem: str) -> None:
-        mount = _mount(filesystem=filesystem)
-        assert is_binding_filesystem(mount, project_mount_flags(mount)) is True
-
-    @pytest.mark.parametrize(
-        "filesystem",
-        ["tmpfs", "ramfs", "overlay", "fuse.sshfs", *sorted(REJECTED_NETWORK_FILESYSTEMS)],
-    )
-    def test_binding_filesystem__rejects_memory_overlay_network_and_unknown(
-        self, filesystem: str
-    ) -> None:
-        mount = _mount(filesystem=filesystem)
-        assert is_binding_filesystem(mount, project_mount_flags(mount)) is False
 
 
 class TestReferenceEnvironment:
@@ -1713,36 +1693,6 @@ class TestSwap:
             max_child_vm_swap([])
         with pytest.raises(ResourcePreflightError, match="VmSwap unavailable"):
             max_child_vm_swap(["Name: child\n"])
-
-    def test_vmstat__parses_swap_counters_and_ignores_unrelated_fields(self) -> None:
-        counters = parse_vmstat_swap("nr_free_pages 10\npswpin 11\npswpout 12\n")
-        assert counters == SwapCounters(pswpin=11, pswpout=12)
-
-    @pytest.mark.parametrize(
-        "vmstat",
-        [
-            "pswpin 1\n",
-            "pswpin 1\npswpin 2\npswpout 0\n",
-            "pswpin bad\npswpout 0\n",
-            "pswpin -1\npswpout 0\n",
-            "pswpin 1 extra\npswpout 0\n",
-        ],
-    )
-    def test_vmstat__missing_duplicate_or_malformed_is_unavailable(self, vmstat: str) -> None:
-        with pytest.raises(ResourcePreflightError, match="vmstat swap counters unavailable"):
-            parse_vmstat_swap(vmstat)
-
-    def test_swap_counter_delta__is_diagnostic_and_never_clamps_regression(self) -> None:
-        assert swap_counter_delta(
-            SwapCounters(pswpin=10, pswpout=20), SwapCounters(pswpin=13, pswpout=25)
-        ) == SwapCounters(pswpin=3, pswpout=5)
-        assert swap_counter_delta(
-            SwapCounters(pswpin=10, pswpout=20), SwapCounters(pswpin=10, pswpout=20)
-        ) == SwapCounters(pswpin=0, pswpout=0)
-        with pytest.raises(ResourcePreflightError, match="delta unavailable"):
-            swap_counter_delta(
-                SwapCounters(pswpin=10, pswpout=20), SwapCounters(pswpin=9, pswpout=20)
-            )
 
     def test_public_results__contain_no_path_device_or_mount_source_fields(self) -> None:
         capacity = check_capacity(

@@ -1,6 +1,6 @@
 [project]
 name = "docmend"
-version = "2.0.0"
+version = "2.0.1"
 description = "Normalize, repair, and convert large libraries of legacy .txt/.html documents into clean, well-structured Markdown."
 readme = "README.md"
 requires-python = ">=3.14"
@@ -31,7 +31,7 @@ dev = [
     "allpairspy>=2.5.1",
     "basedpyright",
     "coverage[toml]",
-    "faker>=40.28.1",
+    "faker==40.28.1",
     "hypothesis>=6.156.1",
     "import-linter>=2.13",
     "pip-audit",
@@ -85,9 +85,6 @@ testpaths = ["tests"]
 # raw manifest documents the strict models would refuse to construct).
 pythonpath = ["."]
 addopts = ["-ra", "--strict-markers", "--strict-config"]
-markers = [
-    "slow: opt-in long-running tests (NFR-001 scale run; also gated on DOCMEND_SCALE=1)",
-]
 
 [tool.coverage.run]
 branch = true

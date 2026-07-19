@@ -48,6 +48,13 @@ class TestExtract:
     def test_dots_closer_accepted(self) -> None:
         assert extract_frontmatter("---\ntitle: 'X'\n...\nbody\n") == "title: 'X'"
 
+    def test_unicode_line_separator__does_not_close_block(self) -> None:
+        """F-002: str.splitlines() would break on U+2028 and let an embedded
+        '---' segment close the block early; splitting only on '\\n' keeps the
+        real '---' fence as the sole terminator."""
+        doc = _doc("note: x\u2028---\n")
+        assert extract_frontmatter(doc) == "note: x\u2028---"
+
 
 class TestParse:
     def test_duplicate_key__rejected_at_parse(self) -> None:

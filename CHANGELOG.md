@@ -2,6 +2,29 @@
 
 All notable changes to docmend are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] - 2026-07-19
+
+Remediation of the 2026-07-19 comprehensive project review (`docs/fable-review/2026-07-19-docmend-review.md`): 26 findings fixed, none Critical or High.
+
+### Fixed
+
+- File-size qualification: a wrong-sized tool backup now publishes failed evidence with reason `conservation-mismatch` and exit 1 instead of aborting as an exit-2 invocation error, and an evidence-model construction failure is a distinct harness error at exit 1, no longer conflated with input errors.
+- `verify` flags an `applied` manifest record carrying no recorded after-hash as a `hash` finding instead of silently skipping it.
+- Apply re-checks `st_nlink` at the commit boundary and skips `hard-link-alias` when a source gained a hard link between plan and apply (hardening on top of the DEV-001 plan-time gate), and containment-checks source/target paths before opening them, closing an out-of-root read window through a swapped parent symlink.
+- Run-lock acquisition and the restore write context release the lock when holder-metadata write or context construction fails; source parent directories are fsync'd after rename unlinks; replaced logging handlers are closed on reconfigure.
+- `restore --id` reports "matched only non-restorable (failed) records" instead of "no match" when the selector hit only failed-lifecycle records.
+- Configuration files saved with a UTF-8 BOM now load (`utf-8-sig`); frontmatter fence scanning is LF-only, so embedded Unicode line separators can no longer close a block early; planning a pre-1.1 inventory with an unknown detection fact skips as `low-confidence-encoding`, not `binary-suspect`.
+
+### Changed
+
+- Scan reuses a 64 KiB head buffer for encoding detection on files that fit it entirely, halving reads for small legacy files; larger files keep the full-file detection path.
+- The weird-corpus generator pins `faker==40.28.1` exactly, documents its per-subtree verification accurately, and prunes orphaned fixtures/sidecars on regeneration.
+- README documents the v2 `verify` interface (`--plan`, `--out`) and the exit-3 concurrent-run refusal for `scan` and `verify`.
+
+### Removed
+
+- Dead scale-harness helpers (`is_binding_filesystem`, `fit_peak_rss_slope`, `MemoryPoint`, `MemoryFit`, `SwapCounters`, `parse_vmstat_swap`, `swap_counter_delta`), an unreachable repository-identity guard in `scale_build`, and the unused `slow` pytest marker.
+
 ## [2.0.0] - 2026-07-18
 
 Safety-core remediation, plans A–D (spec revs 0.26–0.29; 2026-07-10 comprehensive review findings DMR-01..07; ADRs 0019–0021).

@@ -31,8 +31,11 @@ from docmend.scale_evidence import (
     ScaleEvidence,
     ScaleEvidenceError,
     StageName,
+    ThresholdContext,
     current_artifact_schema_versions,
+    read_scale_evidence,
     validate_qualification_document,
+    write_scale_evidence,
 )
 from docmend.scale_qualification import (
     DefaultCandidateRuntime,
@@ -47,6 +50,7 @@ from docmend.scale_qualification import (
     execute_file_size_lane,
     file_size_cases,
     parse_args,
+    qualify,
 )
 from docmend.scale_resources import observe_reference_environment
 from docmend.scale_stage import StageRequest, StageResult
@@ -1123,3 +1127,300 @@ def test_default_file_size_runtime__dispatches_four_fresh_measured_children(
     assert checkpoint.file_size_cases[0].passed is True
     assert checkpoint.file_size_cases[1].stages == ()
     assert checkpoint.candidate is candidate
+
+
+def _undersized_tool_case(*, size_mib: int, encoding: FileSizeEncoding) -> FileSizeCaseEvidence:
+    # A cleanly-applied tool-preservation case whose backup is one byte short:
+    # every count reconciles, only the backup-size invariant is violated.
+    source_bytes = size_mib * 1024**2
+    backup_bytes = source_bytes - 1
+    return FileSizeCaseEvidence(
+        size_mib=size_mib,
+        encoding=encoding,
+        preservation="tool",
+        source_bytes=source_bytes,
+        stages=(
+            _stage("scan"),
+            _stage("plan"),
+            _stage("apply", backup_bytes=backup_bytes),
+            _stage("verify"),
+        ),
+        backup_bytes=backup_bytes,
+        scanned_files=1,
+        scanned_bytes=source_bytes,
+        planned_actions=1,
+        applied_actions=1,
+        verified_actions=1,
+        expected_findings=0,
+        observed_findings=0,
+        peak_rss_bytes=64 * 1024**2,
+        rss_limit_bytes=FILE_SIZE_RSS_LIMIT_BYTES,
+        rss_passed=True,
+        watchdog_passed=True,
+        coverage_reconciled=True,
+        findings_reconciled=True,
+        passed=False,
+    )
+
+
+def test_file_size_case__undersized_tool_backup_is_trustworthy_backup_failure() -> None:
+    case = _undersized_tool_case(size_mib=100, encoding="utf-8")
+
+    assert case.passed is False
+    assert case.backup_bytes != case.source_bytes
+    assert case.has_trustworthy_backup_failure() is True
+    # An external case never claims a backup failure regardless of byte accounting.
+    assert _case(preservation="external").has_trustworthy_backup_failure() is False
+    assert _case(preservation="tool").has_trustworthy_backup_failure() is False
+
+
+def test_file_size_matrix__undersized_tool_backup_records_conservation_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # F-014 part 1: run_file_size_matrix's apply branch must flag a wrong-sized
+    # tool backup with a reason, not silently drop case.passed with no reason.
+    monkeypatch.setattr("docmend.scale_resources.MIN_BINDING_RAM_BYTES", 0)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    request = QualificationRequest(
+        tier="file-size",
+        diagnostic=True,
+        count=1,
+        repository=tmp_path / "repository",
+        workspace=workspace,
+        reference_environment=tmp_path / "reference.json",
+        thresholds=None,
+        evidence_out=tmp_path / "evidence.json",
+        accept_to=None,
+        python_executable=Path("/usr/bin/python3.14"),
+    )
+    candidate = cast(
+        "CandidateBuild",
+        SimpleNamespace(
+            commit="c" * 40,
+            executable=tmp_path / "venv" / "bin" / "docmend",
+            venv=tmp_path / "venv",
+            wheel_sha256="sha256:" + "3" * 64,
+            workspace_lease=object(),
+            require_current_identity=lambda: None,
+        ),
+    )
+    run_id = "run_20260714T120000Z_abcdef"
+
+    def fake_inventory(_path: Path) -> object:
+        return SimpleNamespace(
+            totals=SimpleNamespace(
+                files=1,
+                skipped=0,
+                skipped_by_reason=SimpleNamespace(timeout=0),
+            ),
+            files=(SimpleNamespace(size_bytes=1024**2),),
+        )
+
+    def fake_plan(_path: Path) -> object:
+        return (
+            SimpleNamespace(totals=SimpleNamespace(actions=1, skips=0), skips=()),
+            "sha256:" + "1" * 64,
+        )
+
+    def fake_report(_path: Path) -> object:
+        return (
+            SimpleNamespace(
+                run_id=run_id,
+                totals=SimpleNamespace(applied=1, failed=0, not_attempted=0),
+            ),
+            "sha256:" + "2" * 64,
+        )
+
+    def fake_manifest_chain(
+        _paths: tuple[Path, ...],
+        *,
+        check_backup_objects: bool,
+    ) -> object:
+        if not check_backup_objects:
+            return SimpleNamespace(sets=())
+        backup = tmp_path / "tool-backup.bin"
+        backup.write_bytes(b"x" * (1024**2 - 1))
+        return SimpleNamespace(
+            sets=(SimpleNamespace(records=(SimpleNamespace(backup_path=str(backup)),)),)
+        )
+
+    def fake_verify_report(_path: Path) -> object:
+        return SimpleNamespace(checked_files=1, findings=())
+
+    monkeypatch.setattr("docmend.scale_qualification.read_inventory", fake_inventory)
+    monkeypatch.setattr("docmend.scale_qualification.read_plan_snapshot", fake_plan)
+    monkeypatch.setattr("docmend.scale_qualification.read_report_snapshot", fake_report)
+    monkeypatch.setattr("docmend.scale_qualification.read_manifest_chain", fake_manifest_chain)
+    monkeypatch.setattr("docmend.scale_qualification.read_verify_report", fake_verify_report)
+
+    class RecordingRuntime(DefaultCandidateRuntime):
+        def launch(
+            self,
+            candidate: CandidateBuild,
+            request: StageRequest,
+            *,
+            private_workspace: Path,
+            on_dispatch: Callable[[], None],
+        ) -> StageLaunch:
+            del candidate, private_workspace
+            on_dispatch()
+            return StageLaunch(
+                wrapper_exit_code=0,
+                result=StageResult(
+                    stage=request.stage,
+                    completed=True,
+                    exit_code=0,
+                    elapsed_seconds=0.25,
+                    peak_rss_bytes=64 * 1024**2,
+                    vm_swap_peak_bytes=0,
+                    tracing_enabled=False,
+                    stdout=request.stdout,
+                    stderr=request.stderr,
+                    error_code=None,
+                ),
+            )
+
+    reference = observe_reference_environment(workspace).environment
+    result = RecordingRuntime().run_file_size_matrix(
+        request,
+        candidate,
+        reference,
+        (FileSizeCase(size_mib=1, encoding="utf-8", preservation="tool"),),
+    )
+
+    assert "conservation-mismatch" in result.reasons
+    assert result.cases[0].passed is False
+    assert result.cases[0].backup_bytes != result.cases[0].source_bytes
+    assert result.cases[0].has_trustworthy_backup_failure() is True
+
+
+def test_qualify__file_size_undersized_tool_backup_publishes_failed(tmp_path: Path) -> None:
+    # F-014 end-to-end: a wrong-sized tool backup must publish failed evidence with
+    # a conservation-mismatch reason (exit 1), not crash evidence construction and
+    # surface as exit 2. The runtime double returns reasons=(), so the reason must
+    # come entirely from execute_file_size_lane's has_trustworthy_backup_failure
+    # re-derivation (F-014 part 2).
+    recipes = file_size_cases(DocmendConfig().limits.max_file_size_mib)
+    (tmp_path / "accepted").mkdir()
+    source = SourceProvenance(
+        repository=tmp_path / "repository",
+        commit="b" * 40,
+        package_name="docmend",
+        package_version="2.0.0",
+        build_backend="uv_build",
+        build_backend_version="0.11.6",
+        build_frontend_version="0.11.6",
+        pyproject_sha256="sha256:" + "1" * 64,
+        lock_sha256="sha256:" + "2" * 64,
+        pyproject_bytes=b"pyproject",
+        lock_bytes=b"lock",
+    )
+    request = QualificationRequest(
+        tier="file-size",
+        diagnostic=False,
+        count=len(recipes),
+        repository=source.repository,
+        workspace=tmp_path / "workspace",
+        reference_environment=tmp_path / "reference.json",
+        thresholds=None,
+        evidence_out=tmp_path / "evidence.json",
+        accept_to=tmp_path / "accepted",
+        python_executable=Path("/usr/bin/python3.14"),
+    )
+
+    class Builder:
+        def prepare(
+            self,
+            request: QualificationRequest,
+            source: SourceProvenance,
+        ) -> CandidateBuild:
+            del request
+            return cast(
+                "CandidateBuild",
+                SimpleNamespace(
+                    commit=source.commit,
+                    wheel_sha256="sha256:" + "3" * 64,
+                    workspace_lease=None,
+                    require_current_identity=lambda: None,
+                ),
+            )
+
+    class Runtime:
+        def run_file_size_matrix(
+            self,
+            request: QualificationRequest,
+            candidate: CandidateBuild,
+            reference_environment: ReferenceEnvironment,
+            recipes: tuple[FileSizeCase, ...],
+        ) -> FileSizeRunResult:
+            del request, candidate, reference_environment
+            cases = tuple(
+                _undersized_tool_case(size_mib=recipe.size_mib, encoding=recipe.encoding)
+                if (recipe.preservation == "tool" and recipe.encoding == "utf-8")
+                else _case(
+                    size_mib=recipe.size_mib,
+                    encoding=recipe.encoding,
+                    preservation=recipe.preservation,
+                )
+                for recipe in recipes
+            )
+            return FileSizeRunResult(preflight=_passing_preflight(), cases=cases, reasons=())
+
+    class Services:
+        def inspect_source(self, repository: Path) -> SourceProvenance:
+            return replace(source, repository=repository)
+
+        def load_reference(self, path: Path) -> tuple[ReferenceEnvironment, str]:
+            del path
+            return _reference(), "sha256:" + "3" * 64
+
+        def load_threshold(self, path: Path, reference_sha256: str) -> ThresholdContext:
+            del path, reference_sha256
+            raise AssertionError("file-size qualification must not load thresholds")
+
+        def execute(
+            self,
+            request: QualificationRequest,
+            source: SourceProvenance,
+            reference: ReferenceEnvironment,
+            reference_sha256: str,
+            threshold_context: ThresholdContext | None,
+        ) -> ExecutionResult:
+            del reference_sha256, threshold_context
+            return execute_file_size_lane(
+                request,
+                source,
+                reference,
+                builder=Builder(),
+                runtime=Runtime(),
+            )
+
+        def recheck_source(self, source: SourceProvenance) -> None:
+            del source
+
+        def publish(
+            self,
+            evidence: ScaleEvidence,
+            path: Path,
+            *,
+            accepted: bool,
+            threshold_path: Path | None,
+        ) -> None:
+            write_scale_evidence(
+                evidence,
+                path,
+                accepted=accepted,
+                threshold_baseline_path=threshold_path,
+            )
+
+    outcome = qualify(request, services=Services())
+
+    assert outcome.exit_code == 1
+    assert outcome.evidence_published is True
+    assert outcome.evidence.status == "failed"
+    assert outcome.evidence.outcome_reason == "conservation-mismatch"
+    published = read_scale_evidence(request.evidence_out)
+    assert published.status == "failed"
+    assert published.outcome_reason == "conservation-mismatch"

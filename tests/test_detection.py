@@ -7,7 +7,7 @@ Real filesystem (tmp_path): from_path reads the file itself.
 
 from pathlib import Path
 
-from docmend.detection import detect_legacy
+from docmend.detection import detect_legacy, detect_legacy_bytes
 
 
 def write(tmp_path: Path, name: str, data: bytes) -> Path:
@@ -64,3 +64,25 @@ class TestDetectLegacy:
         # nearby variants): no candidate at all — a genuine binary-suspect, not
         # merely a low-confidence guess.
         assert result is None
+
+
+class TestDetectLegacyBytes:
+    """F-003: detecting over the full file content held in memory must give the
+    identical verdict to re-opening the file — this is the correctness
+    precondition for reusing discovery's head buffer instead of a second read."""
+
+    def test_bytes_match_from_path(self, tmp_path: Path) -> None:
+        original = (
+            "Der Wähler äußerte seine Meinung über die Größe der Straße und "
+            "die Übernahme der Bäckerei am Übergang, während die Kälte über "
+            "München hereinbrach."
+        )
+        data = original.encode("cp1252")
+        path = write(tmp_path, "legacy.txt", data)
+        assert detect_legacy_bytes(data) == detect_legacy(path)
+
+    def test_undetectable_bytes__returns_none(self, tmp_path: Path) -> None:
+        data = bytes(range(0x80, 0x100)) * 8
+        path = write(tmp_path, "blob.txt", data)
+        assert detect_legacy_bytes(data) is None
+        assert detect_legacy(path) is None

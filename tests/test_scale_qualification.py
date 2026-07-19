@@ -2,7 +2,7 @@
 
 import os
 import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -44,6 +44,7 @@ from docmend.scale_qualification import (
     DefaultQualificationServices,
     ExecutionInterrupted,
     ExecutionResult,
+    QualificationHarnessError,
     QualificationInputError,
     QualificationOutcome,
     QualificationRequest,
@@ -1765,6 +1766,50 @@ def test_main__input_refusal_returns_two_without_evidence(tmp_path: Path) -> Non
 
     assert main(["--tier", "pr", "--evidence-out", str(evidence)]) == 2
     assert not evidence.exists()
+
+
+def test_qualify__evidence_construction_failure_is_harness_error_not_input_error(
+    invocation_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # F-015: a selector/model-validator disagreement during evidence construction
+    # (pydantic ValidationError subclasses ValueError) is an execution-time harness
+    # fault, not a bad invocation. It must not be swallowed by qualify's
+    # (OSError, ValueError) -> exit 2 mapping; nothing may be published.
+    def raise_disagreement(*_args: object, **_kwargs: object) -> ScaleEvidence:
+        raise ValueError("synthetic selector/model disagreement")
+
+    monkeypatch.setattr("docmend.scale_qualification._evidence", raise_disagreement)
+
+    with pytest.raises(QualificationHarnessError):
+        qualify(
+            _request(invocation_paths, diagnostic=True),
+            services=FakeServices(),
+        )
+
+    assert not invocation_paths["evidence"].exists()
+    assert not issubclass(QualificationHarnessError, QualificationInputError)
+
+
+def test_main__evidence_construction_failure_returns_one(
+    invocation_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # F-015: main maps the harness error to exit 1, distinct from the exit-2
+    # input-error path a plain ValueError would otherwise take.
+    request = _request(invocation_paths, diagnostic=True)
+
+    def fake_parse(argv: Sequence[str] | None) -> QualificationRequest:
+        del argv
+        return request
+
+    def raise_harness(_request: QualificationRequest, **_kwargs: object) -> QualificationOutcome:
+        raise QualificationHarnessError("synthetic verdict-construction failure")
+
+    monkeypatch.setattr("docmend.scale_qualification.parse_args", fake_parse)
+    monkeypatch.setattr("docmend.scale_qualification.qualify", raise_harness)
+
+    assert main([]) == 1
 
 
 def test_capture_reference__publishes_once_from_absent_private_workspace(

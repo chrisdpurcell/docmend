@@ -89,6 +89,17 @@ class TestDiscoveryAndPrecedence:
         assert cfg.rename.on_collision == "fail"
         assert cfg.encoding.fail_below_confidence == 0.80  # untouched section intact
 
+    def test_utf8_bom_prefixed_file__loads_same_as_bomless(self, tmp_path: Path) -> None:
+        """IR-006: a docmend.toml saved with a UTF-8 BOM (common from Windows/GUI
+        editors) is structurally valid TOML and must load identically to the
+        BOM-less file, not fail as invalid TOML."""
+        body = "[whitespace]\ncollapse_blank_lines = 1\n"
+        bom_path = tmp_path / "docmend.toml"
+        bom_path.write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))
+        plain_path = tmp_path / "plain.toml"
+        plain_path.write_text(body, encoding="utf-8")
+        assert load_config(bom_path) == load_config(plain_path)
+
     def test_write_backup_dir__toml_string_coerces_to_path(self, tmp_path: Path) -> None:
         """§18.2: `write.backup_dir` is a documented TOML key; tomllib only ever
         hands back a str for it, so strict=True must not reject that str

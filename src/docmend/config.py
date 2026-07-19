@@ -191,7 +191,10 @@ def load_config(path: Path | None = None, *, cwd: Path | None = None) -> Docmend
         path = candidate
 
     try:
-        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+        # utf-8-sig strips a leading BOM if present (common from Windows/GUI
+        # editors) so a structurally valid docmend.toml is not rejected as
+        # invalid TOML (IR-006); it accepts BOM-less files unchanged.
+        raw = tomllib.loads(path.read_text(encoding="utf-8-sig"))
     except OSError as exc:
         msg = f"{path}: cannot read configuration file ({exc.strerror or exc})"
         raise ConfigError(msg) from exc

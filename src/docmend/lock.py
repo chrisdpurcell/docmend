@@ -77,20 +77,27 @@ def acquire(
         )
         raise LockHeldError(msg) from exc
     # Best-effort holder metadata for the competitor's refusal message; the
-    # flock itself, not this JSON, is the mutual exclusion.
-    os.ftruncate(fd, 0)
-    os.write(
-        fd,
-        json.dumps(
-            {
-                "run_id": run_id,
-                "pid": os.getpid(),
-                "command": command,
-                "started_at": datetime.now(UTC).isoformat(),
-            }
-        ).encode("utf-8"),
-    )
-    os.fsync(fd)
+    # flock itself, not this JSON, is the mutual exclusion. A write failure here
+    # (ENOSPC/EIO on the state filesystem) must release the flock like every
+    # other failure path — leaving fd open would strand the lock for the process
+    # lifetime, unlike the pre-flock paths that close before raising.
+    try:
+        os.ftruncate(fd, 0)
+        os.write(
+            fd,
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "pid": os.getpid(),
+                    "command": command,
+                    "started_at": datetime.now(UTC).isoformat(),
+                }
+            ).encode("utf-8"),
+        )
+        os.fsync(fd)
+    except OSError:
+        os.close(fd)
+        raise
     return RunLock(path, fd)
 
 
@@ -98,10 +105,13 @@ def _read_holder(fd: int) -> str:
     try:
         os.lseek(fd, 0, os.SEEK_SET)
         existing: dict[str, object] = json.loads(os.read(fd, 4096).decode("utf-8"))
-    # PEP 758 (Python 3.14): an unparenthesized multi-type except reads as
-    # `except (OSError, ValueError)` — not the Python 2 `except OSError as ValueError`.
-    # OSError covers the read; ValueError (and its UnicodeDecodeError subclass) covers
-    # a corrupt/non-UTF-8 holder file. Kept unparenthesized deliberately; pre-3.14 reviewers flag it.
+    # PEP 758 (py314): the unparenthesized multi-type except reads as
+    # `except (OSError, ValueError)`, NOT the Python-2 `except OSError as ValueError`.
+    # Ruff's py314 formatter strips the parentheses from a bare (no-`as`) except,
+    # so this form is formatter-mandated, not a defect. OSError covers the read;
+    # ValueError (and its UnicodeDecodeError subclass) covers a corrupt/non-UTF-8
+    # holder file — both degrade to an empty suffix so a best-effort refusal
+    # message never masks the actual lock outcome.
     except OSError, ValueError:
         return ""
     return (

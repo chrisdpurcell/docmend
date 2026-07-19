@@ -10,7 +10,7 @@ All commands work on a single file as well as a directory tree — the pipeline 
 
 ### `docmend scan PATH`
 
-Inventory PATH read-only into a structured, schema-validated artifact: encoding facts (BOM, UTF-8 validity, legacy-encoding detection), newline census, hard-link and symlink records, and skip records for unreadable files. `--report FILE` relocates the artifact; `--include`/`--exclude` replace the configured glob lists. Exit codes: 0 clean, 1 findings (unreadable files were skipped), 2 input error.
+Inventory PATH read-only into a structured, schema-validated artifact: encoding facts (BOM, UTF-8 validity, legacy-encoding detection), newline census, hard-link and symlink records, and skip records for unreadable files. `--report FILE` relocates the artifact; `--include`/`--exclude` replace the configured glob lists. Exit codes: 0 clean, 1 findings (unreadable files were skipped), 2 input error, 3 safety refusal (concurrent run lock).
 
 ### `docmend plan [PATH | --inventory FILE]`
 
@@ -26,9 +26,9 @@ An interrupted run resumes with `--resume-run-id ID` or `--resume-manifest FILE`
 
 Undo an apply run by replaying its manifest newest-first. Dry-run by default; `--write` performs the restore; `--id DOCMEND_ID` limits it to specific documents. A file modified since apply is skipped, never clobbered. If the apply run took no tool backups, restore states up front that it is renames-only for that manifest — only pure renames replay; content recovery lives in whatever preservation covered the apply run. See the [restore runbook](docs/runbooks/restore-from-manifest.md). Exit codes: 0 clean, 1 findings (skips/failures), 2 input error, 3 safety refusal.
 
-### `docmend verify PATH [--manifest FILE | --run-id ID] [--report FILE]`
+### `docmend verify PATH [--plan FILE] [--manifest FILE | --run-id ID] [--report FILE] [--out FILE]`
 
-Check converted output read-only: UTF-8 decodability, LF-only line endings, and — where a `.md` file carries YAML frontmatter — validity against the pinned frontmatter schema (a document without frontmatter is legal; v1 emits none). With a manifest (flag or run-ID sidecar), each applied output's live hash is reconciled against the recorded after-hash; with a report too (`--run-id` picks up the report sidecar automatically), report↔manifest accounting is cross-checked. Verify mutates nothing and writes no manifest. Exit codes: 0 clean, 1 findings, 2 input error.
+Check converted output read-only: UTF-8 decodability, LF-only line endings, and — where a `.md` file carries YAML frontmatter — validity against the pinned frontmatter schema (a document without frontmatter is legal; v1 emits none). With a manifest (flag or run-ID sidecar), each applied output's live hash is reconciled against the recorded after-hash; with a report too (`--run-id` picks up the report sidecar automatically), report↔manifest accounting is cross-checked. `--plan FILE` additionally certifies that the evidence covers the plan's actions exactly once, so an aborted or partial run cannot pass unnoticed. `--out FILE` publishes a guarded, schema-validated verify-report artifact recording every finding. Verify mutates nothing and writes no manifest. Exit codes: 0 clean, 1 findings, 2 input error, 3 safety refusal (concurrent run lock).
 
 ### Global flags
 

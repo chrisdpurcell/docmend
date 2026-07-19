@@ -239,6 +239,46 @@ def test_verify_missing_output__exit_1(tmp_path: Path, monkeypatch: pytest.Monke
     assert "doc.md" in result.output
 
 
+def test_verify_applied_record_null_after_hash__hash_finding_exit_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FR-014: a crafted/corrupt manifest whose applied record records no
+    after-hash must surface as a finding, not a false-clean pass (F-010)."""
+    monkeypatch.chdir(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    target = corpus / "doc.md"
+    target.write_bytes(b"clean\n")
+    # A trusted `applied` terminal with a null after-hash is representable only
+    # as an intent+terminal pair whose (agreeing) after-hashes are both null —
+    # the shape that slips past full chain validation (F-010 premise).
+    manifest_path = write_set(
+        tmp_path / "null-after.jsonl",
+        header_doc(source_root=str(corpus)),
+        record_doc(
+            1,
+            result="intent",
+            after_sha256=None,
+            original_path=str(target),
+            target_path=str(target),
+        ),
+        record_doc(
+            1,
+            seq=2,
+            result="applied",
+            after_sha256=None,
+            original_path=str(target),
+            target_path=str(target),
+        ),
+    )
+
+    result = runner.invoke(app, ["verify", str(corpus), "--manifest", str(manifest_path)])
+
+    assert result.exit_code == 1, result.output
+    assert "[hash]" in result.output
+    assert "doc.md" in result.output
+
+
 @pytest.mark.parametrize("damage", ["missing", "corrupt"])
 def test_verify_source_backup_damage__backup_finding_exit_1(
     tmp_path: Path,

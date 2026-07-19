@@ -97,7 +97,12 @@ def _fact_skip(
                 path=path, reason="low-confidence-encoding", detail="encoding detection disabled"
             )
         if enc.detected is None:
-            if scan_detect is False:
+            # scan_detect is None for a pre-1.1 inventory where the fact is
+            # unknown (inventory.py ScanConfigRecord); only scan_detect is True
+            # means "detection ran and found no candidate" -> binary-suspect.
+            # Both False (disabled at scan) and None (fact absent) mean we never
+            # looked here, so report the low-confidence skip instead.
+            if scan_detect is not True:
                 return SkipDecision(
                     path=path,
                     reason="low-confidence-encoding",

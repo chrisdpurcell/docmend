@@ -112,6 +112,15 @@ class QualificationInputError(Exception):
     """Invocation, provenance, or destination failed before evidence began."""
 
 
+class QualificationHarnessError(Exception):
+    """Evidence-model construction failed at execution time, not on input.
+
+    Distinct from QualificationInputError so qualify()'s (OSError, ValueError)
+    input-error mapping cannot mislabel a verdict-construction disagreement as
+    exit 2. main() maps this to exit 1 with no evidence published (F-015).
+    """
+
+
 class ExecutionInterrupted(Exception):
     """Unexpected harness failure carrying the last internally valid checkpoint."""
 
@@ -1371,6 +1380,18 @@ class DefaultCandidateRuntime:
                         ):
                             reasons.append("conservation-mismatch")
                             case_failed = True
+                        # A tool-preservation backup whose size diverges from the
+                        # source is a conservation defect the count checks above
+                        # cannot see; mirror _file_size_case_evidence's backup_ok
+                        # (backup_bytes == source_bytes) so the case fails with a
+                        # reason instead of passing into evidence construction and
+                        # tripping _reconcile_file_size_tier's ValueError (F-014).
+                        if (
+                            recipe.preservation == "tool"
+                            and backup_bytes != recipe.size_mib * 1024**2
+                        ):
+                            reasons.append("conservation-mismatch")
+                            case_failed = True
                     else:
                         verify_report = read_verify_report(paths.verify_report)
                         verified_actions = verify_report.checked_files
@@ -1816,7 +1837,10 @@ def execute_file_size_lane(
         stage.completed and stage.exit_code != 0 for case in result.cases for stage in case.stages
     ):
         reasons.append("stage-exit")
-    if any(case.has_trustworthy_conservation_failure() for case in result.cases):
+    if any(
+        case.has_trustworthy_conservation_failure() or case.has_trustworthy_backup_failure()
+        for case in result.cases
+    ):
         reasons.append("conservation-mismatch")
     if any(case.has_trustworthy_finding_failure() for case in result.cases):
         reasons.append("finding-mismatch")
@@ -2434,14 +2458,21 @@ def _publish_execution(
             services.recheck_source(source)
         except BuildContractError, OSError:
             reasons = (*reasons, "provenance-changed")
-        evidence = _evidence(
-            request,
-            source,
-            reference_sha256,
-            threshold_context,
-            execution,
-            reasons,
-        )
+        try:
+            evidence = _evidence(
+                request,
+                source,
+                reference_sha256,
+                threshold_context,
+                execution,
+                reasons,
+            )
+        except ValueError as exc:
+            # A selector/model-validator disagreement (pydantic ValidationError
+            # subclasses ValueError) is an execution-time harness fault, not a bad
+            # invocation. Route it to exit 1 with nothing published instead of
+            # letting qualify's (OSError, ValueError) map it to exit 2 (F-015).
+            raise QualificationHarnessError(str(exc)) from exc
         try:
             evidence_target.require_absent()
             services.publish(
@@ -2750,5 +2781,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if isinstance(request, ReferenceCaptureRequest):
             return capture_reference(request)
         return qualify(request).exit_code
+    except QualificationHarnessError:
+        return 1
     except QualificationInputError:
         return 2

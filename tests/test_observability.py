@@ -131,6 +131,26 @@ class TestConfigureLogging:
         configure_logging(run_id=new_run_id(), command="plan", log_dir=tmp_path)
         assert len(logging.getLogger().handlers) == 2  # one file + one console
 
+    def test_reconfigure__closes_replaced_file_handlers_no_fd_leak(self, tmp_path: Path) -> None:
+        """The idempotent-reconfigure contract must not leak the prior run's open
+        .jsonl descriptor on each reconfigure (F-011): only the live handler's
+        file stays open, never one per historical run."""
+
+        def open_jsonl_fds() -> int:
+            count = 0
+            for entry in Path("/proc/self/fd").iterdir():
+                try:
+                    if str(entry.readlink()).endswith(".jsonl"):
+                        count += 1
+                except OSError:
+                    continue
+            return count
+
+        for _ in range(5):
+            configure_logging(run_id=new_run_id(), command="scan", log_dir=tmp_path)
+
+        assert open_jsonl_fds() == 1
+
     def test_stdlib_records__share_the_field_schema(self, tmp_path: Path) -> None:
         """Foreign (plain stdlib logging) records pass through the same processors,
         so third-party library logs stay correlated to the run."""

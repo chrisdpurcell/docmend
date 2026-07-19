@@ -53,6 +53,7 @@ from docmend.writer.atomic import (
     StagedWrite,
     WriteError,
     abort_staged,
+    fsync_dir,
     publish_staged,
     rename_overwrite,
     stage_bytes,
@@ -328,6 +329,10 @@ def _undo_publish(
             survivor=survivor,
             step="rollback",
         )
+    # PEP 758 (py314): reads as `except (InterferenceError, WriteError)`, NOT the
+    # Python-2 `except InterferenceError as WriteError`. Ruff's py314 formatter
+    # strips the parentheses from a bare (no-`as`) except, so this form is
+    # formatter-mandated, not a Python-2 defect.
     except InterferenceError, WriteError:
         return False
     return True
@@ -485,6 +490,17 @@ def _execute_action(
     hooks = run.hooks
     log = get_logger(__name__)
     source = source_root / action.path
+    target = source_root / action.target_path if action.target_path is not None else None
+    # §13.5 containment BEFORE the descriptor opens: a parent dir swapped for a
+    # symlink since plan time is followed by bind_file's O_NOFOLLOW (which only
+    # guards the final component), so an out-of-root file's bytes would be read
+    # and its path logged before mutation is refused. Resolve-and-contain first,
+    # matching the stricter write side (check_bound re-resolves), and skip
+    # without opening the file. The post-bind check below remains the mutation
+    # gate; this pre-check is additive.
+    for candidate in (source, *((target,) if target is not None else ())):
+        if not candidate.resolve().is_relative_to(root_resolved):
+            return _skip(action, "containment"), False
     # FR-003 + adr-0020: one non-following descriptor supplies the bytes for
     # hashing, recomputation, and backup plus the identity later commit steps
     # re-check. A pathname read could silently follow an interposed symlink.
@@ -496,14 +512,23 @@ def _execute_action(
     except OSError:
         return _skip(action, "unreadable"), False  # ERR-005
     data = bound.data
+    # DEV-001 commit-boundary re-check: plan-time hard-link skipping
+    # (planning.py:68) is the primary gate. A file with st_nlink==1 at plan time
+    # that gains a second link before apply would otherwise be mutated — replace
+    # forges a fresh inode at the source name and the alias silently keeps the
+    # old bytes, bypassing the EC-011 skip-and-report intent. bind_file already
+    # captured st_nlink, so closing the plan->apply window is O(1); the reason
+    # literal matches planning's `hard-link-alias`.
+    if bound.nlink > 1:
+        return _skip(action, "hard-link-alias"), False
     if _sha(data) != action.source_sha256:
         return _skip(action, "stale-hash"), False  # ERR-002, AW-004
     # FR-012: snapshot filters hold at apply exactly as at scan/plan.
     if not include.match_file(action.path) or exclude.match_file(action.path):
         return _skip(action, "excluded"), False
     # §13.5 runtime containment: a parent dir swapped for a symlink since plan
-    # time must not carry the write outside the root.
-    target = source_root / action.target_path if action.target_path is not None else None
+    # time must not carry the write outside the root (re-checked post-bind
+    # against the same objects bound above).
     for candidate in (source, *((target,) if target is not None else ())):
         if not candidate.resolve().is_relative_to(root_resolved):
             return _skip(action, "containment"), False
@@ -737,6 +762,9 @@ def _execute_action(
                     f"rolled back ({unlink_exc.strerror or unlink_exc})"
                 )
                 raise WriteError(msg) from unlink_exc
+            # Durability symmetry with the staged publish above: make the source
+            # entry's removal survive a crash so a remount cannot resurrect it.
+            fsync_dir(source.parent)
     except InterferenceError as exc:
         if staged is not None:
             abort_staged(staged, root_resolved=root_resolved)

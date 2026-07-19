@@ -397,18 +397,6 @@ class ReferenceObservation:
 
 
 @dataclass(frozen=True, slots=True)
-class SwapCounters:
-    """Diagnostic cumulative ``/proc/vmstat`` swap-page counters or their delta."""
-
-    pswpin: int
-    pswpout: int
-
-    def __post_init__(self) -> None:
-        if self.pswpin < 0 or self.pswpout < 0:
-            raise ValueError("swap counters must be non-negative")
-
-
-@dataclass(frozen=True, slots=True)
 class FilesystemRequirement:
     """One private followed-filesystem aggregate before capacity comparison."""
 
@@ -837,13 +825,6 @@ def project_mount_flags(mount: MountInfo) -> MountFlagProjection:
     return MountFlagProjection(flags=flags, complete=complete)
 
 
-def is_binding_filesystem(mount: MountInfo, projection: MountFlagProjection) -> bool:
-    """Return whether the mount is a complete public local-disk filesystem class."""
-    if mount.filesystem in REJECTED_NETWORK_FILESYSTEMS:
-        return False
-    return mount.filesystem in ALLOWED_BINDING_FILESYSTEMS and projection.complete
-
-
 def _public_probe_label(value: str) -> str:
     normalized = " ".join(value.split())
     if (
@@ -1166,28 +1147,3 @@ def max_child_vm_swap(status_samples: Iterable[str]) -> int:
     if not samples:
         raise ResourcePreflightError("at least one child VmSwap sample is required")
     return max(parse_vm_swap(sample) for sample in samples)
-
-
-def parse_vmstat_swap(vmstat_text: str) -> SwapCounters:
-    """Parse diagnostic cumulative ``pswpin``/``pswpout`` counters."""
-    values: dict[str, int] = {}
-    for line in vmstat_text.splitlines():
-        fields = line.split()
-        if not fields or fields[0] not in {"pswpin", "pswpout"}:
-            continue
-        name = fields[0]
-        if len(fields) != 2 or name in values or not fields[1].isdigit():
-            raise ResourcePreflightError("vmstat swap counters unavailable")
-        values[name] = int(fields[1], 10)
-    if set(values) != {"pswpin", "pswpout"}:
-        raise ResourcePreflightError("vmstat swap counters unavailable")
-    return SwapCounters(pswpin=values["pswpin"], pswpout=values["pswpout"])
-
-
-def swap_counter_delta(before: SwapCounters, after: SwapCounters) -> SwapCounters:
-    """Return diagnostic counter deltas, refusing reset/wrap instead of clamping."""
-    pswpin = after.pswpin - before.pswpin
-    pswpout = after.pswpout - before.pswpout
-    if pswpin < 0 or pswpout < 0:
-        raise ResourcePreflightError("vmstat swap counter delta unavailable")
-    return SwapCounters(pswpin=pswpin, pswpout=pswpout)

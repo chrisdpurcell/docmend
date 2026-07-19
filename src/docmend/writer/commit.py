@@ -75,12 +75,13 @@ class InterferenceError(Exception):
 
 @dataclass(frozen=True)
 class BoundFile:
-    """Hold bytes, identity, and mode captured through one descriptor."""
+    """Hold bytes, identity, mode, and link count captured through one descriptor."""
 
     path: Path
     data: bytes
     identity: ObjectIdentity
     mode: int
+    nlink: int
 
 
 @dataclass(frozen=True)
@@ -127,6 +128,7 @@ def bind_file(path: Path) -> BoundFile:
         data=data,
         identity=ObjectIdentity(dev=stat_result.st_dev, ino=stat_result.st_ino),
         mode=stat_result.st_mode,
+        nlink=stat_result.st_nlink,
     )
 
 
@@ -259,6 +261,11 @@ def guarded_rename_no_clobber(
             f"rollback unproven, {target} remains as a second name"
         )
         raise InterferenceError(msg, intermediate=True) from exc
+    # Durability symmetry: the target entry's creation and the source entry's
+    # removal must both survive a crash, or a remount can resurrect the source
+    # name and force avoidable adjudication. Shared-parent renames make the
+    # second fsync a cheap near-no-op; not worth special-casing.
+    fsync_dir(source.parent)
     fsync_dir(target.parent)
 
 
@@ -639,27 +646,32 @@ def restore_write_context(
         run_lock = lock.acquire(source_root, run_id=run_id, command="restore")
     except (lock.LockHeldError, OSError) as exc:
         raise LockRefusedError(str(exc)) from exc
-    tip = chain.sets[-1]
-    context = WriteSafetyContext(
-        _token=_FACTORY_TOKEN,
-        _attest=_Attestation(
-            command="restore",
-            source_root=source_root,
-            run_id=run_id,
-            plan_json=None,
-            config_json=None,
-            plan_ref=None,
-            subject_sha256=tip.sha256 or manifest_sha256(tip.path),
-            options=None,
-            manifest_path=manifest_out.resolve(),
-            report_path=None,
-            chain=chain,
-            resume_chain=None,
-            prior_attempt=None,
-        ),
-    )
+    # Everything after the lock is acquired lives under the release finally:
+    # an exception constructing the attestation/context must not strand the
+    # flock for the process lifetime (mirrors apply_write_context's shape).
     try:
-        yield context
+        tip = chain.sets[-1]
+        context = WriteSafetyContext(
+            _token=_FACTORY_TOKEN,
+            _attest=_Attestation(
+                command="restore",
+                source_root=source_root,
+                run_id=run_id,
+                plan_json=None,
+                config_json=None,
+                plan_ref=None,
+                subject_sha256=tip.sha256 or manifest_sha256(tip.path),
+                options=None,
+                manifest_path=manifest_out.resolve(),
+                report_path=None,
+                chain=chain,
+                resume_chain=None,
+                prior_attempt=None,
+            ),
+        )
+        try:
+            yield context
+        finally:
+            context._active = False  # pyright: ignore[reportPrivateUsage]
     finally:
-        context._active = False  # pyright: ignore[reportPrivateUsage]
         run_lock.release()

@@ -23,7 +23,7 @@ original permissions.
 """
 
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -76,6 +76,24 @@ class RestoreOutcome:
     path: str
     status: RestoreStatus
     detail: str | None
+
+
+class RestoreOutcomes(list[RestoreOutcome]):
+    """Outcome list that also carries `matched` — how many records the id
+    selector matched (F-012).
+
+    Subclasses `list` so every existing caller that treats the result as a
+    plain outcome list keeps working unchanged; `matched` lets the CLI tell
+    "id matched only non-restorable (failed) records" (matched > 0, no
+    outcomes) apart from "no such id" (matched == 0). With no selector every
+    record matches, so `matched` equals the number of records considered.
+    """
+
+    matched: int
+
+    def __init__(self, outcomes: Iterable[RestoreOutcome] = (), *, matched: int = 0) -> None:
+        super().__init__(outcomes)
+        self.matched = matched
 
 
 @dataclass(frozen=True, init=False)
@@ -231,14 +249,16 @@ def _preview_pending_restore(
 
 def preview_restore(
     chain: ManifestChain, *, run_id: str, only_ids: frozenset[str] | None
-) -> list[RestoreOutcome]:
+) -> RestoreOutcomes:
     """Preview restore through a structurally read-only traversal."""
     del run_id  # Preview outcome identities come from the validated chain.
     lifecycle, apply_terminals = _restore_inputs(chain)
     outcomes: list[RestoreOutcome] = []
+    matched = 0
     for action_id, state in _ordered_lifecycle(lifecycle):
         if only_ids is not None and state.record.docmend_id not in only_ids:
             continue
+        matched += 1
         non_action = _non_action_outcome(action_id, state)
         if non_action is not None:
             outcomes.append(non_action)
@@ -255,7 +275,7 @@ def preview_restore(
         record = apply_terminals.get(action_id)
         if record is not None:
             outcomes.append(_preview_restore_one(record))
-    return outcomes
+    return RestoreOutcomes(outcomes, matched=matched)
 
 
 def run_restore(
@@ -265,7 +285,7 @@ def run_restore(
     manifest_out: Path,
     safety: WriteSafetyContext,
     hooks: CommitHooks = NO_HOOKS,
-) -> list[RestoreOutcome]:
+) -> RestoreOutcomes:
     """Restore only the immutable chain authorized by a live capability."""
     safety.confirm_restore(run_id=run_id, manifest_out=manifest_out)
     chain = safety.chain
@@ -302,11 +322,13 @@ def run_restore(
         hooks=hooks,
     )
     outcomes: list[RestoreOutcome] = []
+    matched = 0
     try:
         for action_id, state in _ordered_lifecycle(lifecycle):
             record = state.record
             if only_ids is not None and record.docmend_id not in only_ids:
                 continue
+            matched += 1
             non_action = _non_action_outcome(action_id, state)
             if non_action is not None:
                 outcomes.append(non_action)
@@ -325,7 +347,7 @@ def run_restore(
                 _log_outcome(outcome)
     finally:
         manifest.close()
-    return outcomes
+    return RestoreOutcomes(outcomes, matched=matched)
 
 
 def _restore_one(run: _RestoreRun, action_id: str) -> RestoreOutcome:

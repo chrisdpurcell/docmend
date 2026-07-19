@@ -20,7 +20,6 @@ from docmend.plan import PLAN_SCHEMA_VERSION
 from docmend.report import REPORT_SCHEMA_VERSION
 from docmend.scale_evidence import (
     FilesystemCapacityEvidence,
-    MemoryPoint,
     OutcomeReason,
     PreflightEvidence,
     QualificationTotals,
@@ -34,7 +33,6 @@ from docmend.scale_evidence import (
     ThresholdSet,
     ThresholdVerdict,
     derive_thresholds,
-    fit_peak_rss_slope,
     load_threshold_baseline_snapshot,
     load_threshold_limits,
     read_reference_environment,
@@ -1705,49 +1703,6 @@ class TestThresholdMath:
         )
 
         assert verdict.observed_linearity_ratio == 0.333_333_333_334
-
-    def test_fit_peak_rss_slope__is_exact_and_order_independent(self) -> None:
-        points = [
-            MemoryPoint(files=10_000, peak_rss_bytes=100_000_000),
-            MemoryPoint(files=100_000, peak_rss_bytes=550_000_000),
-        ]
-        fit = fit_peak_rss_slope(points)
-        reverse_fit = fit_peak_rss_slope(reversed(points))
-        assert fit == reverse_fit
-        assert fit.slope_bytes_per_file.numerator == 5_000
-        assert fit.slope_bytes_per_file.denominator == 1
-        assert fit.intercept_bytes == 50_000_000
-
-    def test_fit_peak_rss_slope__uses_all_points_without_float_rounding(self) -> None:
-        fit = fit_peak_rss_slope(
-            [
-                MemoryPoint(files=1, peak_rss_bytes=1),
-                MemoryPoint(files=2, peak_rss_bytes=3),
-                MemoryPoint(files=4, peak_rss_bytes=4),
-            ]
-        )
-        assert fit.slope_bytes_per_file.numerator == 13
-        assert fit.slope_bytes_per_file.denominator == 14
-        assert fit.intercept_bytes.numerator == 1
-        assert fit.intercept_bytes.denominator == 2
-
-    @pytest.mark.parametrize(
-        "points",
-        [
-            [MemoryPoint(files=10_000, peak_rss_bytes=1)],
-            [
-                MemoryPoint(files=10_000, peak_rss_bytes=1),
-                MemoryPoint(files=10_000, peak_rss_bytes=2),
-            ],
-            [
-                MemoryPoint(files=10_000, peak_rss_bytes=2),
-                MemoryPoint(files=100_000, peak_rss_bytes=1),
-            ],
-        ],
-    )
-    def test_fit_peak_rss_slope__rejects_unusable_points(self, points: list[MemoryPoint]) -> None:
-        with pytest.raises(ValueError):
-            fit_peak_rss_slope(points)
 
     def test_thresholds__clamp_negative_stage_growth_to_zero(self) -> None:
         thresholds = derive_thresholds(

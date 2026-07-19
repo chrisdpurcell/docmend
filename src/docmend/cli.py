@@ -254,7 +254,8 @@ def scan(
     """Scan PATH read-only into a structured inventory artifact (FR-001, IR-001).
 
     Exit codes (§18.5): 0 clean; 1 when any file or directory was skipped as
-    unreadable (ERR-007 findings); 2 on input errors (bad PATH, invalid config).
+    unreadable (ERR-007 findings); 2 on input errors (bad PATH, invalid config);
+    3 safety refusal (concurrent run lock).
     """
     opts = _global_options(ctx)
     config = _load_effective_config(config_path, include, exclude)
@@ -1024,10 +1025,14 @@ def restore(
     if only_id and not outcomes:
         # A typo'd/stale --id must preserve the operator's stated intent as a
         # finding, never a silent success (2026-07-10 review medium theme).
-        typer.echo(
-            "restore: no manifest record matches the requested id(s)",
-            err=True,
-        )
+        # matched > 0 with no outcomes means the id(s) resolved but every match
+        # was a non-restorable failed record — a distinct diagnosis from a typo
+        # (F-012), so the operator is not misdirected toward a spelling check.
+        if outcomes.matched:
+            message = "restore: the requested id(s) matched only non-restorable (failed) records"
+        else:
+            message = "restore: no manifest record matches the requested id(s)"
+        typer.echo(message, err=True)
         raise typer.Exit(1)
     counts = Counter(outcome.status for outcome in outcomes)
     typer.echo(

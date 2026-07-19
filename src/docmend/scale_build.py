@@ -525,14 +525,11 @@ def _real_repository(repository: Path) -> Path:
     if not repository.is_absolute():
         repository = repository.absolute()
     try:
-        metadata = repository.lstat()
         resolved = repository.resolve(strict=True)
     except OSError as exc:
         raise BuildContractError("candidate repository must be an existing directory") from exc
     if repository.is_symlink() or not repository.is_dir() or not resolved.samefile(repository):
         raise BuildContractError("candidate repository must be a real directory")
-    if not metadata.st_mode:
-        raise BuildContractError("candidate repository identity is unavailable")
     return resolved
 
 

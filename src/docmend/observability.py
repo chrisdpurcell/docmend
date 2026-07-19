@@ -321,6 +321,11 @@ def configure_logging(
 
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
+    # Close before replacing: the idempotent-reconfigure contract (docstring)
+    # otherwise leaks the prior run's open .jsonl FileHandler descriptor until GC.
+    # StreamHandler.close() leaves sys.stderr open; only FileHandler frees its file.
+    for handler in root.handlers:
+        handler.close()
     root.handlers = [file_handler, console_handler]
 
     structlog.configure(

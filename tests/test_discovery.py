@@ -15,8 +15,14 @@ from hypothesis import strategies as st
 
 from corpus import CORPUS_RECIPES, GENERATED_AT, RUN_ID, materialize, seeded_faker
 from docmend.config import DocmendConfig, EncodingConfig, LimitsConfig, PathsConfig
-from docmend.discovery import NewlineCensus, classify_file, scan
-from docmend.inventory import FileRecord, Inventory
+from docmend.discovery import (
+    _HEAD_BUFFER_SIZE,  # pyright: ignore[reportPrivateUsage]
+    ClassifiedFile,
+    NewlineCensus,
+    classify_file,
+    scan,
+)
+from docmend.inventory import Inventory
 
 
 @pytest.fixture
@@ -160,13 +166,16 @@ class TestClassification:
     def test_legacy_detection__detector_failure_is_an_unreadable_skip(
         self, corpus: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """ERR-007: a detect_legacy OSError is skipped the same way as an
-        unreadable file during classification, not raised through the scan."""
+        """ERR-007: a detector OSError is skipped the same way as an unreadable
+        file during classification, not raised through the scan. Both detection
+        entry points (full-file and head-buffer, F-003) are patched so the
+        corpus file's size cannot decide which path is exercised."""
 
-        def _boom(path: Path) -> None:
+        def _boom(_source: object) -> None:
             raise OSError("simulated detector failure")
 
         monkeypatch.setattr("docmend.detection.detect_legacy", _boom)
+        monkeypatch.setattr("docmend.detection.detect_legacy_bytes", _boom)
         inventory = run_scan(corpus)
         skipped = {record.path: record for record in inventory.skipped}
         assert skipped["legacy.txt"].reason == "unreadable"
@@ -385,11 +394,68 @@ class TestClassifierChunking:
         target = tmp_path / "boundary.txt"
         target.write_bytes(b"\xef\xbb\xbfline one\r\nline two\rrest\ncaf\xc3\xa9\r\n")
         stat = target.lstat()
-        record = classify_file(target, "boundary.txt", stat, chunk_size=chunk_size)
+        record = classify_file(target, "boundary.txt", stat, chunk_size=chunk_size).record
         assert record.encoding.bom == "utf-8"
         assert record.newline_style == "mixed"
         assert record.encoding.utf8_valid is True
         assert record.non_ascii_bytes == 5  # 3 BOM bytes + 2-byte é
+
+
+_GERMAN_PROSE = (
+    "Der Wähler äußerte seine Meinung über die Größe der Straße und die "
+    "Übernahme der Bäckerei am Übergang, während die Kälte über München "
+    "hereinbrach. Später überquerte er die Brücke, müde und übernächtigt. "
+)
+
+
+class TestHeadBuffer:
+    """F-003: classify_file exposes a bounded head buffer so the legacy
+    detector need not re-read files that fit within it."""
+
+    def test_small_file__head_is_full_content(self, tmp_path: Path) -> None:
+        target = tmp_path / "s.txt"
+        content = b"caf\xe9 legacy body\n"  # non-UTF-8 cp1252, NUL-free
+        target.write_bytes(content)
+        result = classify_file(target, "s.txt", target.lstat())
+        assert result.head == content
+
+    def test_file_at_buffer_boundary__head_complete(self, tmp_path: Path) -> None:
+        target = tmp_path / "exact.txt"
+        content = b"a" * _HEAD_BUFFER_SIZE
+        target.write_bytes(content)
+        result = classify_file(target, "exact.txt", target.lstat())
+        assert result.head == content
+
+    def test_file_over_buffer__head_is_none(self, tmp_path: Path) -> None:
+        """A file that exceeds the buffer yields head=None so detection falls
+        back to the full-file read (a truncated head could mis-detect)."""
+        target = tmp_path / "big.txt"
+        target.write_bytes(b"a" * (_HEAD_BUFFER_SIZE + 1))
+        result = classify_file(target, "big.txt", target.lstat())
+        assert result.head is None
+
+    def test_small_legacy_file__detected_via_head_buffer(self, tmp_path: Path) -> None:
+        target = tmp_path / "small.txt"
+        target.write_bytes(_GERMAN_PROSE.encode("cp1252"))
+        inventory = run_scan(tmp_path)
+        record = {r.path: r for r in inventory.files}["small.txt"]
+        assert record.encoding.detected is not None
+        assert record.encoding.detected.method == "charset-normalizer"
+
+    def test_large_legacy_file__detected_via_fullfile_fallback(self, tmp_path: Path) -> None:
+        """A legacy file larger than the head buffer still gets a
+        charset-normalizer verdict via the full-file fallback path."""
+        target = tmp_path / "big.txt"
+        payload = _GERMAN_PROSE.encode("cp1252")
+        payload *= (_HEAD_BUFFER_SIZE // len(payload)) + 2  # comfortably over 64 KiB
+        assert len(payload) > _HEAD_BUFFER_SIZE
+        target.write_bytes(payload)
+        classified = classify_file(target, "big.txt", target.lstat())
+        assert classified.head is None  # confirms the fallback branch is exercised
+        inventory = run_scan(tmp_path)
+        record = {r.path: r for r in inventory.files}["big.txt"]
+        assert record.encoding.detected is not None
+        assert record.encoding.detected.method == "charset-normalizer"
 
 
 class TestWatchdog:
@@ -406,7 +472,7 @@ class TestWatchdog:
 
         def slow_classify(
             full: Path, rel: str, stat: os.stat_result, *, chunk_size: int = 1 << 20
-        ) -> FileRecord:
+        ) -> ClassifiedFile:
             if rel == "slow.txt":
                 time.sleep(5)  # far beyond the 0.05s budget; the alarm fires first
             # `classify_file` here is the test-module import (the real function),

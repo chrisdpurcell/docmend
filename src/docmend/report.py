@@ -26,9 +26,12 @@ type OutcomeStatus = Literal["applied", "would_apply", "skipped", "failed", "not
 #: (decision 9): stale hash ERR-002/AW-004, apply-time unreadable ERR-005,
 #: collision AW-002, an action-time collision lacking a preservation strategy,
 #: EC-005 re-check, snapshot-filter enforcement (FR-012), the runtime
-#: containment belt (§13.5), commit-boundary interference (adr-0020), and
-#: resume reconciliation (FR-013, adr-0006) — `already-applied` is the one skip
-#: that is NOT a reviewable finding (the CLI excludes it from the exit-1 count).
+#: containment belt (§13.5), a hard link that appeared in the plan->apply window
+#: (DEV-001 commit-boundary re-check; the primary gate is plan-time at
+#: planning.py:68, which uses the same reason literal), commit-boundary
+#: interference (adr-0020), and resume reconciliation (FR-013, adr-0006) —
+#: `already-applied` is the one skip that is NOT a reviewable finding (the CLI
+#: excludes it from the exit-1 count).
 type ApplySkipReason = Literal[
     "stale-hash",
     "unreadable",
@@ -37,6 +40,7 @@ type ApplySkipReason = Literal[
     "shrink-invariant",
     "excluded",
     "containment",
+    "hard-link-alias",
     "already-applied",
     "external-interference",
 ]

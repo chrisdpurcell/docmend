@@ -37,6 +37,7 @@ import time
 from collections import Counter
 from importlib.metadata import version as metadata_version
 from pathlib import Path
+from typing import NamedTuple
 
 from pathspec import PathSpec
 from pathspec.patterns.gitignore.spec import GitIgnoreSpecPattern
@@ -63,6 +64,12 @@ from docmend.watchdog import PerFileTimeoutError, per_file_watchdog
 
 _CHUNK_SIZE = 1 << 20  # 1 MiB per read: bounded memory regardless of file size
 _ASCII_BYTES = bytes(range(0x80))
+# 64 KiB legacy-detection head buffer (F-003). Retaining the first bytes
+# classify_file already streamed lets _process_candidate detect the legacy rung
+# without re-opening the file — but only when the file fits entirely within the
+# buffer (a truncated head can change charset-normalizer's verdict). Bounded
+# per-file, so NFR-001's per-file memory ceiling still holds.
+_HEAD_BUFFER_SIZE = 64 * 1024
 
 # Longest BOM first: UTF-32-LE (ff fe 00 00) must be tested before UTF-16-LE
 # (ff fe), and UTF-32-BE (00 00 fe ff) before anything that could shadow it.
@@ -146,13 +153,30 @@ class NewlineCensus:
         return present[0] if len(present) == 1 else "mixed"
 
 
+class ClassifiedFile(NamedTuple):
+    """``classify_file``'s result: the DR-001 record plus the file's head bytes.
+
+    ``head`` holds the file's COMPLETE content when it fits within
+    ``_HEAD_BUFFER_SIZE`` and is ``None`` when the file exceeded the buffer
+    (F-003). ``_process_candidate`` feeds a non-None ``head`` to
+    ``detection.detect_legacy_bytes`` to skip a second open/read; a ``None``
+    head forces the full-file ``detect_legacy`` path so a truncated sample can
+    never change the detector's verdict.
+    """
+
+    record: FileRecord
+    head: bytes | None
+
+
 def classify_file(
     full: Path, rel: str, stat: os.stat_result, *, chunk_size: int = _CHUNK_SIZE
-) -> FileRecord:
+) -> ClassifiedFile:
     """Build one DR-001 per-file record from a single streaming read.
 
     ``chunk_size`` is parameterized so tests can prove classification is
     independent of chunk boundaries (the CRLF-split and BOM-header cases).
+    Also retains the leading ``_HEAD_BUFFER_SIZE`` bytes (F-003) so the legacy
+    detector need not re-read a file that fits within the buffer.
     """
     hasher = hashlib.sha256()
     census = NewlineCensus()
@@ -161,10 +185,19 @@ def classify_file(
     nul_bytes = False
     non_ascii = 0
     bom: BomKind | None = None
+    head = bytearray()
+    head_truncated = False
 
     def consume(chunk: bytes) -> None:
-        nonlocal utf8_valid, nul_bytes, non_ascii
+        nonlocal utf8_valid, nul_bytes, non_ascii, head, head_truncated
         hasher.update(chunk)
+        if not head_truncated:
+            room = _HEAD_BUFFER_SIZE - len(head)
+            if len(chunk) <= room:
+                head += chunk
+            else:
+                head += chunk[:room]
+                head_truncated = True
         if not nul_bytes and b"\x00" in chunk:
             nul_bytes = True
         non_ascii += len(chunk.translate(None, _ASCII_BYTES))
@@ -200,22 +233,25 @@ def classify_file(
     elif utf8_valid:
         detected = DetectedEncoding(name="utf-8", confidence=1.0, method="utf8-strict")
 
-    return FileRecord(
-        path=rel,
-        size_bytes=stat.st_size,
-        suffix=full.suffix,
-        mtime_ns=stat.st_mtime_ns,
-        nlink=stat.st_nlink,
-        sha256=f"sha256:{hasher.hexdigest()}",
-        newline_style=census.style(),
-        nul_bytes=nul_bytes,
-        non_ascii_bytes=non_ascii,
-        encoding=EncodingFacts(
-            bom=bom,
-            utf8_valid=utf8_valid,
-            ascii_only=non_ascii == 0,
-            detected=detected,
+    return ClassifiedFile(
+        record=FileRecord(
+            path=rel,
+            size_bytes=stat.st_size,
+            suffix=full.suffix,
+            mtime_ns=stat.st_mtime_ns,
+            nlink=stat.st_nlink,
+            sha256=f"sha256:{hasher.hexdigest()}",
+            newline_style=census.style(),
+            nul_bytes=nul_bytes,
+            non_ascii_bytes=non_ascii,
+            encoding=EncodingFacts(
+                bom=bom,
+                utf8_valid=utf8_valid,
+                ascii_only=non_ascii == 0,
+                detected=detected,
+            ),
         ),
+        head=None if head_truncated else bytes(head),
     )
 
 
@@ -293,7 +329,8 @@ def _process_candidate(
     start = time.monotonic()
     try:
         with per_file_watchdog(timeout):
-            record = classify_file(full, rel, stat)
+            classified = classify_file(full, rel, stat)
+            record = classified.record
             if (
                 detect
                 and record.encoding.bom is None
@@ -302,7 +339,12 @@ def _process_candidate(
             ):
                 # FR-007 legacy rung (adr-0009 gate order): only a no-BOM,
                 # non-UTF-8, NUL-free file ever reaches charset-normalizer.
-                detected = detection.detect_legacy(full)
+                # Reuse the head buffer when it holds the whole file (F-003);
+                # otherwise re-read the full file so the verdict is unchanged.
+                if classified.head is not None:
+                    detected = detection.detect_legacy_bytes(classified.head)
+                else:
+                    detected = detection.detect_legacy(full)
                 if detected is not None:
                     record = record.model_copy(
                         update={

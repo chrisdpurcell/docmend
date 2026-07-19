@@ -7,10 +7,12 @@ single byte is written to tests/fixtures/weird_documents/. A generated fixture
 can therefore never disagree with its own sidecar at birth: a mismatch aborts
 the run with nothing written (or overwritten).
 
-The verification scans the *entire* candidate corpus at once, matching exactly
-what tests/test_weird_corpus.py does against the committed directory — this is
-what catches cross-fixture interactions (e.g. the collision-src.txt/.md pair)
-that per-file isolation would miss.
+Verification runs one scan per fixture subtree: the top-level corpus is
+scanned as a whole (catching cross-fixture interactions like the
+collision-src.txt/.md pair that per-file isolation would miss), and the
+encoding_floor/ matrix self-verifies in its own scratch directory. Separate
+scans are sound because the subtrees have disjoint rename-target namespaces —
+floor rename targets never leave encoding_floor/.
 
 Re-run freely: every byte here is deterministic (fixed Faker seed, fixed
 Random seed), so a re-run reproduces identical fixture bytes and sidecars.
@@ -736,12 +738,33 @@ def _write_fixtures(fixtures: list[Fixture]) -> None:
         print(f"wrote {label} ({len(fixture.data)} bytes) + sidecar")
 
 
+def _prune_orphans(fixtures: list[Fixture]) -> None:
+    # The committed corpus must stay one-to-one with the recipe:
+    # tests/test_weird_corpus.py enumerates committed sidecars, so a fixture
+    # renamed or removed here would otherwise keep being asserted against with
+    # no generator able to reproduce it. Deletion is confined to the fixture
+    # subtrees this generator owns.
+    expected: dict[Path, set[str]] = {CORPUS_DIR: set(), FLOOR_DIR: set()}
+    for fixture in fixtures:
+        target_dir = CORPUS_DIR / fixture.subdir if fixture.subdir else CORPUS_DIR
+        expected.setdefault(target_dir, set()).update({fixture.name, f"{fixture.name}.expect.json"})
+    for directory, names in expected.items():
+        if not directory.is_dir():
+            continue
+        for entry in sorted(directory.iterdir()):
+            if entry.is_dir() or entry.name in names:
+                continue
+            entry.unlink()
+            print(f"pruned orphan {entry.relative_to(CORPUS_DIR)}")
+
+
 def main() -> None:
     fixtures = build_fixtures()
     _verify(fixtures)
     floor_fixtures = _floor_fixtures()  # observes + self-verifies the floor matrix
     _write_fixtures(fixtures)
     _write_fixtures(floor_fixtures)
+    _prune_orphans(fixtures + floor_fixtures)
 
 
 if __name__ == "__main__":

@@ -12,13 +12,15 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from pathspec import PathSpec
+from pathspec.patterns.gitignore.spec import GitIgnoreSpecPattern
 
 from corpus import GENERATED_AT, RUN_ID, FileRecipe, materialize, seeded_faker
 from docmend.config import DocmendConfig, EncodingConfig, LimitsConfig, PathsConfig, WriteConfig
 from docmend.discovery import scan
-from docmend.inventory import DetectedEncoding
+from docmend.inventory import DetectedEncoding, EncodingFacts, FileRecord
 from docmend.plan import ArtifactRef, Plan
-from docmend.planning import build_plan
+from docmend.planning import _fact_skip, build_plan  # pyright: ignore[reportPrivateUsage]
 from docmend.transform.dispatch import FileClass, Operation, apply_text_transforms
 
 INV_REF = ArtifactRef(path="inventory.json", run_id=RUN_ID, sha256="sha256:" + "0" * 64)
@@ -192,6 +194,65 @@ class TestFactGates:
         )
         assert {s.path: s.reason for s in plan.skips}["drop.txt"] == "excluded"
         assert all(a.path != "drop.txt" for a in plan.actions)
+
+
+class TestFactSkipDetectionFact:
+    """F-004: `_fact_skip` must distinguish 'detection ran, no candidate'
+    (binary-suspect) from 'detection fact unknown/absent' (low-confidence).
+    `scan_config.encoding_detect` is None for a pre-1.1 persisted inventory."""
+
+    @staticmethod
+    def _legacy_record() -> FileRecord:
+        # No-BOM, non-UTF-8-valid, NUL-free, no candidate: the exact shape that
+        # reaches the `detected is None` branch of the encoding ladder.
+        return FileRecord(
+            path="legacy.txt",
+            size_bytes=100,
+            suffix=".txt",
+            mtime_ns=0,
+            nlink=1,
+            sha256="sha256:" + "0" * 64,
+            newline_style="lf",
+            nul_bytes=False,
+            non_ascii_bytes=50,
+            encoding=EncodingFacts(bom=None, utf8_valid=False, ascii_only=False, detected=None),
+        )
+
+    @staticmethod
+    def _empty_spec() -> PathSpec[GitIgnoreSpecPattern]:
+        return PathSpec.from_lines(GitIgnoreSpecPattern, ["**/*.txt"])
+
+    @pytest.mark.parametrize("scan_detect", [None, False])
+    def test_unknown_or_disabled_detection_fact__low_confidence(
+        self, scan_detect: bool | None
+    ) -> None:
+        config = DocmendConfig()
+        decision = _fact_skip(
+            self._legacy_record(),
+            {},
+            config,
+            self._empty_spec(),
+            PathSpec.from_lines(GitIgnoreSpecPattern, []),
+            scan_detect,
+        )
+        assert decision is not None
+        assert decision.reason == "low-confidence-encoding"
+        assert decision.detail == "encoding detection was not run at scan"
+
+    def test_detection_ran_no_candidate__binary_suspect(self) -> None:
+        """Regression guard: `scan_detect is True` with no candidate must still
+        report binary-suspect, not the low-confidence fallback."""
+        config = DocmendConfig()
+        decision = _fact_skip(
+            self._legacy_record(),
+            {},
+            config,
+            self._empty_spec(),
+            PathSpec.from_lines(GitIgnoreSpecPattern, []),
+            True,
+        )
+        assert decision is not None
+        assert decision.reason == "binary-suspect"
 
 
 class TestPlanShape:

@@ -7,6 +7,7 @@ outcomes, manifest records, and corpus state. Real filesystem (OQ-019).
 
 import hashlib
 import inspect
+import os
 import shutil
 from collections import Counter
 from pathlib import Path
@@ -299,6 +300,76 @@ def test_write_rename_only__link_semantics(tmp_path: Path) -> None:
     records = read_records(tmp_path / "manifest.jsonl")
     assert records[0].operation == "rename"
     assert records[0].after_sha256 == records[0].before_sha256
+
+
+def test_apply_source_gains_hard_link_after_plan__skips_nlink(tmp_path: Path) -> None:
+    """A source that is single-linked at plan time but gains a second hard link
+    before apply is skipped (hard-link-alias) at the commit boundary, before any
+    mutation; the alias keeps its original bytes (DEV-001 plan->apply window)."""
+    root = tmp_path / "root"
+    materialize(root, [FileRecipe("legacy.txt", "utf-8", "crlf")], seeded_faker())
+    source = root / "legacy.txt"
+    original = source.read_bytes()
+    config = DocmendConfig()
+    plan = _plan_for(root, config)
+    assert len(plan.actions) == 1
+    alias = root / "alias.txt"
+    os.link(source, alias)  # source now nlink==2, unknown to the plan
+
+    report = _execute(plan, config, tmp_path, write=True, preserved_by="external")
+
+    outcome = report.outcomes[0]
+    assert outcome.status == "skipped"
+    assert outcome.skip_reason == "hard-link-alias"
+    assert source.read_bytes() == original  # source untouched
+    assert alias.read_bytes() == original  # alias preserved
+
+
+def test_apply_rename_and_rewrite__fsyncs_source_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The source directory entry's removal is made durable after the unlink in
+    the rename+rewrite path, matching the target-side fsync durability posture."""
+    root = tmp_path / "root"
+    materialize(root, [FileRecipe("legacy.txt", "utf-8", "crlf")], seeded_faker())
+    config = DocmendConfig()
+    plan = _plan_for(root, config)
+    action = {a.path: a for a in plan.actions}["legacy.txt"]
+    assert "rename" in action.operations and len(action.operations) > 1
+    synced: list[Path] = []
+    monkeypatch.setattr(apply_module, "fsync_dir", synced.append)
+
+    report = _execute(plan, config, tmp_path, write=True, preserved_by="external")
+
+    assert report.outcomes[0].status == "applied"
+    assert root.resolve() in {path.resolve() for path in synced}  # source parent fsync'd
+
+
+def test_apply_parent_symlink_swapped_after_plan__contains_before_open(tmp_path: Path) -> None:
+    """A parent dir swapped for an out-of-root symlink between plan and apply is
+    contained (skipped) BEFORE the descriptor opens the file. Proven by the
+    out-of-root file being unreadable yet yielding a `containment` skip, not
+    `unreadable`: an open would have raised EACCES and produced the latter."""
+    root = tmp_path / "root"
+    sub = root / "sub"
+    materialize(sub, [FileRecipe("legacy.txt", "utf-8", "crlf")], seeded_faker())
+    config = DocmendConfig()
+    plan = _plan_for(root, config)
+    action = {a.path: a for a in plan.actions}["sub/legacy.txt"]
+    assert action is not None
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "legacy.txt").write_bytes(b"out-of-root secret\n")
+    (outside / "legacy.txt").chmod(0o000)  # unreadable: any open raises EACCES
+    shutil.rmtree(sub)
+    sub.symlink_to(outside)  # root/sub/legacy.txt now resolves out of root
+
+    report = _execute(plan, config, tmp_path, write=True, preserved_by="external")
+
+    outcome = report.outcomes[0]
+    assert outcome.status == "skipped"
+    assert outcome.skip_reason == "containment"
 
 
 def test_write_rename_and_rewrite__source_survives_failure(

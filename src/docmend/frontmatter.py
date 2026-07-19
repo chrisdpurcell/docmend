@@ -55,7 +55,12 @@ _StringPreservingConstructor.add_constructor(  # pyright: ignore[reportUnknownMe
 def extract_frontmatter(text: str) -> str | None:
     """The raw YAML block when `text` opens with one, else None (no-frontmatter
     documents are legal, adr-0011 — None is 'nothing to validate', not an error)."""
-    lines = text.splitlines()
+    # Split on "\n" only, never str.splitlines(): the latter also breaks on the
+    # Unicode line-boundary set (U+2028, U+0085, ...), so an embedded separator
+    # inside a value could surface a segment stripping to "---" and close the
+    # block before the true fence. Callers read via Path.read_text, whose
+    # universal-newline translation already normalized CRLF/CR to "\n".
+    lines = text.split("\n")
     if not lines or lines[0].strip() != _OPEN:
         return None
     for index, line in enumerate(lines[1:], start=1):

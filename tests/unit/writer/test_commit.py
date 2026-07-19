@@ -189,6 +189,54 @@ class TestWriteSafetyContext:
             with pytest.raises(RuntimeError, match="attestation"):
                 safety._consume_apply_state()  # pyright: ignore[reportPrivateUsage]
 
+    def test_restore_context__attest_failure_releases_lock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A raise while constructing the context after lock.acquire must not
+        strand the flock: a later acquire on the same root must succeed."""
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        manifest = write_set(
+            tmp_path / "apply.jsonl",
+            header_doc(source_root=str(corpus)),
+            record_doc(
+                1,
+                result="intent",
+                original_path=str(corpus / "legacy.txt"),
+                target_path=str(corpus / "legacy.txt"),
+            ),
+            record_doc(
+                1,
+                seq=2,
+                original_path=str(corpus / "legacy.txt"),
+                target_path=str(corpus / "legacy.txt"),
+            ),
+        )
+        state_dir = tmp_path / "state"
+        monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("attestation construction failed")
+
+        monkeypatch.setattr(commit_module.WriteSafetyContext, "__init__", _boom)
+        with (
+            pytest.raises(RuntimeError, match="attestation construction failed"),
+            restore_write_context(
+                [manifest],
+                run_id="run_20260711T000000Z_000015",
+                manifest_out=tmp_path / "restore.jsonl",
+            ),
+        ):
+            pass
+        # A stranded flock would make this acquire raise LockHeldError.
+        follow_up = lock.acquire(
+            corpus.resolve(),
+            run_id="run_20260711T000000Z_000016",
+            command="restore",
+            state_dir=state_dir / "docmend" / "locks",
+        )
+        follow_up.release()
+
 
 class TestBindFile:
     def test_regular_file__bytes_identity_mode(self, tmp_path: Path) -> None:
@@ -202,7 +250,16 @@ class TestBindFile:
             data=b"hello\n",
             identity=ObjectIdentity(dev=stat_result.st_dev, ino=stat_result.st_ino),
             mode=stat_result.st_mode,
+            nlink=stat_result.st_nlink,
         )
+
+    def test_hard_linked__captures_nlink(self, tmp_path: Path) -> None:
+        """A second hard link is visible as st_nlink on the bound file — the
+        signal the apply engine re-checks at the commit boundary (DEV-001)."""
+        file = tmp_path / "doc.txt"
+        file.write_bytes(b"hello\n")
+        os.link(file, tmp_path / "alias.txt")
+        assert bind_file(file).nlink == 2
 
     def test_symlink__interference_not_followed(self, tmp_path: Path) -> None:
         real = tmp_path / "real.txt"
@@ -359,6 +416,26 @@ class TestGuardedRenameNoClobber:
         )
         assert not source.exists()
         assert target.read_bytes() == b"content"
+
+    def test_happy_path__fsyncs_both_source_and_target_parents(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The source entry's removal is made durable, not only the target's
+        creation: both parents are fsync'd so a crash cannot resurrect source."""
+        source = tmp_path / "a.txt"
+        source.write_bytes(b"content")
+        subdir = tmp_path / "sub"
+        subdir.mkdir()
+        target = subdir / "a.md"
+        identity = bind_file(source).identity
+        synced: list[Path] = []
+        monkeypatch.setattr(commit_module, "fsync_dir", synced.append)
+        guarded_rename_no_clobber(
+            source, target, identity, root_resolved=tmp_path.resolve(), hooks=NO_HOOKS
+        )
+        resolved = {path.resolve() for path in synced}
+        assert source.parent.resolve() in resolved
+        assert target.parent.resolve() in resolved
 
     def test_target_appears_before_link__fileexists_propagates(self, tmp_path: Path) -> None:
         source, target, identity = self._bound(tmp_path)

@@ -9,6 +9,7 @@ steal race exists (codex CR-004 class, closed by construction).
 """
 
 import errno
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -33,6 +34,26 @@ def test_acquire_then_second_acquire__refuses(tmp_path: Path) -> None:
         assert RUN_ID in str(excinfo.value)  # holder identified in the refusal message
     finally:
         held.release()
+
+
+def test_holder_write_failure__releases_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A holder-metadata write failure after flock (ENOSPC/EIO) releases the
+    lock like every other failure path — a second acquire must then succeed."""
+    state = tmp_path / "state"
+    root = tmp_path / "corpus"
+    root.mkdir()
+
+    def _boom(*_args: object, **_kwargs: object) -> int:
+        raise OSError(errno.ENOSPC, "no space left on device")
+
+    monkeypatch.setattr(os, "write", _boom)
+    with pytest.raises(OSError):
+        lock.acquire(root, run_id=RUN_ID, command="apply", state_dir=state)
+    monkeypatch.undo()
+    # A stranded flock would make this raise LockHeldError instead.
+    lock.acquire(root, run_id=RUN_ID, command="apply", state_dir=state).release()
 
 
 def test_release__allows_reacquire(tmp_path: Path) -> None:

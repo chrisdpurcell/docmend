@@ -208,6 +208,19 @@ def test_outputs__unsafe_or_restored_actions_are_not_read(tmp_path: Path) -> Non
     assert check_outputs(chain_of([applied, restored])) == []
 
 
+def test_outputs__applied_record_with_null_after_hash__hash_finding(tmp_path: Path) -> None:
+    """A trusted `applied` record carrying no after-hash cannot be verified and
+    must not read as clean (F-010): the live output would otherwise go unhashed."""
+    target = tmp_path / "doc.md"
+    target.write_bytes(b"whatever\n")
+    record = _record(target_path=str(target), after_sha256=None)
+    chain = chain_of([record], source_root=str(tmp_path))
+
+    assert [(finding.check, finding.detail) for finding in check_outputs(chain)] == [
+        ("hash", "applied record has no recorded after-hash to verify against")
+    ]
+
+
 def test_source_backup__missing_corrupt_and_clean(tmp_path: Path) -> None:
     backup = tmp_path / "source.bak"
     expected = b"before\n"

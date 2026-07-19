@@ -8,6 +8,6 @@ on:
 
 jobs:
   lint-markdown:
-    uses: L3DigitalNet/project-standards/.github/workflows/lint-markdown.yml@v4
+    uses: L3DigitalNet/project-standards/.github/workflows/lint-markdown.yml@v4.3.0
     with:
       globs: "**/*.md"

@@ -2,6 +2,15 @@
 
 All notable changes to docmend are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.2] - 2026-07-22
+
+Maintenance release: repository tooling migration and internal simplifications. No CLI, configuration, schema, artifact, or behavior changes.
+
+### Changed
+
+- Migrated repository tooling to Project Standards v5.3.1: the `.standards/` control plane replaces `.project-standards.yml`, and the repo-root import path moved from pyproject `extraPaths`/`pythonpath` customizations to a root `conftest.py`.
+- Applied all eight actionable findings from the 2026-07-21 code-simplification review (`docs/reviews/2026-07-21-code-simplification.md`): named the repeated CLI corpus-root resolution policy, removed a redundant BOM-to-encoding identity mapping, let the four artifact model roots inherit their strict-base Pydantic config, centralized the incomplete file-size stage evidence record, simplified the CPU-model parser to first-wins scalar fields, and removed unused private returns and parameters in the writer layer.
+
 ## [2.0.1] - 2026-07-19
 
 Remediation of the 2026-07-19 comprehensive project review (`docs/fable-review/2026-07-19-docmend-review.md`): 26 findings fixed, none Critical or High.

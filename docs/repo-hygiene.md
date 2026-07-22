@@ -13,7 +13,7 @@ Use this checklist for periodic cleanup passes and before declaring a broad repo
 - [ ] Run the Markdown fix pass after Markdown, JSON, JSONC, or YAML edits: `npx prettier --write .` and `npx markdownlint-cli2 --fix "**/*.md"`.
 - [ ] Run the Markdown check contract before claiming Markdown/doc work complete: `npx prettier --check .` and `npx markdownlint-cli2 "**/*.md"`.
 - [ ] Run the Python verification gate after Python edits: `uv run ruff format --check .`, `uv run ruff check .`, `uv run basedpyright`, `uv run coverage run -m pytest`, `uv run coverage report`, and `uv run pip-audit`.
-- [ ] Validate the project spec after spec edits: `uvx --from 'git+https://github.com/L3DigitalNet/project-standards@v4' project-standards spec validate --config .project-standards.yml`.
+- [ ] Validate the project spec after spec edits: `project-standards spec validate` (V5 unified authority — the installed tool reads `.standards/`; `--config .project-standards.yml` is rejected).
 - [ ] Run `uv run python scripts/fix_spec_toc.py` before spec validation if an editor regenerated the spec table of contents.
 
 ## Documentation State

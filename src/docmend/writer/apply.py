@@ -193,10 +193,8 @@ def _operation_kind(action: PlanAction) -> ManifestOperation:
     return "rename" if renames else "rewrite"
 
 
-def _recompute(
-    action: PlanAction, data: bytes, config: DocmendConfig
-) -> tuple[bytes, list[Operation]] | str:
-    """Re-derive the output bytes and operation list; a str return is an error message."""
+def _recompute(action: PlanAction, data: bytes, config: DocmendConfig) -> bytes | str:
+    """Re-derive the output bytes; a str return is an error message."""
     bom = sniff_bom(data[:4])
     detected = action.provenance.detected_encoding
     encoding_name = detected.name if detected is not None else "utf-8"
@@ -223,7 +221,7 @@ def _recompute(
         operations.append("rename")
     if operations != action.operations:
         return f"recomputed operations {operations} != planned {action.operations}"
-    return encode_utf8(transformed), operations
+    return encode_utf8(transformed)
 
 
 def _record(
@@ -538,7 +536,7 @@ def _execute_action(
         return _skip(action, "shrink-invariant"), False  # EC-005 apply half
     if isinstance(recomputed, str):
         return _failed(action, "ERR-006", recomputed), False
-    payload, _operations = recomputed
+    payload = recomputed
     kind = _operation_kind(action)
 
     clobber = False
@@ -965,7 +963,6 @@ def _complete_outcomes(
 
 
 def _build_report(
-    plan: Plan,
     *,
     run_id: str,
     plan_ref: ArtifactRef,
@@ -1050,7 +1047,6 @@ def preview_plan(
             )
     _complete_outcomes(plan, outcomes, abort=abort)
     return _build_report(
-        plan,
         run_id=run_id,
         plan_ref=plan_ref,
         started_at=started_at,
@@ -1151,7 +1147,6 @@ def execute_plan(
             manifest.close()
     _complete_outcomes(plan, outcomes, abort=abort)
     return _build_report(
-        plan,
         run_id=run_id,
         plan_ref=plan_ref,
         started_at=started_at,

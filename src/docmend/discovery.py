@@ -73,6 +73,9 @@ _HEAD_BUFFER_SIZE = 64 * 1024
 
 # Longest BOM first: UTF-32-LE (ff fe 00 00) must be tested before UTF-16-LE
 # (ff fe), and UTF-32-BE (00 00 fe ff) before anything that could shadow it.
+# Each BomKind literal is also the authoritative detected encoding name
+# (FR-007/OQ-026); the BOM fact remains separate so plan/apply can strip it
+# (EC-007).
 _BOMS: tuple[tuple[bytes, BomKind], ...] = (
     (codecs.BOM_UTF32_LE, "utf-32-le"),
     (codecs.BOM_UTF32_BE, "utf-32-be"),
@@ -80,17 +83,6 @@ _BOMS: tuple[tuple[bytes, BomKind], ...] = (
     (codecs.BOM_UTF16_LE, "utf-16-le"),
     (codecs.BOM_UTF16_BE, "utf-16-be"),
 )
-
-# The encoding a BOM authoritatively announces (FR-007: BOM'd files decode per
-# their BOM, OQ-026). For the UTF-8 BOM the content encoding is utf-8; the BOM
-# itself is recorded separately so plan/apply know to strip it (EC-007).
-_BOM_ENCODING_NAME: dict[BomKind, str] = {
-    "utf-8": "utf-8",
-    "utf-16-le": "utf-16-le",
-    "utf-16-be": "utf-16-be",
-    "utf-32-le": "utf-32-le",
-    "utf-32-be": "utf-32-be",
-}
 
 
 def sniff_bom(header: bytes) -> BomKind | None:
@@ -229,7 +221,7 @@ def classify_file(
     # content is never handed to the MS-2 legacy detector.
     detected: DetectedEncoding | None = None
     if bom is not None:
-        detected = DetectedEncoding(name=_BOM_ENCODING_NAME[bom], confidence=1.0, method="bom")
+        detected = DetectedEncoding(name=bom, confidence=1.0, method="bom")
     elif utf8_valid:
         detected = DetectedEncoding(name="utf-8", confidence=1.0, method="utf8-strict")
 

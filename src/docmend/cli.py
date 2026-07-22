@@ -217,6 +217,10 @@ def _guard_artifact_paths(
             raise typer.Exit(3)
 
 
+def _resolve_corpus_root(path: Path) -> Path:
+    return (path if path.is_dir() else path.parent).resolve()
+
+
 @app.command()
 def scan(
     ctx: typer.Context,
@@ -274,7 +278,7 @@ def scan(
     log.info("scan starting", path=str(path))
 
     out_path = report if report is not None else artifact_dir / f"docmend-{run_id}-inventory.json"
-    corpus_root = (path if path.is_dir() else path.parent).resolve()
+    corpus_root = _resolve_corpus_root(path)
     _guard_artifact_paths([out_path], corpus_root=corpus_root, input_artifacts=[], config=config)
 
     run_lock = _acquire_read_lock(corpus_root, run_id=run_id, command="scan")
@@ -385,7 +389,7 @@ def plan(
         # The root is known before scanning: acquire here (not after) so the
         # scan+plan pair is covered as one run (OQ-027) instead of leaving the
         # scan step racy against a concurrent invocation over the same tree.
-        scan_root = (path if path.is_dir() else path.parent).resolve()
+        scan_root = _resolve_corpus_root(path)
         # Resolved to absolute: inventory_ref.path must stay valid outside this
         # invocation's CWD, unlike out_path (echoed, never round-tripped) below.
         inventory_artifact = (artifact_dir / f"docmend-{run_id}-inventory.json").resolve()
@@ -1121,7 +1125,7 @@ def verify(
     if report_paths and not manifest_paths and plan_path is None:
         raise typer.BadParameter("--report without --plan requires at least one manifest")
 
-    corpus_root = (path if path.is_dir() else path.parent).resolve()
+    corpus_root = _resolve_corpus_root(path)
     input_artifacts = [*manifest_paths, *report_paths]
     if plan_path is not None:
         input_artifacts.append(plan_path)

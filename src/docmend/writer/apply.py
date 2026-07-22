@@ -963,7 +963,6 @@ def _complete_outcomes(
 
 
 def _build_report(
-    plan: Plan,
     *,
     run_id: str,
     plan_ref: ArtifactRef,
@@ -1048,7 +1047,6 @@ def preview_plan(
             )
     _complete_outcomes(plan, outcomes, abort=abort)
     return _build_report(
-        plan,
         run_id=run_id,
         plan_ref=plan_ref,
         started_at=started_at,
@@ -1149,7 +1147,6 @@ def execute_plan(
             manifest.close()
     _complete_outcomes(plan, outcomes, abort=abort)
     return _build_report(
-        plan,
         run_id=run_id,
         plan_ref=plan_ref,
         started_at=started_at,

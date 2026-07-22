@@ -7,4 +7,4 @@ pure transforms (docmend.transform, NFR-005), and the isolated writer layer
 (docmend.writer) with its atomic-write/backup/manifest safety machinery.
 """
 
-__version__ = "2.0.1"
+__version__ = "2.0.2"

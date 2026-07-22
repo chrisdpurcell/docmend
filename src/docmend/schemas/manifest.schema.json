@@ -28,16 +28,9 @@
 		"expected_published_identity"
 	],
 	"properties": {
-		"schema": {
-			"const": "docmend/manifest-record"
-		},
-		"schema_version": {
-			"type": "string",
-			"pattern": "^2\\.[0-9]+$"
-		},
-		"run_id": {
-			"$ref": "#/$defs/run_id"
-		},
+		"schema": { "const": "docmend/manifest-record" },
+		"schema_version": { "type": "string", "pattern": "^2\\.[0-9]+$" },
+		"run_id": { "$ref": "#/$defs/run_id" },
 		"action_id": {
 			"type": "string",
 			"pattern": "^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{6}/a[0-9]+$"
@@ -52,17 +45,10 @@
 			"type": "integer",
 			"minimum": 1
 		},
-		"recorded_at": {
-			"type": "string",
-			"format": "date-time"
-		},
+		"recorded_at": { "type": "string", "format": "date-time" },
 		"operation": {
 			"description": "What mutated: 'rename' moved the file without content change; 'rewrite' replaced content in place; 'rename_and_rewrite' did both as one atomic action.",
-			"enum": [
-				"rename",
-				"rewrite",
-				"rename_and_rewrite"
-			]
+			"enum": ["rename", "rewrite", "rename_and_rewrite"]
 		},
 		"original_path": {
 			"description": "Absolute path — restore locates files from the manifest alone (IR-008).",
@@ -76,120 +62,61 @@
 		},
 		"backup_path": {
 			"description": "Verified backup copy location when tool-written backups were enabled (FR-006); null under the Git/external/low-risk-opt-in preservation strategies. Absolute path — restore locates files from the manifest alone (IR-008).",
-			"type": [
-				"string",
-				"null"
-			]
+			"type": ["string", "null"]
 		},
-		"before_sha256": {
-			"$ref": "#/$defs/sha256"
-		},
+		"before_sha256": { "$ref": "#/$defs/sha256" },
 		"after_sha256": {
 			"description": "Hash of the file as written; equals before_sha256 for a pure rename. Null when result is 'failed' (the original is intact, spec 10.4). For result 'intent' (1.3) this is the EXPECTED output hash, recorded before the mutation.",
-			"oneOf": [
-				{
-					"type": "null"
-				},
-				{
-					"$ref": "#/$defs/sha256"
-				}
-			]
+			"oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
 		},
 		"result": {
 			"description": "2.0 (adr-0019): EVERY mutation kind journals 'intent' before any corpus name is touched and a terminal ('applied' | 'failed') after. A dangling intent (no terminal after it in the chain) is adjudicated from disk state against the persisted identities. A terminal with no same-set intent is provisionally legal at set scope and must close exactly one earlier set's dangling intent at chain scope.",
-			"enum": [
-				"applied",
-				"failed",
-				"intent"
-			]
+			"enum": ["applied", "failed", "intent"]
 		},
 		"error": {
 			"oneOf": [
-				{
-					"type": "null"
-				},
+				{ "type": "null" },
 				{
 					"type": "object",
 					"additionalProperties": false,
-					"required": [
-						"class",
-						"message"
-					],
+					"required": ["class", "message"],
 					"properties": {
-						"class": {
-							"type": "string",
-							"pattern": "^ERR-[0-9]{3}$"
-						},
-						"message": {
-							"type": "string"
-						}
+						"class": { "type": "string", "pattern": "^ERR-[0-9]{3}$" },
+						"message": { "type": "string" }
 					}
 				}
 			]
 		},
 		"overwritten_sha256": {
 			"description": "1.1 (OQ-035): hash of the pre-existing target this mutation clobbered under the overwrite collision policy; null otherwise.",
-			"oneOf": [
-				{
-					"type": "null"
-				},
-				{
-					"$ref": "#/$defs/sha256"
-				}
-			]
+			"oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
 		},
 		"overwritten_backup_path": {
 			"description": "1.1 (OQ-035): verified backup of the clobbered target when tool backups were enabled; null otherwise.",
-			"type": [
-				"string",
-				"null"
-			]
+			"type": ["string", "null"]
 		},
 		"undoes_action_id": {
 			"description": "2.0 restore lineage: the exact apply action this inverse undoes; null in apply-kind sets. Set together with undoes_run_id or not at all.",
 			"oneOf": [
-				{
-					"type": "null"
-				},
-				{
-					"type": "string",
-					"pattern": "^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{6}/a[0-9]+$"
-				}
+				{ "type": "null" },
+				{ "type": "string", "pattern": "^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{6}/a[0-9]+$" }
 			]
 		},
 		"undoes_run_id": {
 			"description": "2.0 restore lineage: the run that applied the action this inverse undoes.",
-			"oneOf": [
-				{
-					"type": "null"
-				},
-				{
-					"$ref": "#/$defs/run_id"
-				}
-			]
+			"oneOf": [{ "type": "null" }, { "$ref": "#/$defs/run_id" }]
 		},
 		"source_identity": {
 			"description": "2.0 (adr-0019/adr-0020): exact (st_dev, st_ino) of the validated source object, persisted in the intent before mutation; null on pre-mutation failed records.",
 			"oneOf": [
-				{
-					"type": "null"
-				},
+				{ "type": "null" },
 				{
 					"type": "object",
 					"additionalProperties": false,
-					"required": [
-						"dev",
-						"ino"
-					],
+					"required": ["dev", "ino"],
 					"properties": {
-						"dev": {
-							"type": "integer",
-							"minimum": 0
-						},
-						"ino": {
-							"type": "integer",
-							"minimum": 0
-						}
+						"dev": { "type": "integer", "minimum": 0 },
+						"ino": { "type": "integer", "minimum": 0 }
 					}
 				}
 			]
@@ -197,25 +124,14 @@
 		"target_identity": {
 			"description": "2.0: identity of the overwrite target when one existed at commit; null otherwise.",
 			"oneOf": [
-				{
-					"type": "null"
-				},
+				{ "type": "null" },
 				{
 					"type": "object",
 					"additionalProperties": false,
-					"required": [
-						"dev",
-						"ino"
-					],
+					"required": ["dev", "ino"],
 					"properties": {
-						"dev": {
-							"type": "integer",
-							"minimum": 0
-						},
-						"ino": {
-							"type": "integer",
-							"minimum": 0
-						}
+						"dev": { "type": "integer", "minimum": 0 },
+						"ino": { "type": "integer", "minimum": 0 }
 					}
 				}
 			]
@@ -223,38 +139,21 @@
 		"expected_published_identity": {
 			"description": "2.0: identity the published output will have - the staged inode for replacement publishes, the source inode for pure renames. What post-publish adjudication lstat-compares against.",
 			"oneOf": [
-				{
-					"type": "null"
-				},
+				{ "type": "null" },
 				{
 					"type": "object",
 					"additionalProperties": false,
-					"required": [
-						"dev",
-						"ino"
-					],
+					"required": ["dev", "ino"],
 					"properties": {
-						"dev": {
-							"type": "integer",
-							"minimum": 0
-						},
-						"ino": {
-							"type": "integer",
-							"minimum": 0
-						}
+						"dev": { "type": "integer", "minimum": 0 },
+						"ino": { "type": "integer", "minimum": 0 }
 					}
 				}
 			]
 		}
 	},
 	"$defs": {
-		"run_id": {
-			"type": "string",
-			"pattern": "^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{6}$"
-		},
-		"sha256": {
-			"type": "string",
-			"pattern": "^sha256:[0-9a-f]{64}$"
-		}
+		"run_id": { "type": "string", "pattern": "^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{6}$" },
+		"sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
 	}
 }

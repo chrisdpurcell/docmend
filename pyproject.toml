@@ -22,28 +22,11 @@ dependencies = [
 # Typer app objects are callable; this is the whole console entry point (IR-005).
 docmend = "docmend.cli:app"
 
-[dependency-groups]
-# pytest floor matches [tool.pytest.ini_options].minversion; ruff>=0.14 is the first
-# release with non-preview py314 target-version support (0.9-0.11 reject "py314").
-# pytest-cov is intentionally absent: the gate measures coverage with coverage.py
-# directly, and a second coverage entry point creates competing instructions.
-dev = [
-    "allpairspy>=2.5.1",
-    "basedpyright",
-    "coverage[toml]",
-    "faker==40.28.1",
-    "hypothesis>=6.156.1",
-    "import-linter>=2.13",
-    "pip-audit",
-    "pyfakefs>=6.2.0",
-    "pytest>=9.0",
-    "pytest-xdist>=3.8.0",
-    "ruff>=0.14",
-]
-
-[build-system]
-requires = ["uv_build==0.11.6"]
-build-backend = "uv_build"
+# NOTE (V5 migration): [dependency-groups], [build-system], [tool.basedpyright],
+# and [tool.pytest.ini_options] are rendered by the python-tooling standard's
+# control plane. docmend's dev deps beyond the canonical set are declared as
+# additional_dev_dependencies in .standards/config.toml; the repo-root conftest.py
+# replaces the former [tool.pytest.ini_options].pythonpath.
 
 [tool.ruff]
 target-version = "py314"
@@ -63,28 +46,6 @@ ignore = ["E501"]
 quote-style = "double"
 indent-style = "space"
 docstring-code-format = true
-
-[tool.basedpyright]
-include = ["src", "tests"]
-# "." so `tests.helpers.*` (the shared fixture builders) resolves as a
-# namespace package, matching pytest's pythonpath below. "src" must then be
-# listed explicitly: any extraPaths value disables pyright's automatic ./src
-# search path, and without it `docmend` resolves to the INSTALLED py.typed
-# copy — whose strict re-export rules flag every transitive import.
-extraPaths = [".", "src"]
-typeCheckingMode = "strict"
-pythonVersion = "3.14"
-pythonPlatform = "All"
-failOnWarnings = true
-
-[tool.pytest.ini_options]
-minversion = "9.0"
-testpaths = ["tests"]
-# Repo root on sys.path so shared fixture builders import as tests.helpers.*
-# (plain importable helpers, not conftest fixtures — they build the adversarial
-# raw manifest documents the strict models would refuse to construct).
-pythonpath = ["."]
-addopts = ["-ra", "--strict-markers", "--strict-config"]
 
 [tool.coverage.run]
 branch = true
@@ -117,3 +78,34 @@ forbidden_modules = [
     "shutil",
     "tempfile",
 ]
+
+[dependency-groups]
+dev = [
+    "basedpyright",
+    "coverage[toml]",
+    "pip-audit",
+    "pytest>=9.0",
+    "ruff>=0.14.11",
+    "allpairspy>=2.5.1",
+    "faker==40.28.1",
+    "hypothesis>=6.156.1",
+    "import-linter>=2.13",
+    "pyfakefs>=6.2.0",
+    "pytest-xdist>=3.8.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.basedpyright]
+include = ["src", "tests"]
+typeCheckingMode = "strict"
+pythonVersion = "3.14"
+pythonPlatform = "All"
+failOnWarnings = true
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]

@@ -152,9 +152,7 @@ def _overwrite_preservation(
     ]
 
 
-def _backup_destination(
-    plan: Plan, config: DocmendConfig, source_root: Path, options: ApplyOptions
-) -> list[GateRefusal]:
+def _backup_destination(source_root: Path, options: ApplyOptions) -> list[GateRefusal]:
     if options.backup_root is None:
         return []
     resolved = options.backup_root.resolve()
@@ -363,7 +361,7 @@ def evaluate_gate(
     report_path: Path | None = None,
     log_path: Path | None = None,
 ) -> list[GateRefusal]:
-    backup_refusals = _backup_destination(plan, config, source_root, options)
+    backup_refusals = _backup_destination(source_root, options)
     manifest_refusals = _manifest_destination(manifest_dir)
     capacity_refusals = _capacity_preflight(
         plan,

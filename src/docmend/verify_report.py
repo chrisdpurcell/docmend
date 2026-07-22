@@ -31,13 +31,7 @@ class VerifyFindingRecord(_StrictModel):
 
 
 class VerifyReport(_StrictModel):
-    model_config = ConfigDict(
-        extra="forbid",
-        strict=True,
-        frozen=True,
-        populate_by_name=True,
-        serialize_by_alias=True,
-    )
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
 
     schema_kind: Literal["docmend/verify-report"] = Field(
         default="docmend/verify-report", alias="schema"

@@ -93,9 +93,7 @@ class Plan(_StrictModel):
     # deprecated BaseModel attribute, hence the alias; serialize_by_alias keeps
     # model_dump() emitting the contract's key without every caller remembering
     # by_alias=True.
-    model_config = ConfigDict(
-        extra="forbid", strict=True, populate_by_name=True, serialize_by_alias=True
-    )
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
 
     schema_kind: Literal["docmend/plan"] = Field(default="docmend/plan", alias="schema")
     schema_version: Annotated[str, Field(pattern=r"^2\.\d+$")] = PLAN_SCHEMA_VERSION

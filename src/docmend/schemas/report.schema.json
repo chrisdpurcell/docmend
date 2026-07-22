@@ -20,87 +20,37 @@
 		"manifest_sha256"
 	],
 	"properties": {
-		"schema": {
-			"const": "docmend/report"
-		},
-		"schema_version": {
-			"type": "string",
-			"pattern": "^2\\.[0-9]+$"
-		},
-		"run_id": {
-			"$ref": "#/$defs/run_id"
-		},
-		"generated_by": {
-			"type": "string",
-			"minLength": 1
-		},
+		"schema": { "const": "docmend/report" },
+		"schema_version": { "type": "string", "pattern": "^2\\.[0-9]+$" },
+		"run_id": { "$ref": "#/$defs/run_id" },
+		"generated_by": { "type": "string", "minLength": 1 },
 		"plan_ref": {
 			"type": "object",
 			"additionalProperties": false,
-			"required": [
-				"path",
-				"run_id",
-				"sha256"
-			],
+			"required": ["path", "run_id", "sha256"],
 			"properties": {
-				"path": {
-					"type": "string",
-					"minLength": 1
-				},
-				"run_id": {
-					"$ref": "#/$defs/run_id"
-				},
-				"sha256": {
-					"$ref": "#/$defs/sha256"
-				}
+				"path": { "type": "string", "minLength": 1 },
+				"run_id": { "$ref": "#/$defs/run_id" },
+				"sha256": { "$ref": "#/$defs/sha256" }
 			}
 		},
 		"dry_run": {
 			"description": "True unless the run carried the explicit --write opt-in (FR-004, OQ-014).",
 			"type": "boolean"
 		},
-		"started_at": {
-			"type": "string",
-			"format": "date-time"
-		},
-		"completed_at": {
-			"type": "string",
-			"format": "date-time"
-		},
-		"outcomes": {
-			"type": "array",
-			"items": {
-				"$ref": "#/$defs/outcome"
-			}
-		},
+		"started_at": { "type": "string", "format": "date-time" },
+		"completed_at": { "type": "string", "format": "date-time" },
+		"outcomes": { "type": "array", "items": { "$ref": "#/$defs/outcome" } },
 		"totals": {
 			"description": "Summary counts; DR-003 requires each to equal the corresponding per-outcome total.",
 			"type": "object",
 			"additionalProperties": false,
-			"required": [
-				"applied",
-				"would_apply",
-				"skipped",
-				"failed",
-				"not_attempted"
-			],
+			"required": ["applied", "would_apply", "skipped", "failed", "not_attempted"],
 			"properties": {
-				"applied": {
-					"type": "integer",
-					"minimum": 0
-				},
-				"would_apply": {
-					"type": "integer",
-					"minimum": 0
-				},
-				"skipped": {
-					"type": "integer",
-					"minimum": 0
-				},
-				"failed": {
-					"type": "integer",
-					"minimum": 0
-				},
+				"applied": { "type": "integer", "minimum": 0 },
+				"would_apply": { "type": "integer", "minimum": 0 },
+				"skipped": { "type": "integer", "minimum": 0 },
+				"failed": { "type": "integer", "minimum": 0 },
 				"not_attempted": {
 					"description": "2.0 (adr-0019): plan actions a fail-policy abort never reached - the explicit terminal that makes the report a full partition of the plan (DMR-05 accounting).",
 					"type": "integer",
@@ -111,17 +61,11 @@
 		"prior_attempt": {
 			"description": "2.0 attempt-lineage edge (adr-0019): the predecessor run plus exactly one of its report sha256 or closed-manifest sha256; null for a first attempt. Persisted redundantly here and in the apply manifest header.",
 			"oneOf": [
-				{
-					"type": "null"
-				},
+				{ "type": "null" },
 				{
 					"type": "object",
 					"additionalProperties": false,
-					"required": [
-						"run_id",
-						"report_sha256",
-						"manifest_sha256"
-					],
+					"required": ["run_id", "report_sha256", "manifest_sha256"],
 					"properties": {
 						"run_id": {
 							"type": "string",
@@ -129,24 +73,14 @@
 						},
 						"report_sha256": {
 							"oneOf": [
-								{
-									"type": "null"
-								},
-								{
-									"type": "string",
-									"pattern": "^sha256:[0-9a-f]{64}$"
-								}
+								{ "type": "null" },
+								{ "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
 							]
 						},
 						"manifest_sha256": {
 							"oneOf": [
-								{
-									"type": "null"
-								},
-								{
-									"type": "string",
-									"pattern": "^sha256:[0-9a-f]{64}$"
-								}
+								{ "type": "null" },
+								{ "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
 							]
 						}
 					},
@@ -157,16 +91,12 @@
 									"type": "string",
 									"pattern": "^sha256:[0-9a-f]{64}$"
 								},
-								"manifest_sha256": {
-									"type": "null"
-								}
+								"manifest_sha256": { "type": "null" }
 							}
 						},
 						{
 							"properties": {
-								"report_sha256": {
-									"type": "null"
-								},
+								"report_sha256": { "type": "null" },
 								"manifest_sha256": {
 									"type": "string",
 									"pattern": "^sha256:[0-9a-f]{64}$"
@@ -180,29 +110,18 @@
 		"manifest_sha256": {
 			"description": "2.0: sha256 of this attempt's CLOSED manifest; null when the attempt mutated nothing. The null is what distinguishes a genuine report-only attempt from a lost manifest.",
 			"oneOf": [
-				{
-					"type": "null"
-				},
-				{
-					"type": "string",
-					"pattern": "^sha256:[0-9a-f]{64}$"
-				}
+				{ "type": "null" },
+				{ "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
 			]
 		}
 	},
 	"$defs": {
-		"run_id": {
-			"type": "string",
-			"pattern": "^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{6}$"
-		},
+		"run_id": { "type": "string", "pattern": "^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{6}$" },
 		"action_id": {
 			"type": "string",
 			"pattern": "^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{6}/a[0-9]+$"
 		},
-		"sha256": {
-			"type": "string",
-			"pattern": "^sha256:[0-9a-f]{64}$"
-		},
+		"sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
 		"outcome": {
 			"type": "object",
 			"additionalProperties": false,
@@ -216,73 +135,38 @@
 				"error"
 			],
 			"properties": {
-				"action_id": {
-					"$ref": "#/$defs/action_id"
-				},
-				"path": {
-					"type": "string",
-					"minLength": 1
-				},
+				"action_id": { "$ref": "#/$defs/action_id" },
+				"path": { "type": "string", "minLength": 1 },
 				"status": {
 					"description": "Per-file lifecycle outcome (spec section 10.4): 'would_apply' is the dry-run counterpart of 'applied'; 'skipped' covers stale hash (ERR-002/AW-004), collision (AW-002), and apply-time unreadable (ERR-005); 'failed' covers write error (ERR-003), backup abort (ERR-004), and watchdog timeout (ERR-009). 2.0: 'not-attempted' marks plan actions a fail-policy abort never reached.",
-					"enum": [
-						"applied",
-						"would_apply",
-						"skipped",
-						"failed",
-						"not-attempted"
-					]
+					"enum": ["applied", "would_apply", "skipped", "failed", "not-attempted"]
 				},
 				"before_sha256": {
-					"oneOf": [
-						{
-							"type": "null"
-						},
-						{
-							"$ref": "#/$defs/sha256"
-						}
-					]
+					"oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
 				},
 				"after_sha256": {
 					"description": "Null for dry-run, skipped, and failed outcomes — no mutation happened.",
-					"oneOf": [
-						{
-							"type": "null"
-						},
-						{
-							"$ref": "#/$defs/sha256"
-						}
-					]
+					"oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
 				},
 				"skip_reason": {
 					"description": "Set only when status is 'skipped'.",
-					"type": [
-						"string",
-						"null"
-					]
+					"type": ["string", "null"]
 				},
 				"error": {
 					"description": "Set only when status is 'failed'.",
 					"oneOf": [
-						{
-							"type": "null"
-						},
+						{ "type": "null" },
 						{
 							"type": "object",
 							"additionalProperties": false,
-							"required": [
-								"class",
-								"message"
-							],
+							"required": ["class", "message"],
 							"properties": {
 								"class": {
 									"description": "The spec section 12.1 error class, e.g. 'ERR-003'.",
 									"type": "string",
 									"pattern": "^ERR-[0-9]{3}$"
 								},
-								"message": {
-									"type": "string"
-								}
+								"message": { "type": "string" }
 							}
 						}
 					]

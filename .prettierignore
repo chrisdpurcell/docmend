@@ -4,6 +4,11 @@
 # with their generator's output (scripts/gen_weird_corpus.py).
 tests/fixtures/weird_documents/
 
+# Committed scale-qualification evidence records (spec §18.4): tool-generated run
+# artifacts that must stay byte-stable with the generator's output, not reflowed by
+# Prettier (same generator-output rationale as the corpus fixtures above).
+docs/scale-evidence/
+
 # Controller/agent scratch (SDD ledger, task briefs) — not repo content.
 .superpowers/
 

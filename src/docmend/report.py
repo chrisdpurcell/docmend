@@ -87,9 +87,7 @@ class ReportTotals(_StrictModel):
 class Report(_StrictModel):
     """One `docmend apply` result (DR-003) — serialize via docmend.artifacts only."""
 
-    model_config = ConfigDict(
-        extra="forbid", strict=True, populate_by_name=True, serialize_by_alias=True
-    )
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
 
     schema_kind: Literal["docmend/report"] = Field(default="docmend/report", alias="schema")
     schema_version: Annotated[str, Field(pattern=r"^2\.\d+$")] = REPORT_SCHEMA_VERSION

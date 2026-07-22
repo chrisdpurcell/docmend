@@ -1,0 +1,16 @@
+name: Format
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  format:
+    uses: L3DigitalNet/project-standards/.github/workflows/format.yml@v5
+    with:
+      prettier: true
+      globs: "**/*.md\n**/*.json\n**/*.jsonc\n**/*.yml\n**/*.yaml"
+      exclusions: ""

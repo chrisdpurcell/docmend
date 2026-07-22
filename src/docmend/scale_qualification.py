@@ -971,6 +971,22 @@ def _file_size_stage_request(
     )
 
 
+def _incomplete_file_size_stage(
+    stage: StageName, *, elapsed_seconds: float = 0.0
+) -> FileSizeStageEvidence:
+    return FileSizeStageEvidence(
+        stage=stage,
+        elapsed_seconds=elapsed_seconds,
+        peak_rss_bytes=None,
+        vm_swap_peak_bytes=None,
+        exit_code=None,
+        completed=False,
+        artifact_validated=False,
+        timeout_outcome="not-measured",
+        backup_bytes=0,
+    )
+
+
 def _file_size_case_evidence(
     recipe: FileSizeCase,
     stages: Sequence[FileSizeStageEvidence],
@@ -1216,54 +1232,18 @@ class DefaultCandidateRuntime:
                         on_dispatch=lambda: None,
                     )
                 except BuildContractError:
-                    stages.append(
-                        FileSizeStageEvidence(
-                            stage=stage,
-                            elapsed_seconds=0.0,
-                            peak_rss_bytes=None,
-                            vm_swap_peak_bytes=None,
-                            exit_code=None,
-                            completed=False,
-                            artifact_validated=False,
-                            timeout_outcome="not-measured",
-                            backup_bytes=0,
-                        )
-                    )
+                    stages.append(_incomplete_file_size_stage(stage))
                     reasons.append("provenance-changed")
                     case_failed = True
                     provenance_changed = True
                     break
                 except OSError, RuntimeError, StageContractError, ValueError:
-                    stages.append(
-                        FileSizeStageEvidence(
-                            stage=stage,
-                            elapsed_seconds=0.0,
-                            peak_rss_bytes=None,
-                            vm_swap_peak_bytes=None,
-                            exit_code=None,
-                            completed=False,
-                            artifact_validated=False,
-                            timeout_outcome="not-measured",
-                            backup_bytes=0,
-                        )
-                    )
+                    stages.append(_incomplete_file_size_stage(stage))
                     reasons.append("supervisor-failed")
                     case_failed = True
                     break
                 except Exception as exc:
-                    stages.append(
-                        FileSizeStageEvidence(
-                            stage=stage,
-                            elapsed_seconds=0.0,
-                            peak_rss_bytes=None,
-                            vm_swap_peak_bytes=None,
-                            exit_code=None,
-                            completed=False,
-                            artifact_validated=False,
-                            timeout_outcome="not-measured",
-                            backup_bytes=0,
-                        )
-                    )
+                    stages.append(_incomplete_file_size_stage(stage))
                     current_case = _file_size_case_evidence(
                         recipe,
                         stages,
@@ -1283,16 +1263,9 @@ class DefaultCandidateRuntime:
                 result = launch.result
                 if launch.wrapper_exit_code != 0 or result is None or not result.completed:
                     stages.append(
-                        FileSizeStageEvidence(
-                            stage=stage,
+                        _incomplete_file_size_stage(
+                            stage,
                             elapsed_seconds=(result.elapsed_seconds if result is not None else 0.0),
-                            peak_rss_bytes=None,
-                            vm_swap_peak_bytes=None,
-                            exit_code=None,
-                            completed=False,
-                            artifact_validated=False,
-                            timeout_outcome="not-measured",
-                            backup_bytes=0,
                         )
                     )
                     reasons.append("supervisor-failed")
@@ -1306,17 +1279,7 @@ class DefaultCandidateRuntime:
                     or result.exit_code is None
                 ):
                     stages.append(
-                        FileSizeStageEvidence(
-                            stage=stage,
-                            elapsed_seconds=result.elapsed_seconds,
-                            peak_rss_bytes=None,
-                            vm_swap_peak_bytes=None,
-                            exit_code=None,
-                            completed=False,
-                            artifact_validated=False,
-                            timeout_outcome="not-measured",
-                            backup_bytes=0,
-                        )
+                        _incomplete_file_size_stage(stage, elapsed_seconds=result.elapsed_seconds)
                     )
                     reasons.append("supervisor-failed")
                     case_failed = True

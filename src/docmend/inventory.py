@@ -132,9 +132,7 @@ class Inventory(_StrictModel):
     # deprecated BaseModel attribute, hence the alias; serialize_by_alias keeps
     # model_dump() emitting the contract's key without every caller remembering
     # by_alias=True.
-    model_config = ConfigDict(
-        extra="forbid", strict=True, populate_by_name=True, serialize_by_alias=True
-    )
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
 
     schema_kind: Literal["docmend/inventory"] = Field(default="docmend/inventory", alias="schema")
     schema_version: Annotated[str, Field(pattern=r"^1\.\d+$")] = INVENTORY_SCHEMA_VERSION

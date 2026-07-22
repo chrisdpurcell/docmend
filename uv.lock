@@ -278,7 +278,7 @@ dev = [
     { name = "pyfakefs", specifier = ">=6.2.0" },
     { name = "pytest", specifier = ">=9.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
-    { name = "ruff", specifier = ">=0.14" },
+    { name = "ruff", specifier = ">=0.14.11" },
 ]
 
 [[package]]

@@ -837,14 +837,14 @@ def _public_probe_label(value: str) -> str:
 
 
 def _cpu_model(cpuinfo: str) -> str:
-    fields: dict[str, list[str]] = {}
+    fields: dict[str, str] = {}
     for line in cpuinfo.splitlines():
         name, separator, value = line.partition(":")
         if separator:
-            fields.setdefault(name.strip().lower(), []).append(value)
+            fields.setdefault(name.strip().lower(), value)
     for field_name in ("model name", "hardware", "processor"):
-        if values := fields.get(field_name):
-            return _public_probe_label(values[0])
+        if field_name in fields:
+            return _public_probe_label(fields[field_name])
     raise ResourcePreflightError("CPU model telemetry unavailable")
 
 

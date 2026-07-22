@@ -77,17 +77,18 @@ npx markdownlint-cli2 "**/*.md"
 **Code:**
 
 ```bash
-uvx --from 'git+https://github.com/L3DigitalNet/project-standards@v4' \
+# V5 unified authority reads .standards/; --config .project-standards.yml is rejected.
+uvx --from 'git+https://github.com/L3DigitalNet/project-standards@v5' \
   project-standards spec new docs/specs/<name>.md --profile standard --title '<Title>'
-uvx --from 'git+https://github.com/L3DigitalNet/project-standards@v4' \
-  project-standards spec validate --config .project-standards.yml
-uvx --from 'git+https://github.com/L3DigitalNet/project-standards@v4' \
-  project-standards spec lint --strict --config .project-standards.yml
+uvx --from 'git+https://github.com/L3DigitalNet/project-standards@v5' \
+  project-standards spec validate
+uvx --from 'git+https://github.com/L3DigitalNet/project-standards@v5' \
+  project-standards spec lint --strict
 ```
 
 **Why:** hand-edited structure drifts from what the CLI's own validators expect; the CLI is the single source of truth for spec shape.
 
-**Sources:** `.project-standards.yml` `spec:` block; `.github/workflows/validate-specs.yml`.
+**Sources:** `.standards/config.toml` `[standards.project-spec]` block; `.github/workflows/validate-specs.yml`.
 
 **Related:** #4, #6.
 
@@ -139,11 +140,11 @@ uv run python scripts/fix_spec_toc.py
 
 **Applies when:** writing or editing `docs/specs/docmend.md` text that cites a settled decision.
 
-**Rule:** the spec cites decisions by `OQ-###` (its own §21 register), `D-###`, or ADR stem (`adr-00NN-…`) — never `RQ-###`. More generally, `validate-specs@v4` reads **any** uppercase `PREFIX-<digits>` token in the spec body as a spec-ID reference and fails it (`SV-ID-UNDECLARED`, plus `SV-ID-FMT` on a non-3-digit width) unless the prefix is declared in Appendix A. So three classes must stay out of the spec body: `RQ-###` (use its shared-number `OQ-###`); a bare uppercase `ADR-0010` (use the lowercase `adr-00NN-…` stem, which is not tokenised); and a `GAP-07` cross-reference to `gap-analysis.md` (lowercase it to `gap-07`, or reword). `RQ-###` lives only in `docs/resolved-questions.md` and the ADRs; `OQ-N` and `RQ-N` share the number `N` by convention.
+**Rule:** the spec cites decisions by `OQ-###` (its own §21 register), `D-###`, or ADR stem (`adr-00NN-…`) — never `RQ-###`. More generally, `validate-specs@v5` reads **any** uppercase `PREFIX-<digits>` token in the spec body as a spec-ID reference and fails it (`SV-ID-UNDECLARED`, plus `SV-ID-FMT` on a non-3-digit width) unless the prefix is declared in Appendix A. So three classes must stay out of the spec body: `RQ-###` (use its shared-number `OQ-###`); a bare uppercase `ADR-0010` (use the lowercase `adr-00NN-…` stem, which is not tokenised); and a `GAP-07` cross-reference to `gap-analysis.md` (lowercase it to `gap-07`, or reword). `RQ-###` lives only in `docs/resolved-questions.md` and the ADRs; `OQ-N` and `RQ-N` share the number `N` by convention.
 
 **Why:** the 2026-07-05 consistency audit had to remap 76 `RQ-` references after `validate-specs` failed on them; the 2026-07-06 audit additionally found bare `ADR-NNNN` and `GAP-NN` tokens tripping the same `SV-ID-*` checks (and the recurring `SV-ANCHOR` ToC-root dead anchor, fixed by [`scripts/fix_spec_toc.py`](../../scripts/fix_spec_toc.py) — see #4). `scripts/check_traceability.py` (CI, `traceability.yml`) cross-checks the §21 OQ register against the RQ/open-question records, so the OQ/RQ pairing is machine-enforced; `validate-specs.yml` gates the ID-token rules. Run `project-standards spec validate` locally after editing the spec — the lowercase-`adr-`/`gap-` forms are the only cross-doc-reference styles it accepts.
 
-**Sources:** `validate-specs@v4`; 2026-07-05 and 2026-07-06 consistency-audit sessions; `scripts/check_traceability.py`; `scripts/fix_spec_toc.py`.
+**Sources:** `validate-specs@v5`; 2026-07-05 and 2026-07-06 consistency-audit sessions; `scripts/check_traceability.py`; `scripts/fix_spec_toc.py`.
 
 **Related:** #3, #5.
 
@@ -164,14 +165,14 @@ uv run python scripts/fix_spec_toc.py
 
 ## 8. Standard-Owned Files
 
-**Applies when:** considering an edit to `pyproject.toml` (tool tables), `.python-version`, `.github/workflows/*.yml`, `.vscode/`, `scripts/check.py`, `.markdownlint.json`, `.markdownlint-cli2.jsonc`, `.prettierrc.json`, `.editorconfig`, or `.project-standards.yml` structure.
+**Applies when:** considering an edit to `pyproject.toml` (tool tables), `.python-version`, `.github/workflows/*.yml`, `.vscode/`, `scripts/check.py`, `.markdownlint.json`, `.markdownlint-cli2.jsonc`, `.prettierrc.json`, `.editorconfig`, or `.standards/config.toml` (the V5 control plane). Note: `.markdownlint.json`, `check.yml`, and `validate-specs.yml` are declared `consumer-owned` in `.standards/config.toml`, so they are edited normally (outside reconciliation) but still follow the no-bypass rule.
 
-**Rule:** Don't hand-edit these to bypass a check, except with a documented ADR exception. `.project-standards.yml`'s `spec:` `include`/`exclude` globs are the one adoption-config surface edited normally. Adding a new, additive, non-bypassing entry (e.g. a new VS Code task) is not itself a check-bypass, but is still worth a deliberate decision rather than a silent edit.
+**Rule:** Don't hand-edit standard-managed units to bypass a check, except with a documented ADR exception. `.standards/config.toml`'s `[standards.project-spec]` `include_patterns` is the adoption-config surface edited normally. Adding a new, additive, non-bypassing entry (e.g. a new VS Code task) is not itself a check-bypass, but is still worth a deliberate decision rather than a silent edit.
 
-**Dependabot action-version bumps are an accepted exception (adr-0017).** Dependabot's `github-actions` ecosystem scans _every_ workflow file — including standard-owned ones like `check.yml` — and cannot exclude a single file. A version bump it authors (e.g. `actions/checkout@v6→v7`) is not a hand-edit and not a check-bypass; it keeps action pins current, which is the posture the standards endorse. Merge such PRs normally. The only side effect is possible churn if a future `project-standards` sync resets the pin — accepted as low-cost. This exception is scoped to **action-version bumps**; any _other_ change to a standard-owned workflow still needs an ADR exception.
+**Dependabot action-version bumps are an accepted exception (adr-0017).** Dependabot's `github-actions` ecosystem scans _every_ workflow file — including standard-owned ones like `lint-markdown.yml` and `format.yml` — and cannot exclude a single file. A version bump it authors (e.g. `actions/checkout@v6→v7`) is not a hand-edit and not a check-bypass; it keeps action pins current, which is the posture the standards endorse. Merge such PRs normally. The only side effect is possible churn if a future `project-standards` sync resets the pin — accepted as low-cost. This exception is scoped to **action-version bumps**; any _other_ change to a standard-owned workflow still needs an ADR exception.
 
 **Why:** these files are the mechanism CI enforcement depends on; unreviewed edits here can silently weaken the gate.
 
-**Sources:** four adopted Project Standards (python-tooling, markdown-tooling, project-spec, adr), pinned to `@v4`; adr-0017 (Dependabot exception).
+**Sources:** four adopted Project Standards (python-tooling, markdown-tooling, project-spec, adr), managed by the V5 control plane (`.standards/`, project-standards `@v5`); adr-0017 (Dependabot exception).
 
 **Related:** #1, #2, #3, #5.
